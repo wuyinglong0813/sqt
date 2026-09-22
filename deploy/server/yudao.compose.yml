@@ -8,7 +8,7 @@ x-runtime: &runtime
   pull_policy: never
   # 挂了就停。不要 always，否则崩溃循环会在 3.6GiB 的机器上把 SSH 挤掉。
   restart: "no"
-  mem_limit: 320m
+  mem_limit: 448m
   user: "0:0"
   network_mode: host
   volumes:
