@@ -10,7 +10,7 @@ FILES = [
     "scripts/server/install-ci-agent.sh", "scripts/server/services.py", "scripts/server/package.py",
     "scripts/ci/requirements.txt", "deploy/jenkins/plugins.txt", "docs/server-bootstrap.md", "docs/cicd-deployment.md",
     "docs/server-microservices-cutover.md", "docs/server-microservices-verification.md", "docs/microservice-architecture.md",
-    "deploy/server/infra.compose.yml", "deploy/server/service.compose.yml", "deploy/server/.env.example", "deploy/server/README.md",
+    "deploy/server/infra.compose.yml", "deploy/server/infra.localhost.compose.yml", "deploy/server/service.compose.yml", "deploy/server/yudao.compose.yml", "deploy/server/.env.example", "deploy/server/README.md",
     "deploy/server/mysql/10-owned-databases.sh", "deploy/server/seata/application.yml", "deploy/server/rocketmq/broker.conf",
     "deploy/server/xxl-job/schema.sql", "deploy/server/xxl-job/callback-task.sql", "deploy/server/xxl-job/upstream-3.2.0.sql", "deploy/server/xxl-job/LICENSE",
     "deploy/server/edge.compose.yml", "deploy/server/nginx-https.conf", "scripts/server/arthas.sh",

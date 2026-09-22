@@ -25,13 +25,42 @@ docker compose --env-file .env -f infra.compose.yml --profile mq --profile jobs 
 - Seata 2.1.0 使用持久卷保存协调日志，私网地址 `seata:8091`。单节点配置用于单机环境；高可用需独立设计协调器存储与访问地址。
 - RocketMQ 5.3.4 的 namesrv 地址 `rocketmq-namesrv:9876`，Broker 使用当前容器 IP 注册；`rocketmq-init` 初始化卷权限，`rocketmq-topic-init` 创建回调 topic 和消费组。这两个一次性容器成功后显示 `Exited (0)`。
 - XXL-JOB 3.2.0 使用 `xxl-job-admin:8080/xxl-job-admin`，账号 `tradepass`、密码 `XXL_JOB_ADMIN_PASSWORD`。自动创建的 `fadadaCallbackRecovery` 每 30 秒运行一次；执行器 token 与合同服务保持一致。
-- 中间件没有发布宿主机业务端口。此单机配置不包含跨主机 ACL/TLS 或高可用部署。
+- 只使用 `infra.compose.yml` 时，中间件没有发布宿主机业务端口。按 yudao 方式叠上 `infra.localhost.compose.yml` 后，这些端口只绑在 `127.0.0.1`。此单机配置不包含跨主机 ACL/TLS 或高可用部署。
 
 基础设施就绪后，先按迁移手册处理历史数据，再启动业务；空的新环境也可由各服务自己的 Flyway 基线建表。不得把新服务接回共享旧库。
 
+## 按 yudao 方式启动业务服务
+
+六个 Java 服务走宿主机网络，各自占用固定端口，日志写到宿主机 `/docker/tradepass/logs`，SkyWalking agent 从 `/data/skywalking/skywalking-agent` 挂入。MySQL、Redis、Seata、RocketMQ、XXL-JOB 仍由基础设施 Compose 创建，端口只绑在 `127.0.0.1`。不要和下面的 `service.compose.yml` 同时启动。
+
+先按上一节准备 `.env` 和网络，再启动基础设施：
+
+```bash
+docker compose --env-file .env -f infra.compose.yml -f infra.localhost.compose.yml --profile mq --profile jobs up -d --wait --wait-timeout 360
+```
+
+构建镜像后，在 `deploy/server` 启动业务：
+
+```bash
+docker compose --env-file .env -f yudao.compose.yml up -d --no-build --wait --wait-timeout 360
+```
+
+| 服务 | 宿主机端口 |
+|---|---|
+| gateway | 1110 |
+| identity | 1111 |
+| contract | 1112 |
+| trade | 1113 |
+| settlement | 1114 |
+| file | 1115 |
+
+数据库地址固定为 `127.0.0.1` 上的 `tradepass_staging_identity`、`tradepass_staging_contract`、`tradepass_staging_trade`、`tradepass_staging_settlement`。密码仍从 `.env` 读取。本机 3306、6379、8080、8081、8091、9876、10911 已被占用时，先改 `MYSQL_PORT` 或 `REDIS_PUBLISH_PORT`，或停掉占用进程。这些端口不要对公网开放。
+
+打开调用链时，把 agent 解压到 `/data/skywalking/skywalking-agent`，并设置 `TRADEPASS_TRACING_ENABLED=true`。目录里没有 `skywalking-agent.jar` 时，继续使用镜像内置的 agent。
+
 ## 业务服务
 
-构建或加载经过验证的六个镜像，设置同一 `TRADEPASS_IMAGE_TAG`：
+私有网络部署仍使用 `service.compose.yml`。验收脚本走这一份。构建或加载经过验证的六个镜像，设置同一 `TRADEPASS_IMAGE_TAG`：
 
 ```bash
 docker compose --env-file .env -f service.compose.yml up -d --no-build --wait --wait-timeout 360

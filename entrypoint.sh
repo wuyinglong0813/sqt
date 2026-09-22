@@ -4,7 +4,11 @@ if [ "${TRADEPASS_TRACING_ENABLED:-false}" = true ]; then
   : "${SW_AGENT_NAME:?Set a service-specific SkyWalking name}"
   : "${SW_AGENT_COLLECTOR_BACKEND_SERVICES:?Set the private OAP endpoint}"
   export SW_LOGGING_OUTPUT=CONSOLE
-  set -- -javaagent:/opt/skywalking/agent/skywalking-agent.jar
+  agent="/opt/skywalking/agent/skywalking-agent.jar"
+  if [ -f /data/skywalking/skywalking-agent/skywalking-agent.jar ]; then
+    agent="/data/skywalking/skywalking-agent/skywalking-agent.jar"
+  fi
+  set -- -javaagent:"$agent"
 else
   set --
 fi

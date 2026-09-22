@@ -1,0 +1,26 @@
+# 让宿主机网络里的业务进程访问中间件。端口只绑 127.0.0.1，不单独使用本文件。
+services:
+  mysql:
+    ports: ["127.0.0.1:${MYSQL_PORT:-3306}:3306"]
+  redis:
+    ports: ["127.0.0.1:${REDIS_PUBLISH_PORT:-6379}:6379"]
+  seata:
+    environment:
+      SEATA_IP: 127.0.0.1
+    ports: ["127.0.0.1:8091:8091"]
+  rocketmq-namesrv:
+    ports: ["127.0.0.1:9876:9876"]
+  rocketmq-broker:
+    ports:
+      - "127.0.0.1:10911:10911"
+      - "127.0.0.1:8081:8081"
+    command:
+      - sh
+      - -ec
+      - |
+        cp /etc/rocketmq/broker.conf /tmp/tradepass-broker.conf
+        printf '\nbrokerIP1=127.0.0.1\n' >> /tmp/tradepass-broker.conf
+        exec sh mqbroker --enable-proxy -c /tmp/tradepass-broker.conf
+  xxl-job-admin:
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["127.0.0.1:8080:8080"]

@@ -1,0 +1,195 @@
+# 对齐 yudao-cloud/script/docker/docker-compose.yml：
+# 六个 Java 服务使用宿主机网络，日志和 SkyWalking agent 绑定到宿主机目录。
+# 必须和 infra.compose.yml + infra.localhost.compose.yml 一起用，中间件只发布在 127.0.0.1。
+# 不要和 service.compose.yml 同时启动。
+name: tradepass-yudao
+
+x-runtime: &runtime
+  pull_policy: never
+  restart: always
+  user: "0:0"
+  network_mode: host
+  volumes:
+    - ${TRADEPASS_LOG_DIRECTORY:-/docker/tradepass/logs}:/root/logs
+    - ${TRADEPASS_SKYWALKING_AGENT_DIRECTORY:-/data/skywalking/skywalking-agent}:/data/skywalking/skywalking-agent
+
+x-common-environment: &common
+  TZ: Asia/Shanghai
+  TRADEPASS_TRACING_ENABLED: ${TRADEPASS_TRACING_ENABLED:-false}
+  SW_AGENT_COLLECTOR_BACKEND_SERVICES: ${SW_AGENT_COLLECTOR_BACKEND_SERVICES:-127.0.0.1:11800}
+  SW_AGENT_TRACE_IGNORE_PATH: /actuator/**
+  JAVA_OPTS: -Xms64m -Xmx256m -XX:ActiveProcessorCount=2
+  SERVER_SHUTDOWN: graceful
+  SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 45s
+  SPRING_PROFILES_ACTIVE: ${TRADEPASS_SERVICE_PROFILES:-observability,filelog}
+  NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-127.0.0.1:8848}
+  NACOS_NAMESPACE: ${NACOS_NAMESPACE:-}
+  NACOS_GROUP: ${NACOS_GROUP:-TRADEPASS}
+  NACOS_USERNAME: ${NACOS_USERNAME:-}
+  NACOS_PASSWORD: ${NACOS_PASSWORD:-}
+  SENTINEL_DASHBOARD: ${SENTINEL_DASHBOARD:-}
+  TRADEPASS_INTERNAL_KEY: ${TRADEPASS_INTERNAL_KEY:?Set an environment-specific random internal key}
+  TRADEPASS_IDS_DATACENTER_ID: ${TRADEPASS_IDS_DATACENTER_ID:?Set a datacenter ID from 0 to 31}
+  TRADEPASS_IDENTITY_URL: http://127.0.0.1:1111
+  TRADEPASS_CONTRACT_URL: http://127.0.0.1:1112
+  TRADEPASS_TRADE_URL: http://127.0.0.1:1113
+  TRADEPASS_SETTLEMENT_URL: http://127.0.0.1:1114
+  TRADEPASS_FILE_URL: http://127.0.0.1:1115
+  TRADEPASS_DEV_ENABLED: "false"
+  TRADEPASS_DEMO_DATA_ENABLED: "false"
+  TRADEPASS_EXPERIENCE_TEST_ACCOUNTS_ENABLED: "false"
+  TRADEPASS_STORAGE_PROVIDER: ${TRADEPASS_STORAGE_PROVIDER:-cloudbase-cos}
+  TRADEPASS_STORAGE_ENABLED: ${TRADEPASS_STORAGE_ENABLED:-false}
+  TRADEPASS_STORAGE_REQUIRED: ${TRADEPASS_STORAGE_REQUIRED:-false}
+  CLOUDBASE_STORAGE_BUCKET: ${CLOUDBASE_STORAGE_BUCKET:-}
+  CLOUDBASE_STORAGE_REGION: ${CLOUDBASE_STORAGE_REGION:-ap-shanghai}
+
+x-business-environment: &business
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+  SEATA_SERVER_ADDR: 127.0.0.1:8091
+  TRADEPASS_REDIS_ENABLED: ${TRADEPASS_REDIS_ENABLED:-false}
+  REDIS_HOST: 127.0.0.1
+  REDIS_PORT: ${REDIS_PUBLISH_PORT:-6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  WECHAT_APP_ID: ${WECHAT_APP_ID:-}
+  WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:-}
+  FADADA_ENABLED: ${FADADA_ENABLED:-false}
+  FADADA_APP_ID: ${FADADA_APP_ID:-}
+  FADADA_APP_SECRET: ${FADADA_APP_SECRET:-}
+  FADADA_SERVER_URL: ${FADADA_SERVER_URL:-https://api.fadada.com/api/v5}
+  FADADA_CALLBACK_URL: ${FADADA_CALLBACK_URL:-}
+
+services:
+  identity:
+    <<: *runtime
+    container_name: tradepass-identity
+    depends_on:
+      file: {condition: service_healthy}
+    image: tradepass-identity:${TRADEPASS_IMAGE_TAG:-local}
+    environment:
+      <<: [*common, *business]
+      SW_AGENT_NAME: tradepass-identity
+      SERVER_PORT: 1111
+      MANAGEMENT_PORT: 11111
+      LOGGING_FILE_NAME: /root/logs/tradepass-identity.log
+      TRADEPASS_IDS_WORKER_ID: 1
+      TRADEPASS_DATABASE_URL: jdbc:mysql://127.0.0.1:${MYSQL_PORT:-3306}/tradepass_staging_identity?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+      DB_USERNAME: ${IDENTITY_DB_USERNAME:?Set the identity database user}
+      DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?Set the identity database password}
+  contract:
+    <<: *runtime
+    container_name: tradepass-contract
+    depends_on:
+      identity: {condition: service_healthy}
+      file: {condition: service_healthy}
+    image: tradepass-contract:${TRADEPASS_IMAGE_TAG:-local}
+    environment:
+      <<: [*common, *business]
+      SW_AGENT_NAME: tradepass-contract
+      SERVER_PORT: 1112
+      MANAGEMENT_PORT: 11112
+      LOGGING_FILE_NAME: /root/logs/tradepass-contract.log
+      SPRING_PROFILES_ACTIVE: ${TRADEPASS_CONTRACT_PROFILES:-observability,messaging,jobs,filelog}
+      TRADEPASS_IDS_WORKER_ID: 2
+      ROCKETMQ_NAME_SERVER: 127.0.0.1:9876
+      ROCKETMQ_CALLBACK_TOPIC: ${ROCKETMQ_CALLBACK_TOPIC:-tradepass-callback-events}
+      ROCKETMQ_ACCESS_KEY: ${ROCKETMQ_ACCESS_KEY:-}
+      ROCKETMQ_SECRET_KEY: ${ROCKETMQ_SECRET_KEY:-}
+      XXL_JOB_ADMIN_ADDRESSES: http://127.0.0.1:8080/xxl-job-admin
+      XXL_JOB_ACCESS_TOKEN: ${XXL_JOB_ACCESS_TOKEN:?Set the XXL-JOB executor token}
+      XXL_JOB_EXECUTOR_ADDRESS: http://host.docker.internal:9998/
+      TRADEPASS_DATABASE_URL: jdbc:mysql://127.0.0.1:${MYSQL_PORT:-3306}/tradepass_staging_contract?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+      DB_USERNAME: ${CONTRACT_DB_USERNAME:?Set the contract database user}
+      DB_PASSWORD: ${CONTRACT_DB_PASSWORD:?Set the contract database password}
+  trade:
+    <<: *runtime
+    container_name: tradepass-trade
+    depends_on:
+      identity: {condition: service_healthy}
+      file: {condition: service_healthy}
+    image: tradepass-trade:${TRADEPASS_IMAGE_TAG:-local}
+    environment:
+      <<: [*common, *business]
+      SW_AGENT_NAME: tradepass-trade
+      SERVER_PORT: 1113
+      MANAGEMENT_PORT: 11113
+      LOGGING_FILE_NAME: /root/logs/tradepass-trade.log
+      TRADEPASS_IDS_WORKER_ID: 3
+      TRADEPASS_DATABASE_URL: jdbc:mysql://127.0.0.1:${MYSQL_PORT:-3306}/tradepass_staging_trade?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+      DB_USERNAME: ${TRADE_DB_USERNAME:?Set the trade database user}
+      DB_PASSWORD: ${TRADE_DB_PASSWORD:?Set the trade database password}
+  settlement:
+    <<: *runtime
+    container_name: tradepass-settlement
+    depends_on:
+      identity: {condition: service_healthy}
+      file: {condition: service_healthy}
+    image: tradepass-settlement:${TRADEPASS_IMAGE_TAG:-local}
+    environment:
+      <<: [*common, *business]
+      SW_AGENT_NAME: tradepass-settlement
+      SERVER_PORT: 1114
+      MANAGEMENT_PORT: 11114
+      LOGGING_FILE_NAME: /root/logs/tradepass-settlement.log
+      TRADEPASS_IDS_WORKER_ID: 4
+      TRADEPASS_DATABASE_URL: jdbc:mysql://127.0.0.1:${MYSQL_PORT:-3306}/tradepass_staging_settlement?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+      DB_USERNAME: ${SETTLEMENT_DB_USERNAME:?Set the settlement database user}
+      DB_PASSWORD: ${SETTLEMENT_DB_PASSWORD:?Set the settlement database password}
+  file:
+    <<: *runtime
+    container_name: tradepass-file
+    image: tradepass-file:${TRADEPASS_IMAGE_TAG:-local}
+    environment:
+      <<: *common
+      SW_AGENT_NAME: tradepass-file
+      SERVER_PORT: 1115
+      MANAGEMENT_PORT: 11115
+      LOGGING_FILE_NAME: /root/logs/tradepass-file.log
+      TRADEPASS_IDS_WORKER_ID: 5
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+      OSS_REGION: ${OSS_REGION:-}
+      OSS_BUCKET: ${OSS_BUCKET:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_SESSION_TOKEN: ${OSS_SESSION_TOKEN:-}
+      TRADEPASS_LEGACY_COS_BUCKET: ${TRADEPASS_LEGACY_COS_BUCKET:-}
+      TRADEPASS_LEGACY_COS_REGION: ${TRADEPASS_LEGACY_COS_REGION:-ap-shanghai}
+      TRADEPASS_LEGACY_COS_KEY_PREFIX: ${TRADEPASS_LEGACY_COS_KEY_PREFIX:-tradepass}
+      TRADEPASS_LEGACY_COS_SECRET_ID: ${TRADEPASS_LEGACY_COS_SECRET_ID:-}
+      TRADEPASS_LEGACY_COS_SECRET_KEY: ${TRADEPASS_LEGACY_COS_SECRET_KEY:-}
+      TRADEPASS_LEGACY_COS_SESSION_TOKEN: ${TRADEPASS_LEGACY_COS_SESSION_TOKEN:-}
+  gateway:
+    <<: *runtime
+    container_name: tradepass-gateway
+    depends_on:
+      identity: {condition: service_healthy}
+      contract: {condition: service_healthy}
+      trade: {condition: service_healthy}
+      settlement: {condition: service_healthy}
+      file: {condition: service_healthy}
+    image: tradepass-gateway:${TRADEPASS_IMAGE_TAG:-local}
+    environment:
+      TZ: Asia/Shanghai
+      SPRING_PROFILES_ACTIVE: ${TRADEPASS_SERVICE_PROFILES:-observability,filelog}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-127.0.0.1:8848}
+      NACOS_NAMESPACE: ${NACOS_NAMESPACE:-}
+      NACOS_GROUP: ${NACOS_GROUP:-TRADEPASS}
+      NACOS_USERNAME: ${NACOS_USERNAME:-}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:-}
+      SENTINEL_DASHBOARD: ${SENTINEL_DASHBOARD:-}
+      SERVER_PORT: 1110
+      MANAGEMENT_PORT: 10110
+      LOGGING_FILE_NAME: /root/logs/tradepass-gateway.log
+      SERVER_SHUTDOWN: graceful
+      SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 45s
+      TRADEPASS_TRACING_ENABLED: ${TRADEPASS_TRACING_ENABLED:-false}
+      SW_AGENT_NAME: tradepass-gateway
+      SW_AGENT_COLLECTOR_BACKEND_SERVICES: ${SW_AGENT_COLLECTOR_BACKEND_SERVICES:-127.0.0.1:11800}
+      SW_AGENT_TRACE_IGNORE_PATH: /actuator/**
+      JAVA_OPTS: -Xms64m -Xmx256m -XX:ActiveProcessorCount=2
+      TRADEPASS_IDENTITY_URL: http://127.0.0.1:1111
+      TRADEPASS_CONTRACT_URL: http://127.0.0.1:1112
+      TRADEPASS_TRADE_URL: http://127.0.0.1:1113
+      TRADEPASS_SETTLEMENT_URL: http://127.0.0.1:1114
+      TRADEPASS_FILE_URL: http://127.0.0.1:1115

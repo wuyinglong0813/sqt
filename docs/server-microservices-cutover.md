@@ -23,7 +23,7 @@
 
 新环境先创建指定的私有 Docker 网络，使用 `deploy/server/infra.compose.yml --profile mq --profile jobs` 启动 MySQL、Redis、Seata 2.1.0、RocketMQ 和 XXL-JOB。部署脚本会创建回调 topic、消费组及每 30 秒一次的 `fadadaCallbackRecovery` 任务；执行器名为 `tradepass-contract`。XXL-JOB 后台账号为 `tradepass`，密码来自 `XXL_JOB_ADMIN_PASSWORD`；执行器和后台必须配置同一 `XXL_JOB_ACCESS_TOKEN`。
 
-使用 `deploy/server/service.compose.yml` 启动六个业务镜像，合同服务默认启用 `messaging,jobs`。消息只包含已持久化回调 ID，原数据库事件认领、重试和恢复规则继续执行；消息发送失败保留持久化事件交给恢复任务。关闭 jobs 配置时，自动恢复原来的本地 30 秒调度。使用自定义 topic/消费组时，应同步修改基础设施初始化命令。
+按 yudao 的宿主机网络方式启动时，使用 `deploy/server/yudao.compose.yml`，并给基础设施叠上 `deploy/server/infra.localhost.compose.yml`。私有网络部署和验收仍使用 `deploy/server/service.compose.yml`。合同服务默认启用 `messaging,jobs`。消息只包含已持久化回调 ID，原数据库事件认领、重试和恢复规则继续执行；消息发送失败保留持久化事件交给恢复任务。关闭 jobs 配置时，自动恢复原来的本地 30 秒调度。使用自定义 topic/消费组时，应同步修改基础设施初始化命令。
 
 业务数据库和中间件端口保持私有。`deploy/server/edge.compose.yml` 使用提供的 TLS 证书将 HTTPS 转到网关。Prometheus、Grafana、Alertmanager 配置仍在 `deploy/microservices/monitoring`，告警接收目标由环境管理者配置。
 
