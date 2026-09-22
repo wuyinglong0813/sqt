@@ -97,6 +97,8 @@ services:
       TRADEPASS_IDS_WORKER_ID: 2
       ROCKETMQ_NAME_SERVER: 127.0.0.1:9876
       ROCKETMQ_CALLBACK_TOPIC: ${ROCKETMQ_CALLBACK_TOPIC:-tradepass-callback-events}
+      ROCKETMQ_PRODUCER_GROUP: tradepass-contract-callback-producer
+      ROCKETMQ_CONSUMER_GROUP: tradepass-contract-callback-consumer
       ROCKETMQ_ACCESS_KEY: ${ROCKETMQ_ACCESS_KEY:-}
       ROCKETMQ_SECRET_KEY: ${ROCKETMQ_SECRET_KEY:-}
       XXL_JOB_ADMIN_ADDRESSES: http://127.0.0.1:8080/xxl-job-admin

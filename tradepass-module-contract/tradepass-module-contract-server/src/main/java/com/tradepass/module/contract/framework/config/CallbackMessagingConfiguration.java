@@ -25,7 +25,7 @@ public class CallbackMessagingConfiguration {
     @Bean(destroyMethod = "shutdown")
     DefaultMQProducer callbackProducer(
             @Value("${tradepass.messaging.rocketmq.name-server}") String server,
-            @Value("${tradepass.messaging.rocketmq.producer-group:tradepass-module-contract/tradepass-module-contract-server-callback-producer}") String group,
+            @Value("${tradepass.messaging.rocketmq.producer-group:tradepass-contract-callback-producer}") String group,
             @Value("${tradepass.messaging.rocketmq.access-key:}") String accessKey,
             @Value("${tradepass.messaging.rocketmq.secret-key:}") String secretKey) throws Exception {
         DefaultMQProducer producer = new DefaultMQProducer(group, credentials(accessKey, secretKey));
@@ -63,7 +63,7 @@ public class CallbackMessagingConfiguration {
     DefaultMQPushConsumer callbackConsumer(FadadaCallbackProcessor processor, MeterRegistry metrics,
             @Value("${tradepass.messaging.rocketmq.name-server}") String server,
             @Value("${tradepass.messaging.rocketmq.callback-topic:tradepass-callback-events}") String topic,
-            @Value("${tradepass.messaging.rocketmq.consumer-group:tradepass-module-contract/tradepass-module-contract-server-callback-consumer}") String group,
+            @Value("${tradepass.messaging.rocketmq.consumer-group:tradepass-contract-callback-consumer}") String group,
             @Value("${tradepass.messaging.rocketmq.access-key:}") String accessKey,
             @Value("${tradepass.messaging.rocketmq.secret-key:}") String secretKey) throws Exception {
         DefaultMQPushConsumer consumer = new DefaultMQPushConsumer(group, credentials(accessKey, secretKey));

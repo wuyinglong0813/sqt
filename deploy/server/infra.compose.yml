@@ -146,7 +146,7 @@ services:
       - -ec
       - |
         sh mqadmin updateTopic -n rocketmq-namesrv:9876 -c DefaultCluster -t tradepass-callback-events -r 4 -w 4
-        sh mqadmin updateSubGroup -n rocketmq-namesrv:9876 -c DefaultCluster -g tradepass-module-contract/tradepass-module-contract-server-callback-consumer
+        sh mqadmin updateSubGroup -n rocketmq-namesrv:9876 -c DefaultCluster -g tradepass-contract-callback-consumer
 
   rocketmq-broker:
     <<: *infra
