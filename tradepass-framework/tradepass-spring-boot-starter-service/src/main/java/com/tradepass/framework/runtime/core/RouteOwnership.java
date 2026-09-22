@@ -13,6 +13,8 @@ public final class RouteOwnership {
     public static String owner(Class<?> type, Method method) {
         if (type.getName().equals("com.tradepass.framework.web.core.controller.ProbeController")) return "all";
         String name = type.getPackageName();
+        // Role-gated Feign endpoints live outside the module packages. The bean is created only for its owning role.
+        if (name.startsWith("com.tradepass.framework.rpc.core")) return "all";
         return ROLES.stream().filter(role -> name.startsWith("com.tradepass.module." + role + "."))
                 .findFirst().orElseThrow(() -> new IllegalStateException("Unassigned controller: " + type.getName()));
     }
