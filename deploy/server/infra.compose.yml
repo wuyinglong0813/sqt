@@ -152,15 +152,15 @@ services:
     <<: *infra
     image: apache/rocketmq:5.3.4
     profiles: [mq]
-    mem_limit: 320m
+    mem_limit: 640m
     stop_grace_period: 90s
     depends_on:
       rocketmq-init: {condition: service_completed_successfully}
       rocketmq-namesrv: {condition: service_healthy}
     environment:
       NAMESRV_ADDR: rocketmq-namesrv:9876
-      HEAP_OPTS: -Xms64m -Xmx128m -Xmn48m -XX:MaxDirectMemorySize=32m
-      JAVA_OPT_EXT: -Xms64m -Xmx128m -Xmn48m -XX:MaxDirectMemorySize=32m -XX:MaxMetaspaceSize=48m -XX:-AlwaysPreTouch
+      HEAP_OPTS: -Xms128m -Xmx192m -Xmn64m -XX:MaxDirectMemorySize=128m
+      JAVA_OPT_EXT: -Xms128m -Xmx192m -Xmn64m -XX:MaxDirectMemorySize=128m -XX:MaxMetaspaceSize=96m -XX:-AlwaysPreTouch
     command:
       - sh
       - -ec
