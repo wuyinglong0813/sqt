@@ -1,7 +1,8 @@
 name: tradepass-infra-static
 
 x-infra: &infra
-  restart: unless-stopped
+  # 失败最多再拉起 2 次，然后停住。重启整机时 Docker 仍可能按上次状态拉起，业务服务已改为不自动重启。
+  restart: on-failure:2
   networks: [tradepass]
   logging:
     driver: json-file
@@ -11,7 +12,7 @@ services:
   mysql:
     <<: *infra
     image: mysql:8.4
-    mem_limit: 1g
+    mem_limit: 384m
     stop_grace_period: 90s
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Fill MYSQL_ROOT_PASSWORD in .env}
@@ -24,7 +25,7 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
-      - --innodb-buffer-pool-size=256M
+      - --innodb-buffer-pool-size=64M
       - --max-connections=60
     volumes:
       - mysql-data:/var/lib/mysql
@@ -40,7 +41,7 @@ services:
   seata:
     <<: *infra
     image: apache/seata-server:2.1.0
-    mem_limit: 768m
+    mem_limit: 256m
     stop_grace_period: 90s
     environment:
       SEATA_IP: seata
@@ -48,9 +49,9 @@ services:
       SEATA_CONSOLE_USERNAME: ${SEATA_CONSOLE_USERNAME:-tradepass}
       SEATA_CONSOLE_PASSWORD: ${SEATA_CONSOLE_PASSWORD:?Set the Seata console password}
       SEATA_SECURITY_SECRET_KEY: ${SEATA_SECURITY_SECRET_KEY:?Set a random base64 signing key}
-      JVM_XMS: 128m
-      JVM_XMX: 384m
-      JVM_XMN: 64m
+      JVM_XMS: 48m
+      JVM_XMX: 128m
+      JVM_XMN: 48m
     volumes:
       - ./seata/application.yml:/seata-server/resources/application.yml:ro
       - seata-sessions:/seata-server/sessionStore
@@ -66,7 +67,7 @@ services:
     <<: *infra
     image: xuxueli/xxl-job-admin:3.2.0
     profiles: [jobs]
-    mem_limit: 768m
+    mem_limit: 256m
     depends_on:
       mysql: {condition: service_healthy}
     environment:
@@ -74,20 +75,20 @@ services:
       SPRING_DATASOURCE_USERNAME: tradepass_jobs
       SPRING_DATASOURCE_PASSWORD: ${XXL_JOB_DB_PASSWORD:?Set the scheduler database password}
       XXL_JOB_ACCESSTOKEN: ${XXL_JOB_ACCESS_TOKEN:?Set the same executor token as contract}
-      JAVA_OPTS: -Xms128m -Xmx384m
+      JAVA_OPTS: -Xms48m -Xmx128m
     volumes:
       - xxl-job-logs:/data/applogs
 
   redis:
     <<: *infra
     image: redis:7.4-alpine
-    mem_limit: 192m
+    mem_limit: 96m
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Fill REDIS_PASSWORD in .env}
     command:
       - /bin/sh
       - -ec
-      - 'exec redis-server --appendonly yes --maxmemory 64mb --maxmemory-policy allkeys-lru --requirepass "$${REDIS_PASSWORD}"'
+      - 'exec redis-server --appendonly yes --maxmemory 48mb --maxmemory-policy allkeys-lru --requirepass "$${REDIS_PASSWORD}"'
     volumes:
       - redis-data:/data
     healthcheck:
@@ -114,12 +115,12 @@ services:
     <<: *infra
     image: apache/rocketmq:5.3.4
     profiles: [mq]
-    mem_limit: 384m
+    mem_limit: 160m
     depends_on:
       rocketmq-init: {condition: service_completed_successfully}
     environment:
-      HEAP_OPTS: -Xms128m -Xmx128m -Xmn64m
-      JAVA_OPT_EXT: -Xms128m -Xmx128m -Xmn64m -XX:MaxDirectMemorySize=64m -XX:MaxMetaspaceSize=128m
+      HEAP_OPTS: -Xms48m -Xmx64m -Xmn32m
+      JAVA_OPT_EXT: -Xms48m -Xmx64m -Xmn32m -XX:MaxDirectMemorySize=16m -XX:MaxMetaspaceSize=48m
     command: [sh, mqnamesrv]
     volumes:
       - rocketmq-namesrv-logs:/home/rocketmq/logs
@@ -135,10 +136,11 @@ services:
     image: apache/rocketmq:5.3.4
     profiles: [mq]
     restart: 'no'
+    mem_limit: 160m
     depends_on:
       rocketmq-broker: {condition: service_healthy}
     environment:
-      JAVA_OPT_EXT: -Xms64m -Xmx128m
+      JAVA_OPT_EXT: -Xms48m -Xmx64m
     command:
       - sh
       - -ec
@@ -150,15 +152,15 @@ services:
     <<: *infra
     image: apache/rocketmq:5.3.4
     profiles: [mq]
-    mem_limit: 1536m
+    mem_limit: 320m
     stop_grace_period: 90s
     depends_on:
       rocketmq-init: {condition: service_completed_successfully}
       rocketmq-namesrv: {condition: service_healthy}
     environment:
       NAMESRV_ADDR: rocketmq-namesrv:9876
-      HEAP_OPTS: -Xms256m -Xmx512m -Xmn128m -XX:MaxDirectMemorySize=128m
-      JAVA_OPT_EXT: -Xms256m -Xmx512m -Xmn128m -XX:MaxDirectMemorySize=128m -XX:MaxMetaspaceSize=192m -XX:-AlwaysPreTouch
+      HEAP_OPTS: -Xms64m -Xmx128m -Xmn48m -XX:MaxDirectMemorySize=32m
+      JAVA_OPT_EXT: -Xms64m -Xmx128m -Xmn48m -XX:MaxDirectMemorySize=32m -XX:MaxMetaspaceSize=48m -XX:-AlwaysPreTouch
     command:
       - sh
       - -ec
