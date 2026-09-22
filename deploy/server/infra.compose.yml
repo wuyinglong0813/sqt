@@ -41,7 +41,7 @@ services:
   seata:
     <<: *infra
     image: apache/seata-server:2.1.0
-    mem_limit: 256m
+    mem_limit: 512m
     stop_grace_period: 90s
     environment:
       SEATA_IP: seata
@@ -49,9 +49,9 @@ services:
       SEATA_CONSOLE_USERNAME: ${SEATA_CONSOLE_USERNAME:-tradepass}
       SEATA_CONSOLE_PASSWORD: ${SEATA_CONSOLE_PASSWORD:?Set the Seata console password}
       SEATA_SECURITY_SECRET_KEY: ${SEATA_SECURITY_SECRET_KEY:?Set a random base64 signing key}
-      JVM_XMS: 48m
-      JVM_XMX: 128m
-      JVM_XMN: 48m
+      JVM_XMS: 64m
+      JVM_XMX: 192m
+      JVM_XMN: 64m
     volumes:
       - ./seata/application.yml:/seata-server/resources/application.yml:ro
       - seata-sessions:/seata-server/sessionStore
