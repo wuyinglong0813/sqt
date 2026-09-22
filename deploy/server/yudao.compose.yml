@@ -8,7 +8,7 @@ x-runtime: &runtime
   pull_policy: never
   # 挂了就停。不要 always，否则崩溃循环会在 3.6GiB 的机器上把 SSH 挤掉。
   restart: "no"
-  mem_limit: 192m
+  mem_limit: 320m
   user: "0:0"
   network_mode: host
   volumes:
@@ -20,7 +20,8 @@ x-common-environment: &common
   TRADEPASS_TRACING_ENABLED: ${TRADEPASS_TRACING_ENABLED:-false}
   SW_AGENT_COLLECTOR_BACKEND_SERVICES: ${SW_AGENT_COLLECTOR_BACKEND_SERVICES:-127.0.0.1:11800}
   SW_AGENT_TRACE_IGNORE_PATH: /actuator/**
-  JAVA_OPTS: -Xms48m -Xmx96m -XX:MaxMetaspaceSize=64m -XX:MaxDirectMemorySize=16m -XX:ActiveProcessorCount=1
+  MALLOC_ARENA_MAX: 2
+  JAVA_OPTS: -Xms64m -Xmx128m -XX:MaxMetaspaceSize=96m -XX:MaxDirectMemorySize=32m -XX:ReservedCodeCacheSize=48m -XX:+UseSerialGC -XX:ActiveProcessorCount=1
   SERVER_SHUTDOWN: graceful
   SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 45s
   SPRING_PROFILES_ACTIVE: ${TRADEPASS_SERVICE_PROFILES:-observability,filelog}
@@ -189,7 +190,8 @@ services:
       SW_AGENT_NAME: tradepass-gateway
       SW_AGENT_COLLECTOR_BACKEND_SERVICES: ${SW_AGENT_COLLECTOR_BACKEND_SERVICES:-127.0.0.1:11800}
       SW_AGENT_TRACE_IGNORE_PATH: /actuator/**
-      JAVA_OPTS: -Xms48m -Xmx96m -XX:MaxMetaspaceSize=64m -XX:MaxDirectMemorySize=16m -XX:ActiveProcessorCount=1
+      MALLOC_ARENA_MAX: 2
+      JAVA_OPTS: -Xms64m -Xmx128m -XX:MaxMetaspaceSize=96m -XX:MaxDirectMemorySize=32m -XX:ReservedCodeCacheSize=48m -XX:+UseSerialGC -XX:ActiveProcessorCount=1
       TRADEPASS_IDENTITY_URL: http://127.0.0.1:1111
       TRADEPASS_CONTRACT_URL: http://127.0.0.1:1112
       TRADEPASS_TRADE_URL: http://127.0.0.1:1113
