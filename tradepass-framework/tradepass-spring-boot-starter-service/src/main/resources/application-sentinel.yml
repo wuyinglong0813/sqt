@@ -1,0 +1,30 @@
+spring:
+  cloud:
+    sentinel:
+      enabled: true
+      filter:
+        enabled: false
+      transport:
+        dashboard: ${SENTINEL_DASHBOARD:}
+      datasource:
+        flow:
+          nacos:
+            server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+            namespace: ${NACOS_NAMESPACE:}
+            group-id: ${NACOS_GROUP:TRADEPASS}
+            username: ${NACOS_USERNAME:}
+            password: ${NACOS_PASSWORD:}
+            data-id: ${spring.application.name}-flow.json
+            rule-type: flow
+        degrade:
+          nacos:
+            server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+            namespace: ${NACOS_NAMESPACE:}
+            group-id: ${NACOS_GROUP:TRADEPASS}
+            username: ${NACOS_USERNAME:}
+            password: ${NACOS_PASSWORD:}
+            data-id: ${spring.application.name}-degrade.json
+            rule-type: degrade
+feign:
+  sentinel:
+    enabled: true

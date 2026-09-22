@@ -1,0 +1,53 @@
+package com.tradepass.module.contract.service.signing;
+
+import com.tradepass.module.contract.api.signing.FadadaContractSigningOperations;
+import com.tradepass.module.contract.api.signing.FadadaContractSigningOperations.*;
+import com.tradepass.module.contract.service.abolish.ContractAbolishIntentService;
+import com.tradepass.module.contract.service.abolish.ContractAbolishRecoveryService;
+import com.tradepass.module.contract.service.archive.ContractArchiveService;
+import com.tradepass.module.contract.service.archive.ContractPdfService;
+import com.tradepass.module.contract.service.contract.TradeService;
+import com.tradepass.module.trade.api.bilateral.BilateralStateOperations;
+import com.tradepass.module.trade.api.bilateral.BilateralStateOperations.*;
+import com.tradepass.framework.common.util.FileTypeInspector;
+import com.tradepass.module.identity.api.permission.AccessControlOperations;
+import com.tradepass.module.identity.api.permission.AccessControlOperations.*;
+import com.tradepass.module.identity.api.fadada.FadadaCompanyOperations;
+import com.tradepass.module.identity.api.fadada.FadadaCompanyOperations.*;
+import com.tradepass.framework.cache.core.BoundedBinaryCache;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tradepass.framework.common.core.AuthContext;
+import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.framework.fadada.config.FadadaProperties;
+import com.tradepass.module.contract.api.contract.dto.ContractRespDTO;
+import com.tradepass.module.contract.api.signing.dto.ContractSigningRespDTO;
+import com.tradepass.framework.common.pojo.ServiceUrlPayload;
+import com.tradepass.module.identity.api.company.dto.CompanyRespDTO;
+import com.tradepass.module.contract.dal.dataobject.signing.FadadaContractSignTaskDO;
+import com.tradepass.module.identity.api.fadada.dto.FadadaCorpIdentityRespDTO;
+import com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO;
+import com.tradepass.framework.fadada.core.FadadaSigningGateway;
+import com.tradepass.module.identity.api.company.CompanyReader;
+import com.tradepass.module.identity.api.company.CompanyReader.*;
+import com.tradepass.module.contract.dal.mysql.signing.FadadaContractSignTaskMapper;
+import com.tradepass.module.contract.dal.mysql.contract.TradeContractMapper;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.beans.factory.annotation.Autowired;
+import java.time.LocalDateTime;
+import java.time.Duration;
+import java.util.List;
+
+public interface FadadaContractSigningService {
+    void setAbolishIntentService(ContractAbolishIntentService service);
+    ContractSigningRespDTO current(Long contractId);
+    ServiceUrlPayload signUrl(Long contractId);
+    ContractSigningRespDTO syncCurrent(Long contractId);
+    SignedPreview signedPreview(Long contractId);
+    void syncBySignTaskId(String signTaskId);
+    ServiceUrlPayload abolishUrl(Long contractId, String reason);
+}

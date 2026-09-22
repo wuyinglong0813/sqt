@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+  - job_name: tradepass
+    metrics_path: /actuator/prometheus
+    file_sd_configs:
+      - files: [targets.json]
+
+# Configure real Alertmanager endpoints before relying on notifications.
+# No external message destination is enabled by this repository change.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []

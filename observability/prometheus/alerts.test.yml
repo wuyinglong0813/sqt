@@ -1,0 +1,60 @@
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: missing scrape configuration is visible
+    interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: TradePassScrapeTargetsMissing
+        exp_alerts:
+          - exp_labels:
+              job: tradepass
+              severity: warning
+            exp_annotations:
+              summary: TradePass monitoring targets are missing
+              description: Configure private management endpoints in targets.json.
+  - name: unavailable instance raises an alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="tradepass",instance="test:10099"}'
+        values: '0+0x6'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TradePassInstanceDown
+        exp_alerts:
+          - exp_labels:
+              job: tradepass
+              instance: test:10099
+              severity: critical
+            exp_annotations:
+              summary: TradePass instance test:10099 is unreachable
+              description: Check the process, management listener, network and recent deployment.
+  - name: sustained server errors trigger after enough requests
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{job="tradepass",application="tradepass",instance="test:10099",uri="/api/orders",status="500"}'
+        values: '0+10x15'
+      - series: 'http_server_requests_seconds_count{job="tradepass",application="tradepass",instance="test:10099",uri="/api/orders",status="200"}'
+        values: '0+90x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: TradePassHttpServerErrors
+        exp_alerts:
+          - exp_labels:
+              application: tradepass
+              instance: test:10099
+              severity: critical
+            exp_annotations:
+              summary: TradePass HTTP 5xx ratio is elevated on test:10099
+              description: Inspect exceptions and downstream availability; the rule requires at least 20 requests in five minutes.
+  - name: sparse failures do not trigger the ratio alert
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{job="tradepass",application="tradepass",instance="test:10099",uri="/api/orders",status="500"}'
+        values: '0+1x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: TradePassHttpServerErrors
+        exp_alerts: []

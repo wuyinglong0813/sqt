@@ -1,0 +1,58 @@
+seata:
+  enabled: false
+
+server:
+  port: ${SERVER_PORT:1110}
+spring:
+  profiles:
+    group:
+      nacos: gateway-discovery
+  application:
+    name: tradepass-gateway
+  cloud:
+    nacos:
+      discovery:
+        enabled: false
+      config:
+        enabled: false
+        import-check:
+          enabled: false
+    sentinel:
+      enabled: false
+    loadbalancer:
+      retry:
+        enabled: false
+    gateway:
+      filter:
+        json-to-grpc:
+          enabled: false
+      httpclient:
+        connect-timeout: 3000
+        response-timeout: 60s
+tradepass:
+  services:
+    identity-url: ${TRADEPASS_IDENTITY_URL:http://127.0.0.1:1111}
+    contract-url: ${TRADEPASS_CONTRACT_URL:http://127.0.0.1:1112}
+    trade-url: ${TRADEPASS_TRADE_URL:http://127.0.0.1:1113}
+    settlement-url: ${TRADEPASS_SETTLEMENT_URL:http://127.0.0.1:1114}
+    file-url: ${TRADEPASS_FILE_URL:http://127.0.0.1:1115}
+management:
+  server:
+    address: ${MANAGEMENT_ADDRESS:127.0.0.1}
+    port: ${MANAGEMENT_PORT:10110}
+  endpoints:
+    enabled-by-default: false
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      enabled: true
+      show-details: never
+      probes:
+        enabled: true
+    prometheus:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}

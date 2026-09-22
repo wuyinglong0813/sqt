@@ -1,0 +1,43 @@
+# Server launchers activate this profile. Each process receives only its own database credentials.
+tradepass:
+  services:
+    split: true
+    contract-url: ${TRADEPASS_CONTRACT_URL:http://127.0.0.1:1112}
+    trade-url: ${TRADEPASS_TRADE_URL:http://127.0.0.1:1113}
+    settlement-url: ${TRADEPASS_SETTLEMENT_URL:http://127.0.0.1:1114}
+spring:
+  datasource:
+    url: ${TRADEPASS_DATABASE_URL}
+  flyway:
+    enabled: true
+    baseline-on-migrate: false
+    locations: classpath:db/owned/${tradepass.runtime.role}
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            readTimeout: 180000
+seata:
+  enabled: true
+  application-id: ${spring.application.name}
+  tx-service-group: tradepass_tx_group
+  enable-auto-data-source-proxy: true
+  data-source-proxy-mode: AT
+  registry:
+    type: file
+  config:
+    type: file
+  service:
+    vgroup-mapping:
+      tradepass_tx_group: default
+    grouplist:
+      default: ${SEATA_SERVER_ADDR:127.0.0.1:8091}
+  client:
+    rm:
+      lock:
+        retry-interval: 100
+        retry-times: 300
+        retry-policy-branch-rollback-on-conflict: true
+    tm:
+      default-global-transaction-timeout: 180000

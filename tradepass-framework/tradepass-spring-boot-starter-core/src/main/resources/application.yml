@@ -1,0 +1,108 @@
+server:
+  port: 9999
+
+seata:
+  enabled: false
+
+# Business routes keep their original port. Management endpoints are opt-in.
+management:
+  server:
+    port: ${MANAGEMENT_PORT:10099}
+    address: ${MANAGEMENT_ADDRESS:127.0.0.1}
+  endpoints:
+    enabled-by-default: false
+
+wechat:
+  app-id: ${WECHAT_APP_ID:wxd6d1e93a3868253e}
+  app-secret: ${WECHAT_APP_SECRET:}
+  cloud-open-api-enabled: ${WECHAT_CLOUD_OPEN_API_ENABLED:false}
+
+tradepass:
+  dev:
+    enabled: ${TRADEPASS_DEV_ENABLED:false}
+  demo-data:
+    enabled: ${TRADEPASS_DEMO_DATA_ENABLED:false}
+  experience-test-accounts:
+    enabled: ${TRADEPASS_EXPERIENCE_TEST_ACCOUNTS_ENABLED:false}
+  migration:
+    allow-destructive-v5: ${TRADEPASS_ALLOW_DESTRUCTIVE_V5:false}
+  auth:
+    session-hours: ${TRADEPASS_SESSION_HOURS:168}
+  verification:
+    callback-token: ${TRADEPASS_VERIFICATION_CALLBACK_TOKEN:}
+  ca:
+    mock-enabled: ${TRADEPASS_CA_MOCK_ENABLED:false}
+  fadada:
+    enabled: ${FADADA_ENABLED:false}
+    app-id: ${FADADA_APP_ID:}
+    app-secret: ${FADADA_APP_SECRET:}
+    server-url: ${FADADA_SERVER_URL:https://api.fadada.com/api/v5}
+    callback-url: ${FADADA_CALLBACK_URL:}
+  redis:
+    enabled: ${TRADEPASS_REDIS_ENABLED:false}
+    key-prefix: ${TRADEPASS_REDIS_KEY_PREFIX:tradepass}
+    auth-cache-ttl: ${TRADEPASS_REDIS_AUTH_CACHE_TTL:60s}
+    ranking-cache-ttl: ${TRADEPASS_REDIS_RANKING_CACHE_TTL:30s}
+    wechat-local-cache-ttl: ${TRADEPASS_REDIS_WECHAT_LOCAL_CACHE_TTL:5m}
+  storage:
+    provider: ${TRADEPASS_STORAGE_PROVIDER:cloudbase-cos}
+    oss:
+      endpoint: ${OSS_ENDPOINT:}
+      region: ${OSS_REGION:}
+      bucket: ${OSS_BUCKET:}
+      legacy-cos-bucket: ${TRADEPASS_LEGACY_COS_BUCKET:}
+      legacy-cos-region: ${TRADEPASS_LEGACY_COS_REGION:ap-shanghai}
+      legacy-cos-key-prefix: ${TRADEPASS_LEGACY_COS_KEY_PREFIX:tradepass}
+    enabled: ${TRADEPASS_STORAGE_ENABLED:false}
+    required: ${TRADEPASS_STORAGE_REQUIRED:false}
+    migrate-legacy-blobs: ${TRADEPASS_STORAGE_MIGRATE_LEGACY_BLOBS:false}
+    bucket: ${CLOUDBASE_STORAGE_BUCKET:}
+    region: ${CLOUDBASE_STORAGE_REGION:ap-shanghai}
+    key-prefix: ${TRADEPASS_STORAGE_KEY_PREFIX:tradepass}
+    connection-timeout-millis: ${CLOUDBASE_STORAGE_CONNECTION_TIMEOUT_MILLIS:5000}
+    socket-timeout-millis: ${CLOUDBASE_STORAGE_SOCKET_TIMEOUT_MILLIS:30000}
+    credential-refresh-skew-seconds: ${CLOUDBASE_STORAGE_CREDENTIAL_REFRESH_SKEW_SECONDS:60}
+
+spring:
+  cloud:
+    nacos:
+      discovery:
+        enabled: false
+      config:
+        enabled: false
+        import-check:
+          enabled: false
+    sentinel:
+      enabled: false
+    loadbalancer:
+      retry:
+        enabled: false
+  application:
+    name: tradepass
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:1119}
+      password: ${REDIS_PASSWORD:}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:1s}
+      timeout: ${REDIS_TIMEOUT:1s}
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:1118}/tradepass?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+    username: ${DB_USERNAME:tradepass}
+    password: ${DB_PASSWORD:tradepass_pwd}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+
+mybatis-plus:
+  global-config:
+    db-config:
+      id-type: assign_id
+  configuration:
+    map-underscore-to-camel-case: true

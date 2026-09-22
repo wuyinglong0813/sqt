@@ -1,0 +1,95 @@
+name: tradepass-observability
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.4
+    restart: unless-stopped
+    networks: [services]
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: 'true'
+      xpack.security.http.ssl.enabled: 'false'
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?Set an Elasticsearch password}
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+    volumes: [elastic-data:/usr/share/elasticsearch/data]
+    healthcheck:
+      test: [CMD-SHELL, 'curl --fail --silent -u "elastic:$${ELASTIC_PASSWORD}" http://localhost:9200/_cluster/health > /dev/null']
+      interval: 15s
+      timeout: 5s
+      retries: 30
+  elastic-init:
+    image: curlimages/curl:8.12.1
+    restart: 'no'
+    networks: [services]
+    depends_on:
+      elasticsearch: {condition: service_healthy}
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?Set an Elasticsearch password}
+      KIBANA_PASSWORD: ${KIBANA_PASSWORD:?Set an independent alphanumeric Kibana password}
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        case "$${KIBANA_PASSWORD}" in *[!a-zA-Z0-9]*) exit 1;; esac
+        curl --fail --silent --show-error -u "elastic:$${ELASTIC_PASSWORD}" -H 'Content-Type: application/json' -X POST http://elasticsearch:9200/_security/user/kibana_system/_password -d "{\"password\":\"$${KIBANA_PASSWORD}\"}"
+        curl --fail --silent --show-error -u "elastic:$${ELASTIC_PASSWORD}" -H 'Content-Type: application/json' -X PUT http://elasticsearch:9200/_ilm/policy/tradepass-logs -d '{"policy":{"phases":{"delete":{"min_age":"14d","actions":{"delete":{}}}}}}'
+        curl --fail --silent --show-error -u "elastic:$${ELASTIC_PASSWORD}" -H 'Content-Type: application/json' -X PUT http://elasticsearch:9200/_index_template/tradepass-logs -d '{"index_patterns":["tradepass-logs-*"],"template":{"settings":{"index.lifecycle.name":"tradepass-logs","number_of_shards":1,"number_of_replicas":0}}}'
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.17.4
+    restart: unless-stopped
+    networks: [services]
+    depends_on:
+      elastic-init: {condition: service_completed_successfully}
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?Set an Elasticsearch password}
+      LS_JAVA_OPTS: -Xms256m -Xmx512m
+      XPACK_MONITORING_ENABLED: 'false'
+    volumes: [./elk/logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro]
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.17.4
+    restart: unless-stopped
+    user: '0:0'
+    networks: [services]
+    read_only: true
+    command: [filebeat, -e, --strict.perms=false]
+    volumes:
+      - ./elk/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - filebeat-data:/usr/share/filebeat/data
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.4
+    restart: unless-stopped
+    networks: [services]
+    depends_on:
+      elastic-init: {condition: service_completed_successfully}
+    ports: ['127.0.0.1:15601:5601']
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: ${KIBANA_PASSWORD:?Set an independent Kibana password}
+  skywalking-oap:
+    image: apache/skywalking-oap-server:10.1.0
+    restart: unless-stopped
+    networks: [services]
+    depends_on:
+      elasticsearch: {condition: service_healthy}
+    environment:
+      SW_STORAGE: elasticsearch
+      SW_STORAGE_ES_CLUSTER_NODES: elasticsearch:9200
+      SW_ES_USER: elastic
+      SW_ES_PASSWORD: ${ELASTIC_PASSWORD:?Set an Elasticsearch password}
+      SW_STORAGE_ES_INDEX_SHARDS_NUMBER: 1
+      SW_STORAGE_ES_INDEX_REPLICAS_NUMBER: 0
+      JAVA_OPTS: -Xms256m -Xmx768m
+  skywalking-ui:
+    image: apache/skywalking-ui:10.1.0
+    restart: unless-stopped
+    networks: [services]
+    ports: ['127.0.0.1:18081:8080']
+    environment:
+      SW_OAP_ADDRESS: http://skywalking-oap:12800
+networks:
+  services:
+    external: true
+    name: ${TRADEPASS_NETWORK_NAME:-tradepass-server}
+volumes:
+  elastic-data: {}
+  filebeat-data: {}

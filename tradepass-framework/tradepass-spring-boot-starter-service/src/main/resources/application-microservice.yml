@@ -1,0 +1,33 @@
+server:
+  port: ${SERVER_PORT:${tradepass.runtime.port}}
+spring:
+  application:
+    name: tradepass-${tradepass.runtime.role}
+  flyway:
+    enabled: false
+  datasource:
+    url: ${TRADEPASS_DATABASE_URL:jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:1118}/tradepass?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai}
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 3000
+            readTimeout: 30000
+            loggerLevel: none
+tradepass:
+  services:
+    identity-url: ${TRADEPASS_IDENTITY_URL:http://127.0.0.1:1111}
+    file-url: ${TRADEPASS_FILE_URL:http://127.0.0.1:1115}
+    internal-key: ${TRADEPASS_INTERNAL_KEY:}
+  ids:
+    worker-id: ${TRADEPASS_IDS_WORKER_ID}
+    datacenter-id: ${TRADEPASS_IDS_DATACENTER_ID}
+wechat:
+  cloud-open-api-enabled: false
+management:
+  server:
+    port: ${MANAGEMENT_PORT:${tradepass.runtime.management-port}}
+  health:
+    redis:
+      enabled: ${TRADEPASS_REDIS_ENABLED:false}

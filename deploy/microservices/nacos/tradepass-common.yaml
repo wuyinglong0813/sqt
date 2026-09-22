@@ -1,0 +1,14 @@
+# Data ID: tradepass-common.yaml; group: TRADEPASS; namespace: target environment.
+# Database credentials, internal keys and cloud credentials remain in environment/Secrets.
+spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 3000
+            readTimeout: 30000
+            loggerLevel: none
+    loadbalancer:
+      retry:
+        enabled: false

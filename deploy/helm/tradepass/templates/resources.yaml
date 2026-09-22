@@ -1,0 +1,1517 @@
+---
+{
+  "apiVersion": "v1",
+  "kind": "ConfigMap",
+  "metadata": {
+    "name": {{ printf "tradepass-runtime-%s" (.Values.runtime | toJson | sha256sum | trunc 12) | quote }},
+    "namespace": {{ .Release.Namespace | quote }}
+  },
+  "data": {{ mergeOverwrite (dict "SERVER_PORT" "8080" "MANAGEMENT_PORT" "8081" "MANAGEMENT_ADDRESS" "0.0.0.0" "SERVER_SHUTDOWN" "graceful" "SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE" "45s" "TRADEPASS_IDS_DATACENTER_ID" (.Values.datacenterId | toString) "TRADEPASS_DEV_ENABLED" "false" "TRADEPASS_DEMO_DATA_ENABLED" "false" "TRADEPASS_EXPERIENCE_TEST_ACCOUNTS_ENABLED" "false" "SEATA_SERVER_ADDR" "seata:8091" "SPRING_PROFILES_ACTIVE" "observability" "ROCKETMQ_NAME_SERVER" "rocketmq-namesrv:9876" "XXL_JOB_ADMIN_ADDRESSES" "http://xxl-job-admin:8080/xxl-job-admin" "TRADEPASS_STORAGE_ENABLED" "false" "TRADEPASS_STORAGE_REQUIRED" "false" "TRADEPASS_REDIS_ENABLED" "false" "TRADEPASS_IDENTITY_URL" "http://identity:8080" "TRADEPASS_CONTRACT_URL" "http://contract:8080" "TRADEPASS_TRADE_URL" "http://trade:8080" "TRADEPASS_SETTLEMENT_URL" "http://settlement:8080" "TRADEPASS_FILE_URL" "http://file:8080") .Values.runtime | toJson }}
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "ServiceAccount",
+  "metadata": {
+    "name": "tradepass-runtime",
+    "namespace": {{ .Release.Namespace | quote }}
+  },
+  "automountServiceAccountToken": false
+}
+---
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": {
+    "name": "identity",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "identity"
+    }
+  },
+  "spec": {
+    "replicas": {{ index .Values.replicas "identity" }},
+    "revisionHistoryLimit": 5,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/name": "tradepass",
+        "app.kubernetes.io/component": "identity"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "tradepass",
+          "app.kubernetes.io/component": "identity"
+        },
+        "annotations": {
+          "tradepass.io/revision": {{ .Values.revision | quote }},
+          "prometheus.io/scrape": "true",
+          "prometheus.io/port": "8081",
+          "prometheus.io/path": "/actuator/prometheus",
+          "tradepass.io/config": {{ printf "%s:%s:%s" (.Values.runtime | toJson) (.Values.datacenterId | toString) .Values.contractProfiles | sha256sum | quote }},
+          "tradepass.io/secrets": {{ .Values.secretRevision | quote }}
+        }
+      },
+      "spec": {
+        "serviceAccountName": "tradepass-runtime",
+        "automountServiceAccountToken": false,
+        "imagePullSecrets": [
+          {
+            "name": "tradepass-registry"
+          }
+        ],
+        "terminationGracePeriodSeconds": 60,
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 10001,
+          "runAsGroup": 10001,
+          "fsGroup": 10001,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "containers": [
+          {
+            "name": "identity",
+            "image": {{ index .Values.images "identity" | quote }},
+            "imagePullPolicy": "IfNotPresent",
+            "env": [
+              {
+                "name": "JAVA_OPTS",
+                "value": "-Xms64m -Xmx384m -XX:ActiveProcessorCount=2"
+              },
+              {
+                "name": "SW_AGENT_NAME",
+                "value": "tradepass-identity"
+              },
+              {
+                "name": "TRADEPASS_IDS_WORKER_BASE",
+                "value": "0"
+              },
+              {
+                "name": "TRADEPASS_POD_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "fieldPath": "metadata.name"
+                  }
+                }
+              }
+            ],
+            "envFrom": [
+              {
+                "configMapRef": {
+                  "name": {{ printf "tradepass-runtime-%s" (.Values.runtime | toJson | sha256sum | trunc 12) | quote }}
+                }
+              },
+              {
+                "secretRef": {
+                  "name": "tradepass-internal"
+                }
+              },
+              {
+                "secretRef": {
+                  "name": "tradepass-identity"
+                }
+              }
+            ],
+            "ports": [
+              {
+                "name": "http",
+                "containerPort": 8080
+              },
+              {
+                "name": "management",
+                "containerPort": 8081
+              }
+            ],
+            "resources": {
+              "requests": {
+                "cpu": "200m",
+                "memory": "256Mi"
+              },
+              "limits": {
+                "cpu": "2",
+                "memory": "1Gi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": true,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "volumeMounts": [
+              {
+                "name": "tmp",
+                "mountPath": "/tmp"
+              }
+            ],
+            "startupProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 60,
+              "timeoutSeconds": 3
+            },
+            "livenessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 15,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            },
+            "readinessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/readiness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "name": "tmp",
+            "emptyDir": {
+              "sizeLimit": "256Mi"
+            }
+          }
+        ]
+      }
+    },
+    "serviceName": "identity-pods",
+    "podManagementPolicy": "Parallel",
+    "updateStrategy": {
+      "type": "RollingUpdate"
+    }
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "identity-pods",
+    "namespace": {{ .Release.Namespace | quote }}
+  },
+  "spec": {
+    "clusterIP": "None",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "identity"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "identity",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "identity"
+    }
+  },
+  "spec": {
+    "type": "ClusterIP",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "identity"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      },
+      {
+        "name": "management",
+        "port": 8081,
+        "targetPort": "management"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": {
+    "name": "contract",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "contract"
+    }
+  },
+  "spec": {
+    "replicas": {{ index .Values.replicas "contract" }},
+    "revisionHistoryLimit": 5,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/name": "tradepass",
+        "app.kubernetes.io/component": "contract"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "tradepass",
+          "app.kubernetes.io/component": "contract"
+        },
+        "annotations": {
+          "tradepass.io/revision": {{ .Values.revision | quote }},
+          "prometheus.io/scrape": "true",
+          "prometheus.io/port": "8081",
+          "prometheus.io/path": "/actuator/prometheus",
+          "tradepass.io/config": {{ printf "%s:%s:%s" (.Values.runtime | toJson) (.Values.datacenterId | toString) .Values.contractProfiles | sha256sum | quote }},
+          "tradepass.io/secrets": {{ .Values.secretRevision | quote }}
+        }
+      },
+      "spec": {
+        "serviceAccountName": "tradepass-runtime",
+        "automountServiceAccountToken": false,
+        "imagePullSecrets": [
+          {
+            "name": "tradepass-registry"
+          }
+        ],
+        "terminationGracePeriodSeconds": 60,
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 10001,
+          "runAsGroup": 10001,
+          "fsGroup": 10001,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "containers": [
+          {
+            "name": "contract",
+            "image": {{ index .Values.images "contract" | quote }},
+            "imagePullPolicy": "IfNotPresent",
+            "env": [
+              {
+                "name": "JAVA_OPTS",
+                "value": "-Xms64m -Xmx384m -XX:ActiveProcessorCount=2"
+              },
+              {
+                "name": "SW_AGENT_NAME",
+                "value": "tradepass-contract"
+              },
+              {
+                "name": "TRADEPASS_IDS_WORKER_BASE",
+                "value": "6"
+              },
+              {
+                "name": "TRADEPASS_POD_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "fieldPath": "metadata.name"
+                  }
+                }
+              },
+              {
+                "name": "SPRING_PROFILES_ACTIVE",
+                "value": {{ .Values.contractProfiles | quote }}
+              }
+            ],
+            "envFrom": [
+              {
+                "configMapRef": {
+                  "name": {{ printf "tradepass-runtime-%s" (.Values.runtime | toJson | sha256sum | trunc 12) | quote }}
+                }
+              },
+              {
+                "secretRef": {
+                  "name": "tradepass-internal"
+                }
+              },
+              {
+                "secretRef": {
+                  "name": "tradepass-contract"
+                }
+              }
+            ],
+            "ports": [
+              {
+                "name": "http",
+                "containerPort": 8080
+              },
+              {
+                "name": "management",
+                "containerPort": 8081
+              },
+              {
+                "name": "jobs",
+                "containerPort": 9998
+              }
+            ],
+            "resources": {
+              "requests": {
+                "cpu": "200m",
+                "memory": "256Mi"
+              },
+              "limits": {
+                "cpu": "2",
+                "memory": "1Gi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": true,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "volumeMounts": [
+              {
+                "name": "tmp",
+                "mountPath": "/tmp"
+              }
+            ],
+            "startupProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 60,
+              "timeoutSeconds": 3
+            },
+            "livenessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 15,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            },
+            "readinessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/readiness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "name": "tmp",
+            "emptyDir": {
+              "sizeLimit": "256Mi"
+            }
+          }
+        ]
+      }
+    },
+    "serviceName": "contract-pods",
+    "podManagementPolicy": "Parallel",
+    "updateStrategy": {
+      "type": "RollingUpdate"
+    }
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "contract-pods",
+    "namespace": {{ .Release.Namespace | quote }}
+  },
+  "spec": {
+    "clusterIP": "None",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "contract"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "contract",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "contract"
+    }
+  },
+  "spec": {
+    "type": "ClusterIP",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "contract"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      },
+      {
+        "name": "management",
+        "port": 8081,
+        "targetPort": "management"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": {
+    "name": "trade",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "trade"
+    }
+  },
+  "spec": {
+    "replicas": {{ index .Values.replicas "trade" }},
+    "revisionHistoryLimit": 5,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/name": "tradepass",
+        "app.kubernetes.io/component": "trade"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "tradepass",
+          "app.kubernetes.io/component": "trade"
+        },
+        "annotations": {
+          "tradepass.io/revision": {{ .Values.revision | quote }},
+          "prometheus.io/scrape": "true",
+          "prometheus.io/port": "8081",
+          "prometheus.io/path": "/actuator/prometheus",
+          "tradepass.io/config": {{ printf "%s:%s:%s" (.Values.runtime | toJson) (.Values.datacenterId | toString) .Values.contractProfiles | sha256sum | quote }},
+          "tradepass.io/secrets": {{ .Values.secretRevision | quote }}
+        }
+      },
+      "spec": {
+        "serviceAccountName": "tradepass-runtime",
+        "automountServiceAccountToken": false,
+        "imagePullSecrets": [
+          {
+            "name": "tradepass-registry"
+          }
+        ],
+        "terminationGracePeriodSeconds": 60,
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 10001,
+          "runAsGroup": 10001,
+          "fsGroup": 10001,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "containers": [
+          {
+            "name": "trade",
+            "image": {{ index .Values.images "trade" | quote }},
+            "imagePullPolicy": "IfNotPresent",
+            "env": [
+              {
+                "name": "JAVA_OPTS",
+                "value": "-Xms64m -Xmx384m -XX:ActiveProcessorCount=2"
+              },
+              {
+                "name": "SW_AGENT_NAME",
+                "value": "tradepass-trade"
+              },
+              {
+                "name": "TRADEPASS_IDS_WORKER_BASE",
+                "value": "12"
+              },
+              {
+                "name": "TRADEPASS_POD_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "fieldPath": "metadata.name"
+                  }
+                }
+              }
+            ],
+            "envFrom": [
+              {
+                "configMapRef": {
+                  "name": {{ printf "tradepass-runtime-%s" (.Values.runtime | toJson | sha256sum | trunc 12) | quote }}
+                }
+              },
+              {
+                "secretRef": {
+                  "name": "tradepass-internal"
+                }
+              },
+              {
+                "secretRef": {
+                  "name": "tradepass-trade"
+                }
+              }
+            ],
+            "ports": [
+              {
+                "name": "http",
+                "containerPort": 8080
+              },
+              {
+                "name": "management",
+                "containerPort": 8081
+              }
+            ],
+            "resources": {
+              "requests": {
+                "cpu": "200m",
+                "memory": "256Mi"
+              },
+              "limits": {
+                "cpu": "2",
+                "memory": "1Gi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": true,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "volumeMounts": [
+              {
+                "name": "tmp",
+                "mountPath": "/tmp"
+              }
+            ],
+            "startupProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 60,
+              "timeoutSeconds": 3
+            },
+            "livenessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 15,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            },
+            "readinessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/readiness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "name": "tmp",
+            "emptyDir": {
+              "sizeLimit": "256Mi"
+            }
+          }
+        ]
+      }
+    },
+    "serviceName": "trade-pods",
+    "podManagementPolicy": "Parallel",
+    "updateStrategy": {
+      "type": "RollingUpdate"
+    }
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "trade-pods",
+    "namespace": {{ .Release.Namespace | quote }}
+  },
+  "spec": {
+    "clusterIP": "None",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "trade"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "trade",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "trade"
+    }
+  },
+  "spec": {
+    "type": "ClusterIP",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "trade"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      },
+      {
+        "name": "management",
+        "port": 8081,
+        "targetPort": "management"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": {
+    "name": "settlement",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "settlement"
+    }
+  },
+  "spec": {
+    "replicas": {{ index .Values.replicas "settlement" }},
+    "revisionHistoryLimit": 5,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/name": "tradepass",
+        "app.kubernetes.io/component": "settlement"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "tradepass",
+          "app.kubernetes.io/component": "settlement"
+        },
+        "annotations": {
+          "tradepass.io/revision": {{ .Values.revision | quote }},
+          "prometheus.io/scrape": "true",
+          "prometheus.io/port": "8081",
+          "prometheus.io/path": "/actuator/prometheus",
+          "tradepass.io/config": {{ printf "%s:%s:%s" (.Values.runtime | toJson) (.Values.datacenterId | toString) .Values.contractProfiles | sha256sum | quote }},
+          "tradepass.io/secrets": {{ .Values.secretRevision | quote }}
+        }
+      },
+      "spec": {
+        "serviceAccountName": "tradepass-runtime",
+        "automountServiceAccountToken": false,
+        "imagePullSecrets": [
+          {
+            "name": "tradepass-registry"
+          }
+        ],
+        "terminationGracePeriodSeconds": 60,
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 10001,
+          "runAsGroup": 10001,
+          "fsGroup": 10001,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "containers": [
+          {
+            "name": "settlement",
+            "image": {{ index .Values.images "settlement" | quote }},
+            "imagePullPolicy": "IfNotPresent",
+            "env": [
+              {
+                "name": "JAVA_OPTS",
+                "value": "-Xms64m -Xmx384m -XX:ActiveProcessorCount=2"
+              },
+              {
+                "name": "SW_AGENT_NAME",
+                "value": "tradepass-settlement"
+              },
+              {
+                "name": "TRADEPASS_IDS_WORKER_BASE",
+                "value": "18"
+              },
+              {
+                "name": "TRADEPASS_POD_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "fieldPath": "metadata.name"
+                  }
+                }
+              }
+            ],
+            "envFrom": [
+              {
+                "configMapRef": {
+                  "name": {{ printf "tradepass-runtime-%s" (.Values.runtime | toJson | sha256sum | trunc 12) | quote }}
+                }
+              },
+              {
+                "secretRef": {
+                  "name": "tradepass-internal"
+                }
+              },
+              {
+                "secretRef": {
+                  "name": "tradepass-settlement"
+                }
+              }
+            ],
+            "ports": [
+              {
+                "name": "http",
+                "containerPort": 8080
+              },
+              {
+                "name": "management",
+                "containerPort": 8081
+              }
+            ],
+            "resources": {
+              "requests": {
+                "cpu": "200m",
+                "memory": "256Mi"
+              },
+              "limits": {
+                "cpu": "2",
+                "memory": "1Gi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": true,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "volumeMounts": [
+              {
+                "name": "tmp",
+                "mountPath": "/tmp"
+              }
+            ],
+            "startupProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 60,
+              "timeoutSeconds": 3
+            },
+            "livenessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 15,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            },
+            "readinessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/readiness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "name": "tmp",
+            "emptyDir": {
+              "sizeLimit": "256Mi"
+            }
+          }
+        ]
+      }
+    },
+    "serviceName": "settlement-pods",
+    "podManagementPolicy": "Parallel",
+    "updateStrategy": {
+      "type": "RollingUpdate"
+    }
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "settlement-pods",
+    "namespace": {{ .Release.Namespace | quote }}
+  },
+  "spec": {
+    "clusterIP": "None",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "settlement"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "settlement",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "settlement"
+    }
+  },
+  "spec": {
+    "type": "ClusterIP",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "settlement"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      },
+      {
+        "name": "management",
+        "port": 8081,
+        "targetPort": "management"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": {
+    "name": "file",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "file"
+    }
+  },
+  "spec": {
+    "replicas": {{ index .Values.replicas "file" }},
+    "revisionHistoryLimit": 5,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/name": "tradepass",
+        "app.kubernetes.io/component": "file"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "tradepass",
+          "app.kubernetes.io/component": "file"
+        },
+        "annotations": {
+          "tradepass.io/revision": {{ .Values.revision | quote }},
+          "prometheus.io/scrape": "true",
+          "prometheus.io/port": "8081",
+          "prometheus.io/path": "/actuator/prometheus",
+          "tradepass.io/config": {{ printf "%s:%s:%s" (.Values.runtime | toJson) (.Values.datacenterId | toString) .Values.contractProfiles | sha256sum | quote }},
+          "tradepass.io/secrets": {{ .Values.secretRevision | quote }}
+        }
+      },
+      "spec": {
+        "serviceAccountName": "tradepass-runtime",
+        "automountServiceAccountToken": false,
+        "imagePullSecrets": [
+          {
+            "name": "tradepass-registry"
+          }
+        ],
+        "terminationGracePeriodSeconds": 60,
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 10001,
+          "runAsGroup": 10001,
+          "fsGroup": 10001,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "containers": [
+          {
+            "name": "file",
+            "image": {{ index .Values.images "file" | quote }},
+            "imagePullPolicy": "IfNotPresent",
+            "env": [
+              {
+                "name": "JAVA_OPTS",
+                "value": "-Xms64m -Xmx384m -XX:ActiveProcessorCount=2"
+              },
+              {
+                "name": "SW_AGENT_NAME",
+                "value": "tradepass-file"
+              },
+              {
+                "name": "TRADEPASS_IDS_WORKER_BASE",
+                "value": "24"
+              },
+              {
+                "name": "TRADEPASS_POD_NAME",
+                "valueFrom": {
+                  "fieldRef": {
+                    "fieldPath": "metadata.name"
+                  }
+                }
+              }
+            ],
+            "envFrom": [
+              {
+                "configMapRef": {
+                  "name": {{ printf "tradepass-runtime-%s" (.Values.runtime | toJson | sha256sum | trunc 12) | quote }}
+                }
+              },
+              {
+                "secretRef": {
+                  "name": "tradepass-internal"
+                }
+              },
+              {
+                "secretRef": {
+                  "name": "tradepass-file"
+                }
+              }
+            ],
+            "ports": [
+              {
+                "name": "http",
+                "containerPort": 8080
+              },
+              {
+                "name": "management",
+                "containerPort": 8081
+              }
+            ],
+            "resources": {
+              "requests": {
+                "cpu": "200m",
+                "memory": "256Mi"
+              },
+              "limits": {
+                "cpu": "2",
+                "memory": "1Gi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": true,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "volumeMounts": [
+              {
+                "name": "tmp",
+                "mountPath": "/tmp"
+              }
+            ],
+            "startupProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 60,
+              "timeoutSeconds": 3
+            },
+            "livenessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 15,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            },
+            "readinessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/readiness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "name": "tmp",
+            "emptyDir": {
+              "sizeLimit": "256Mi"
+            }
+          }
+        ]
+      }
+    },
+    "serviceName": "file-pods",
+    "podManagementPolicy": "Parallel",
+    "updateStrategy": {
+      "type": "RollingUpdate"
+    }
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "file-pods",
+    "namespace": {{ .Release.Namespace | quote }}
+  },
+  "spec": {
+    "clusterIP": "None",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "file"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "file",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "file"
+    }
+  },
+  "spec": {
+    "type": "ClusterIP",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "file"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      },
+      {
+        "name": "management",
+        "port": 8081,
+        "targetPort": "management"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "gateway",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "gateway"
+    }
+  },
+  "spec": {
+    "replicas": {{ index .Values.replicas "gateway" }},
+    "revisionHistoryLimit": 5,
+    "progressDeadlineSeconds": 420,
+    "strategy": {
+      "type": "Recreate"
+    },
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/name": "tradepass",
+        "app.kubernetes.io/component": "gateway"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "tradepass",
+          "app.kubernetes.io/component": "gateway"
+        },
+        "annotations": {
+          "tradepass.io/revision": {{ .Values.revision | quote }},
+          "prometheus.io/scrape": "true",
+          "prometheus.io/port": "8081",
+          "prometheus.io/path": "/actuator/prometheus",
+          "tradepass.io/config": {{ printf "%s:%s:%s" (.Values.runtime | toJson) (.Values.datacenterId | toString) .Values.contractProfiles | sha256sum | quote }},
+          "tradepass.io/secrets": {{ .Values.secretRevision | quote }}
+        }
+      },
+      "spec": {
+        "serviceAccountName": "tradepass-runtime",
+        "automountServiceAccountToken": false,
+        "imagePullSecrets": [
+          {
+            "name": "tradepass-registry"
+          }
+        ],
+        "terminationGracePeriodSeconds": 60,
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 10001,
+          "runAsGroup": 10001,
+          "fsGroup": 10001,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "containers": [
+          {
+            "name": "gateway",
+            "image": {{ index .Values.images "gateway" | quote }},
+            "imagePullPolicy": "IfNotPresent",
+            "env": [
+              {
+                "name": "JAVA_OPTS",
+                "value": "-Xms64m -Xmx256m -XX:ActiveProcessorCount=2"
+              },
+              {
+                "name": "SW_AGENT_NAME",
+                "value": "tradepass-gateway"
+              }
+            ],
+            "envFrom": [
+              {
+                "configMapRef": {
+                  "name": {{ printf "tradepass-runtime-%s" (.Values.runtime | toJson | sha256sum | trunc 12) | quote }}
+                }
+              }
+            ],
+            "ports": [
+              {
+                "name": "http",
+                "containerPort": 8080
+              },
+              {
+                "name": "management",
+                "containerPort": 8081
+              }
+            ],
+            "resources": {
+              "requests": {
+                "cpu": "200m",
+                "memory": "256Mi"
+              },
+              "limits": {
+                "cpu": "2",
+                "memory": "512Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": true,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              }
+            },
+            "volumeMounts": [
+              {
+                "name": "tmp",
+                "mountPath": "/tmp"
+              }
+            ],
+            "startupProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 60,
+              "timeoutSeconds": 3
+            },
+            "livenessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/liveness",
+                "port": "management"
+              },
+              "periodSeconds": 15,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            },
+            "readinessProbe": {
+              "httpGet": {
+                "path": "/actuator/health/readiness",
+                "port": "management"
+              },
+              "periodSeconds": 5,
+              "failureThreshold": 3,
+              "timeoutSeconds": 3
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "name": "tmp",
+            "emptyDir": {
+              "sizeLimit": "256Mi"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+---
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "name": "gateway",
+    "namespace": {{ .Release.Namespace | quote }},
+    "labels": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "gateway"
+    }
+  },
+  "spec": {
+    "type": "ClusterIP",
+    "selector": {
+      "app.kubernetes.io/name": "tradepass",
+      "app.kubernetes.io/component": "gateway"
+    },
+    "ports": [
+      {
+        "name": "http",
+        "port": 8080,
+        "targetPort": "http"
+      },
+      {
+        "name": "management",
+        "port": 8081,
+        "targetPort": "management"
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "NetworkPolicy",
+  "metadata": {
+    "name": "tradepass-private-ingress",
+    "namespace": {{ .Release.Namespace | quote }}
+  },
+  "spec": {
+    "podSelector": {
+      "matchLabels": {
+        "app.kubernetes.io/name": "tradepass"
+      }
+    },
+    "policyTypes": [
+      "Ingress"
+    ],
+    "ingress": [
+      {
+        "from": [
+          {
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/name": "tradepass"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "protocol": "TCP",
+            "port": 8080
+          }
+        ]
+      },
+      {
+        "from": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "monitoring"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "protocol": "TCP",
+            "port": 8081
+          }
+        ]
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "NetworkPolicy",
+  "metadata": {
+    "name": "tradepass-job-ingress",
+    "namespace": {{ .Release.Namespace | quote }}
+  },
+  "spec": {
+    "podSelector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "contract"
+      }
+    },
+    "policyTypes": [
+      "Ingress"
+    ],
+    "ingress": [
+      {
+        "from": [
+          {
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "xxl-job-admin"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "protocol": "TCP",
+            "port": 9998
+          }
+        ]
+      }
+    ]
+  }
+}
+---
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "NetworkPolicy",
+  "metadata": {
+    "name": "tradepass-gateway-ingress",
+    "namespace": {{ .Release.Namespace | quote }}
+  },
+  "spec": {
+    "podSelector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "gateway"
+      }
+    },
+    "policyTypes": [
+      "Ingress"
+    ],
+    "ingress": [
+      {
+        "from": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "ingress-system"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "protocol": "TCP",
+            "port": 8080
+          }
+        ]
+      }
+    ]
+  }
+}

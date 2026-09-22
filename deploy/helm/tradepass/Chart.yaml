@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tradepass
+description: TradePass services with separate databases and Seata coordination
+type: application
+version: 0.2.0
+appVersion: "0.1.0"

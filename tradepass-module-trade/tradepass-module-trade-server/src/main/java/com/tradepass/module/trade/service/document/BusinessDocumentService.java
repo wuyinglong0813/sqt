@@ -1,0 +1,61 @@
+package com.tradepass.module.trade.service.document;
+
+import com.tradepass.module.trade.service.approval.ApprovalService;
+import com.tradepass.module.trade.service.bilateral.BilateralActionService;
+import com.tradepass.module.trade.service.inventory.SalesOrderInventoryService;
+import static com.tradepass.module.trade.api.document.BusinessDocumentOperations.*;
+import com.tradepass.module.identity.api.permission.AccessControlOperations;
+import com.tradepass.module.identity.api.permission.AccessControlOperations.*;
+import com.tradepass.module.identity.api.user.UserIdentityOperations;
+import com.tradepass.module.identity.api.user.UserIdentityOperations.*;
+import com.tradepass.framework.audit.core.AuditLogService;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.tradepass.framework.common.core.AuthContext;
+import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.module.trade.dal.dataobject.document.BusinessDocumentDO;
+import com.tradepass.module.trade.dal.dataobject.document.BusinessDocumentTemplateDO;
+import com.tradepass.module.identity.api.company.dto.CompanyRespDTO;
+import com.tradepass.module.contract.api.contract.dto.TradeContractRespDTO;
+import com.tradepass.module.trade.dal.mysql.document.BusinessDocumentMapper;
+import com.tradepass.module.trade.dal.mysql.document.BusinessDocumentTemplateMapper;
+import com.tradepass.module.identity.api.company.CompanyReader;
+import com.tradepass.module.identity.api.company.CompanyReader.*;
+import com.tradepass.module.contract.api.contract.ContractReader;
+import com.tradepass.module.contract.api.contract.ContractReader.*;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Autowired;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+
+public interface BusinessDocumentService {
+    public static final String SALES_ORDER = "SALES_ORDER";
+    public static final String RETURN_ORDER = "RETURN_ORDER";
+
+    void setApprovalService(ApprovalService approvalService);
+    void setBilateralActionService(BilateralActionService bilateralActionService);
+    List<Map<String, Object>> listTemplates(String type);
+    Map<String, Object> createTemplate(Map<String, Object> body);
+    String deleteTemplate(Long id);
+    List<Map<String, Object>> listDocuments(Long contractId, String type);
+    Map<String, Object> createDocument(Long contractId, Map<String, Object> body);
+    Map<String, Object> updateDraft(Long id, Map<String, Object> body);
+    Map<String, Object> publishDraft(Long id);
+    Map<String, Object> publishDraft(Long id, Long warehouseId);
+    BusinessDocumentDO getDocument(Long id);
+    String deleteDraft(Long id);
+    String withdraw(Long id);
+    String typeLabel(String type);
+    String defaultTemplateContent(String type);
+}

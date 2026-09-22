@@ -1,0 +1,13 @@
+**
+!Dockerfile
+!entrypoint.sh
+!scripts/
+!scripts/server/
+!scripts/server/arthas.sh
+!tradepass-gateway/
+!tradepass-gateway/target/
+!tradepass-gateway/target/tradepass-gateway-0.1.0-SNAPSHOT.jar
+!tradepass-module-*/
+!tradepass-module-*/tradepass-module-*-server/
+!tradepass-module-*/tradepass-module-*-server/target/
+!tradepass-module-*/tradepass-module-*-server/target/tradepass-module-*-server-0.1.0-SNAPSHOT.jar

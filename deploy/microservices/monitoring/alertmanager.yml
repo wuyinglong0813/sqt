@@ -1,0 +1,9 @@
+route:
+  receiver: local-review
+  group_by: [alertname, application]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+# Alerts are visible in Alertmanager. Add an approved receiver before relying on notifications.
+receivers:
+  - name: local-review

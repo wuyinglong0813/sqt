@@ -1,0 +1,6 @@
+{
+  "identity": ["sys_user", "company", "company_member", "company_invite", "role_def", "perm_def", "counterparty_relation", "auth_session", "company_certification_application", "fadada_user_identity", "fadada_corp_identity", "fadada_corp_seal", "member_removal_notice"],
+  "contract": ["contract_template", "template_category", "trade_contract", "contract_archive", "fadada_callback_event", "fadada_contract_sign_task", "fadada_cancelled_abolish_task", "fadada_abolish_creation_intent"],
+  "trade": ["trade_order", "business_document_template", "business_document", "logistics_document", "business_memo", "business_document_item", "warehouse", "inventory_product", "sales_order_receipt", "inventory_inbound", "inventory_inbound_item", "inventory_balance", "inventory_transaction", "project_ledger", "project_contract_assignment", "approval_result_notification", "bilateral_action_request", "inventory_transfer", "project_contract_prompt_preference", "inventory_manual_entry"],
+  "settlement": ["contract_attachment", "reconciliation_statement", "reconciliation_entry"]
+}

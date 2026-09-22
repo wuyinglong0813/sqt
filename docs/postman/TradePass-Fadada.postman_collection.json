@@ -1,0 +1,1129 @@
+{
+  "info": {
+    "name": "TradePass 当前法大大接口",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "依据仓库及 fasc-openapi-java-sdk 5.8.7.0428.3 生成。19 个服务商 API + PDF PUT + 11 个商签通业务入口。请逐项发送，不要全量运行创建/撤回/作废文件夹。凭据留空，签名在本地自动计算。"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const CryptoJS = require('crypto-js');",
+          "const url = pm.request.url.toString();",
+          "if (url.startsWith('{{fdd_base_url}}')) {",
+          "  const get = key => pm.variables.get(key);",
+          "  if (!get('fdd_app_id') || !get('fdd_app_secret')) throw new Error('请填写 fdd_app_id 和 fdd_app_secret');",
+          "  const tokenRequest = url.includes('/service/get-access-token');",
+          "  const headers = {",
+          "    'X-FASC-App-Id': get('fdd_app_id'),",
+          "    'X-FASC-Api-SubVersion': '5.1',",
+          "    'X-FASC-Sign-Type': 'HMAC-SHA256',",
+          "    'X-FASC-Timestamp': String(Date.now()),",
+          "    'X-FASC-Nonce': pm.variables.replaceIn('{{$guid}}').replace(/-/g, '')",
+          "  };",
+          "  if (tokenRequest) headers['X-FASC-Grant-Type'] = 'client_credential';",
+          "  else {",
+          "    if (!get('fdd_access_token')) throw new Error('请先执行获取访问令牌');",
+          "    headers['X-FASC-AccessToken'] = get('fdd_access_token');",
+          "  }",
+          "  const signing = Object.assign({}, headers);",
+          "  if (!tokenRequest) {",
+          "    const field = pm.request.body.urlencoded.find(p => p.key === 'bizContent' && !p.disabled);",
+          "    let body = pm.variables.replaceIn(field.value);",
+          "    if (/{{[^}]+}}/.test(body)) throw new Error('请求中存在未填写的变量');",
+          "    const data = JSON.parse(body);",
+          "    if (data.callbackUrl === '') delete data.callbackUrl;",
+          "    body = JSON.stringify(data);",
+          "    pm.request.body.urlencoded.upsert({key: 'bizContent', value: body});",
+          "    signing.bizContent = body;",
+          "  }",
+          "  const sorted = Object.keys(signing).filter(k => String(signing[k]).trim()).sort().map(k => k + '=' + signing[k]).join('&');",
+          "  const hash = CryptoJS.SHA256(sorted).toString(CryptoJS.enc.Hex);",
+          "  const key = CryptoJS.HmacSHA256(headers['X-FASC-Timestamp'], get('fdd_app_secret'));",
+          "  headers['X-FASC-Sign'] = CryptoJS.HmacSHA256(hash, key).toString(CryptoJS.enc.Hex);",
+          "  Object.entries(headers).forEach(([key,value]) => pm.request.headers.upsert({key,value}));",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "01 访问令牌",
+      "item": [
+        {
+          "name": "获取访问令牌",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/service/get-access-token",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": []
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  if (r.data.accessToken !== undefined && r.data.accessToken !== null) pm.environment.set('fdd_access_token', String(r.data.accessToken));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 个人认证",
+      "item": [
+        {
+          "name": "获取个人认证地址（手机号可修改）",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/user/get-auth-url",
+            "description": "打开响应中的 authUrl 完成认证。未传不可编辑字段和小程序内部返回路径。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"clientUserId\": \"{{client_user_id}}\",\n  \"accountName\": \"{{phone}}\",\n  \"authScopes\": [\n    \"ident_info\"\n  ],\n  \"callbackUrl\": \"{{callback_url}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "查询个人账号及授权状态",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/user/get",
+            "description": "如按 openUserId 查询，请替换 clientUserId 字段；不要同时传两种标识。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"clientUserId\": \"{{client_user_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  if (r.data.openUserId !== undefined && r.data.openUserId !== null) pm.environment.set('open_user_id', String(r.data.openUserId));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "查询个人实名信息",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/user/get-identity-info",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"openUserId\": \"{{open_user_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 企业认证与印章",
+      "item": [
+        {
+          "name": "获取企业认证地址",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/corp/get-auth-url",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"clientCorpId\": \"{{client_corp_id}}\",\n  \"clientUserId\": \"{{client_user_id}}\",\n  \"corpName\": \"{{company_name}}\",\n  \"corpIdentNo\": \"{{credit_code}}\",\n  \"corpIdentInfoMatch\": true,\n  \"corpNonEditableInfo\": [\n    \"corpName\",\n    \"corpIdentNo\"\n  ],\n  \"authScopes\": [\n    \"ident_info\",\n    \"seal_info\",\n    \"signtask_init\",\n    \"signtask_info\",\n    \"signtask_file\"\n  ],\n  \"callbackUrl\": \"{{callback_url}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "查询企业账号及授权状态",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/corp/get",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"clientCorpId\": \"{{client_corp_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  if (r.data.openCorpId !== undefined && r.data.openCorpId !== null) pm.environment.set('open_corp_id', String(r.data.openCorpId));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "查询企业实名信息",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/corp/get-identity-info",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"openCorpId\": \"{{open_corp_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "查询企业印章",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/seal/get-seal-info-list",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"openCorpId\": \"{{open_corp_id}}\",\n  \"listPageNo\": 1,\n  \"listPageSize\": 100\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "获取印章管理地址",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/seal/manage/get-url",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"openCorpId\": \"{{open_corp_id}}\",\n  \"clientUserId\": \"{{client_user_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 合同文件上传与处理",
+      "item": [
+        {
+          "name": "获取上传地址",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/file/get-upload-url",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"fileType\": \"doc\",\n  \"storageType\": \"cloud\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  if (r.data.uploadUrl !== undefined && r.data.uploadUrl !== null) pm.environment.set('upload_url', String(r.data.uploadUrl));",
+                  "  if (r.data.fddFileUrl !== undefined && r.data.fddFileUrl !== null) pm.environment.set('fdd_file_url', String(r.data.fddFileUrl));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "上传 PDF 二进制（Body 中手动选择文件）",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/octet-stream"
+              }
+            ],
+            "url": "{{upload_url}}",
+            "body": {
+              "mode": "file",
+              "file": {}
+            },
+            "description": "使用上一请求得到的临时上传地址，不附加法大大签名头。"
+          }
+        },
+        {
+          "name": "处理上传文件",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/file/process",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"storageType\": \"cloud\",\n  \"separation\": false,\n  \"fddFileUrlList\": [\n    {\n      \"fileType\": \"doc\",\n      \"fddFileUrl\": \"{{fdd_file_url}}\",\n      \"fileName\": \"{{file_name}}\",\n      \"fileFormat\": \"pdf\"\n    }\n  ]\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  if (r.data.fileIdList && r.data.fileIdList[0] && r.data.fileIdList[0].fileId !== undefined && r.data.fileIdList && r.data.fileIdList[0] && r.data.fileIdList[0].fileId !== null) pm.environment.set('file_id', String(r.data.fileIdList && r.data.fileIdList[0] && r.data.fileIdList[0].fileId));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 合同签署（会创建真实任务，逐项手动调用）",
+      "item": [
+        {
+          "name": "创建双方合同签署任务",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/sign-task/create",
+            "description": "样例以供方发起，PDF 必须包含“供方盖章”“需方盖章”。印章 ID 保留字符串避免 JavaScript 大整数精度损失。直接调用不经过商签通权限/合同快照流程。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"initiator\": {\n    \"idType\": \"corp\",\n    \"openId\": \"{{supplier_open_corp_id}}\"\n  },\n  \"signTaskSubject\": \"{{subject}}\",\n  \"signDocType\": \"contract\",\n  \"autoStart\": true,\n  \"autoFinish\": true,\n  \"autoFillFinalize\": true,\n  \"signInOrder\": true,\n  \"fileFormat\": \"pdf\",\n  \"transReferenceId\": \"{{contract_reference}}\",\n  \"callbackUrl\": \"{{callback_url}}\",\n  \"docs\": [\n    {\n      \"docId\": \"contract-doc\",\n      \"docName\": \"{{file_name}}\",\n      \"docFileId\": \"{{file_id}}\",\n      \"docFields\": [\n        {\n          \"fieldId\": \"supplier-seal\",\n          \"fieldName\": \"供方盖章\",\n          \"position\": {\n            \"positionMode\": \"keyword\",\n            \"positionKeyword\": \"供方盖章\",\n            \"keywordOffsetX\": \"0\",\n            \"keywordOffsetY\": \"0\"\n          },\n          \"fieldType\": \"corp_seal\",\n          \"fieldCorpSeal\": {\n            \"width\": 42,\n            \"height\": 42,\n            \"followSignSize\": true\n          },\n          \"moveable\": false\n        },\n        {\n          \"fieldId\": \"buyer-seal\",\n          \"fieldName\": \"需方盖章\",\n          \"position\": {\n            \"positionMode\": \"keyword\",\n            \"positionKeyword\": \"需方盖章\",\n            \"keywordOffsetX\": \"0\",\n            \"keywordOffsetY\": \"0\"\n          },\n          \"fieldType\": \"corp_seal\",\n          \"fieldCorpSeal\": {\n            \"width\": 42,\n            \"height\": 42,\n            \"followSignSize\": true\n          },\n          \"moveable\": false\n        }\n      ]\n    }\n  ],\n  \"actors\": [\n    {\n      \"actor\": {\n        \"actorId\": \"supplier\",\n        \"actorType\": \"corp\",\n        \"actorName\": \"{{supplier_name}}\",\n        \"permissions\": [\n          \"sign\"\n        ],\n        \"actorOpenId\": \"{{supplier_open_corp_id}}\",\n        \"sendNotification\": false,\n        \"sendInSiteMessage\": false\n      },\n      \"signFields\": [\n        {\n          \"fieldDocId\": \"contract-doc\",\n          \"fieldId\": \"supplier-seal\",\n          \"fieldName\": \"supplier-seal\",\n          \"sealId\": \"{{supplier_seal_id}}\",\n          \"moveable\": false\n        }\n      ],\n      \"signConfigInfo\": {\n        \"orderNo\": 1,\n        \"requestVerifyFree\": false,\n        \"readingToEnd\": true,\n        \"resizeSeal\": false\n      }\n    },\n    {\n      \"actor\": {\n        \"actorId\": \"buyer\",\n        \"actorType\": \"corp\",\n        \"actorName\": \"{{buyer_name}}\",\n        \"permissions\": [\n          \"sign\"\n        ],\n        \"actorOpenId\": \"{{buyer_open_corp_id}}\",\n        \"sendNotification\": false,\n        \"sendInSiteMessage\": false\n      },\n      \"signFields\": [\n        {\n          \"fieldDocId\": \"contract-doc\",\n          \"fieldId\": \"buyer-seal\",\n          \"fieldName\": \"buyer-seal\",\n          \"sealId\": \"{{buyer_seal_id}}\",\n          \"moveable\": false\n        }\n      ],\n      \"signConfigInfo\": {\n        \"orderNo\": 2,\n        \"requestVerifyFree\": false,\n        \"readingToEnd\": true,\n        \"resizeSeal\": false\n      }\n    }\n  ]\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  if (r.data.signTaskId !== undefined && r.data.signTaskId !== null) pm.environment.set('sign_task_id', String(r.data.signTaskId));",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "获取参与方签署地址",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/sign-task/actor/get-url",
+            "description": "样例省略可选 redirectMiniAppUrl。仓库签署业务当前仍传内部路径，有 URL 格式错误风险；此处不复制该参数。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"signTaskId\": \"{{sign_task_id}}\",\n  \"actorId\": \"{{actor_id}}\",\n  \"clientUserId\": \"{{client_user_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "查询签署任务详情",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/sign-task/app/get-detail",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"signTaskId\": \"{{sign_task_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "查询参与方签署状态",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/sign-task/actor/list",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"signTaskId\": \"{{sign_task_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "获取签署文件下载地址",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/sign-task/owner/get-download-url",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"ownerId\": {\n    \"idType\": \"corp\",\n    \"openId\": \"{{open_corp_id}}\"\n  },\n  \"signTaskId\": \"{{sign_task_id}}\",\n  \"compression\": false,\n  \"downloadMode\": \"download\",\n  \"customName\": \"{{file_name}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "获取签署文件切片预览地址",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/sign-task/owner/get-slicing-ticket-id",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"ownerId\": {\n    \"idType\": \"corp\",\n    \"openId\": \"{{open_corp_id}}\"\n  },\n  \"signTaskId\": \"{{sign_task_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06 撤回与作废（改变任务状态）",
+      "item": [
+        {
+          "name": "撤回签署任务",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/sign-task/cancel",
+            "description": "",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"signTaskId\": \"{{sign_task_id}}\",\n  \"terminationNote\": \"{{reason}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "创建合同作废任务",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/sign-task/abolish",
+            "description": "响应中的作废任务 ID 请单独保存；不要覆盖原任务 ID。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"signTaskId\": \"{{sign_task_id}}\",\n  \"reason\": \"{{reason}}\",\n  \"followOriginalConfig\": true,\n  \"autoStart\": true,\n  \"callbackUrl\": \"{{callback_url}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "pm.test('法大大调用成功', () => pm.expect(String(r.code)).to.eql('100000'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "07 商签通后端接口（已有登录会话）",
+      "item": [
+        {
+          "name": "个人认证状态",
+          "request": {
+            "method": "GET",
+            "url": "{{tradepass_base_url}}/fadada/users/me/identity",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": true
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。"
+          }
+        },
+        {
+          "name": "同步个人认证",
+          "request": {
+            "method": "POST",
+            "url": "{{tradepass_base_url}}/fadada/users/me/identity/sync",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": true
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "个人认证地址",
+          "request": {
+            "method": "POST",
+            "url": "{{tradepass_base_url}}/fadada/users/me/auth-url",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": true
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "企业认证状态",
+          "request": {
+            "method": "GET",
+            "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/identity",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": false
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。"
+          }
+        },
+        {
+          "name": "同步企业认证",
+          "request": {
+            "method": "POST",
+            "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/identity/sync",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": false
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "企业认证地址",
+          "request": {
+            "method": "POST",
+            "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/auth-url",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": false
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "印章管理地址",
+          "request": {
+            "method": "POST",
+            "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/seal-manage-url",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": false
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "合同签署状态",
+          "request": {
+            "method": "GET",
+            "url": "{{tradepass_base_url}}/contracts/{{contract_id}}/signing",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": false
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。"
+          }
+        },
+        {
+          "name": "同步合同签署",
+          "request": {
+            "method": "POST",
+            "url": "{{tradepass_base_url}}/contracts/{{contract_id}}/signing/sync",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": false
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "合同签署地址",
+          "request": {
+            "method": "POST",
+            "url": "{{tradepass_base_url}}/contracts/{{contract_id}}/sign-url",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": false
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "合同作废地址",
+          "request": {
+            "method": "POST",
+            "url": "{{tradepass_base_url}}/contracts/{{contract_id}}/abolish-url",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}",
+                "disabled": false
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Authorization 直接填登录会话 token，不添加 Bearer。生产登录依赖微信可信链路，请使用自己的已有登录会话。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"reason\": \"{{reason}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

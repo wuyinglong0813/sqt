@@ -1,0 +1,185 @@
+name: tradepass-business-static
+
+x-runtime: &runtime
+  pull_policy: never
+  restart: unless-stopped
+  stop_grace_period: 60s
+  read_only: true
+  tmpfs: ['/tmp:size=256m,mode=1777']
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  networks: [tradepass]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '3', labels: 'com.docker.compose.project,com.docker.compose.service'}
+
+x-common-environment: &common
+  TRADEPASS_TRACING_ENABLED: ${TRADEPASS_TRACING_ENABLED:-false}
+  SW_AGENT_COLLECTOR_BACKEND_SERVICES: ${SW_AGENT_COLLECTOR_BACKEND_SERVICES:-skywalking-oap:11800}
+  JAVA_OPTS: -Xms64m -Xmx256m -XX:ActiveProcessorCount=2
+  SERVER_PORT: 8080
+  MANAGEMENT_PORT: 8081
+  MANAGEMENT_ADDRESS: 0.0.0.0
+  SERVER_SHUTDOWN: graceful
+  SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 45s
+  SPRING_PROFILES_ACTIVE: ${TRADEPASS_SERVICE_PROFILES:-observability}
+  NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
+  NACOS_NAMESPACE: ${NACOS_NAMESPACE:-}
+  NACOS_GROUP: ${NACOS_GROUP:-TRADEPASS}
+  NACOS_USERNAME: ${NACOS_USERNAME:-}
+  NACOS_PASSWORD: ${NACOS_PASSWORD:-}
+  SENTINEL_DASHBOARD: ${SENTINEL_DASHBOARD:-}
+  TRADEPASS_INTERNAL_KEY: ${TRADEPASS_INTERNAL_KEY:?Set an environment-specific random internal key}
+  TRADEPASS_IDS_DATACENTER_ID: ${TRADEPASS_IDS_DATACENTER_ID:?Set a datacenter ID from 0 to 31}
+  TRADEPASS_IDENTITY_URL: http://identity:8080
+  TRADEPASS_CONTRACT_URL: http://contract:8080
+  TRADEPASS_TRADE_URL: http://trade:8080
+  TRADEPASS_SETTLEMENT_URL: http://settlement:8080
+  TRADEPASS_FILE_URL: http://file:8080
+  TRADEPASS_DEV_ENABLED: 'false'
+  TRADEPASS_DEMO_DATA_ENABLED: 'false'
+  TRADEPASS_EXPERIENCE_TEST_ACCOUNTS_ENABLED: 'false'
+  TRADEPASS_STORAGE_PROVIDER: ${TRADEPASS_STORAGE_PROVIDER:-cloudbase-cos}
+  TRADEPASS_STORAGE_ENABLED: ${TRADEPASS_STORAGE_ENABLED:-false}
+  TRADEPASS_STORAGE_REQUIRED: ${TRADEPASS_STORAGE_REQUIRED:-false}
+  CLOUDBASE_STORAGE_BUCKET: ${CLOUDBASE_STORAGE_BUCKET:-}
+  CLOUDBASE_STORAGE_REGION: ${CLOUDBASE_STORAGE_REGION:-ap-shanghai}
+
+x-business-environment: &business
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+  SEATA_SERVER_ADDR: ${SEATA_SERVER_ADDR:-seata:8091}
+  TRADEPASS_REDIS_ENABLED: ${TRADEPASS_REDIS_ENABLED:-false}
+  REDIS_HOST: ${REDIS_HOST:-redis}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  WECHAT_APP_ID: ${WECHAT_APP_ID:-}
+  WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:-}
+  FADADA_ENABLED: ${FADADA_ENABLED:-false}
+  FADADA_APP_ID: ${FADADA_APP_ID:-}
+  FADADA_APP_SECRET: ${FADADA_APP_SECRET:-}
+  FADADA_SERVER_URL: ${FADADA_SERVER_URL:-https://api.fadada.com/api/v5}
+  FADADA_CALLBACK_URL: ${FADADA_CALLBACK_URL:-}
+
+services:
+  identity:
+    <<: *runtime
+    depends_on:
+      file: {condition: service_healthy}
+    image: tradepass-identity:${TRADEPASS_IMAGE_TAG:-local}
+    build: {context: ../.., dockerfile: tradepass-module-identity/tradepass-module-identity-server/Dockerfile}
+    environment:
+      <<: [*common, *business]
+      SW_AGENT_NAME: tradepass-identity
+      TRADEPASS_IDS_WORKER_ID: 1
+      TRADEPASS_DATABASE_URL: ${IDENTITY_DATABASE_URL:?Set the identity owned database JDBC URL}
+      DB_USERNAME: ${IDENTITY_DB_USERNAME:?Set the identity database user}
+      DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?Set the identity database password}
+  contract:
+    <<: *runtime
+    depends_on:
+      identity: {condition: service_healthy}
+      file: {condition: service_healthy}
+    image: tradepass-contract:${TRADEPASS_IMAGE_TAG:-local}
+    build: {context: ../.., dockerfile: tradepass-module-contract/tradepass-module-contract-server/Dockerfile}
+    environment:
+      <<: [*common, *business]
+      SW_AGENT_NAME: tradepass-contract
+      TRADEPASS_IDS_WORKER_ID: 2
+      SPRING_PROFILES_ACTIVE: ${TRADEPASS_CONTRACT_PROFILES:-observability,messaging,jobs}
+      ROCKETMQ_NAME_SERVER: ${ROCKETMQ_NAME_SERVER:-rocketmq-namesrv:9876}
+      ROCKETMQ_CALLBACK_TOPIC: ${ROCKETMQ_CALLBACK_TOPIC:-tradepass-callback-events}
+      ROCKETMQ_ACCESS_KEY: ${ROCKETMQ_ACCESS_KEY:-}
+      ROCKETMQ_SECRET_KEY: ${ROCKETMQ_SECRET_KEY:-}
+      XXL_JOB_ADMIN_ADDRESSES: ${XXL_JOB_ADMIN_ADDRESSES:-http://xxl-job-admin:8080/xxl-job-admin}
+      XXL_JOB_ACCESS_TOKEN: ${XXL_JOB_ACCESS_TOKEN:?Set the XXL-JOB executor token}
+      XXL_JOB_EXECUTOR_ADDRESS: http://contract:9998/
+      TRADEPASS_DATABASE_URL: ${CONTRACT_DATABASE_URL:?Set the contract owned database JDBC URL}
+      DB_USERNAME: ${CONTRACT_DB_USERNAME:?Set the contract database user}
+      DB_PASSWORD: ${CONTRACT_DB_PASSWORD:?Set the contract database password}
+  trade:
+    <<: *runtime
+    depends_on:
+      identity: {condition: service_healthy}
+      file: {condition: service_healthy}
+    image: tradepass-trade:${TRADEPASS_IMAGE_TAG:-local}
+    build: {context: ../.., dockerfile: tradepass-module-trade/tradepass-module-trade-server/Dockerfile}
+    environment:
+      <<: [*common, *business]
+      SW_AGENT_NAME: tradepass-trade
+      TRADEPASS_IDS_WORKER_ID: 3
+      TRADEPASS_DATABASE_URL: ${TRADE_DATABASE_URL:?Set the trade owned database JDBC URL}
+      DB_USERNAME: ${TRADE_DB_USERNAME:?Set the trade database user}
+      DB_PASSWORD: ${TRADE_DB_PASSWORD:?Set the trade database password}
+  settlement:
+    <<: *runtime
+    depends_on:
+      identity: {condition: service_healthy}
+      file: {condition: service_healthy}
+    image: tradepass-settlement:${TRADEPASS_IMAGE_TAG:-local}
+    build: {context: ../.., dockerfile: tradepass-module-settlement/tradepass-module-settlement-server/Dockerfile}
+    environment:
+      <<: [*common, *business]
+      SW_AGENT_NAME: tradepass-settlement
+      TRADEPASS_IDS_WORKER_ID: 4
+      TRADEPASS_DATABASE_URL: ${SETTLEMENT_DATABASE_URL:?Set the settlement owned database JDBC URL}
+      DB_USERNAME: ${SETTLEMENT_DB_USERNAME:?Set the settlement database user}
+      DB_PASSWORD: ${SETTLEMENT_DB_PASSWORD:?Set the settlement database password}
+  file:
+    <<: *runtime
+    image: tradepass-file:${TRADEPASS_IMAGE_TAG:-local}
+    build: {context: ../.., dockerfile: tradepass-module-file/tradepass-module-file-server/Dockerfile}
+    environment:
+      <<: *common
+      SW_AGENT_NAME: tradepass-file
+      TRADEPASS_IDS_WORKER_ID: 5
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+      OSS_REGION: ${OSS_REGION:-}
+      OSS_BUCKET: ${OSS_BUCKET:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_SESSION_TOKEN: ${OSS_SESSION_TOKEN:-}
+      TRADEPASS_LEGACY_COS_BUCKET: ${TRADEPASS_LEGACY_COS_BUCKET:-}
+      TRADEPASS_LEGACY_COS_REGION: ${TRADEPASS_LEGACY_COS_REGION:-ap-shanghai}
+      TRADEPASS_LEGACY_COS_KEY_PREFIX: ${TRADEPASS_LEGACY_COS_KEY_PREFIX:-tradepass}
+      TRADEPASS_LEGACY_COS_SECRET_ID: ${TRADEPASS_LEGACY_COS_SECRET_ID:-}
+      TRADEPASS_LEGACY_COS_SECRET_KEY: ${TRADEPASS_LEGACY_COS_SECRET_KEY:-}
+      TRADEPASS_LEGACY_COS_SESSION_TOKEN: ${TRADEPASS_LEGACY_COS_SESSION_TOKEN:-}
+  gateway:
+    <<: *runtime
+    depends_on:
+      identity: {condition: service_healthy}
+      contract: {condition: service_healthy}
+      trade: {condition: service_healthy}
+      settlement: {condition: service_healthy}
+      file: {condition: service_healthy}
+    image: tradepass-gateway:${TRADEPASS_IMAGE_TAG:-local}
+    build: {context: ../.., dockerfile: tradepass-gateway/Dockerfile}
+    ports: ['${TRADEPASS_GATEWAY_BIND:-127.0.0.1}:${TRADEPASS_GATEWAY_PORT:-1110}:8080']
+    environment:
+      SPRING_PROFILES_ACTIVE: ${TRADEPASS_SERVICE_PROFILES:-observability}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
+      NACOS_NAMESPACE: ${NACOS_NAMESPACE:-}
+      NACOS_GROUP: ${NACOS_GROUP:-TRADEPASS}
+      NACOS_USERNAME: ${NACOS_USERNAME:-}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:-}
+      SENTINEL_DASHBOARD: ${SENTINEL_DASHBOARD:-}
+      SERVER_PORT: 8080
+      MANAGEMENT_PORT: 8081
+      MANAGEMENT_ADDRESS: 0.0.0.0
+      SERVER_SHUTDOWN: graceful
+      SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 45s
+      TRADEPASS_TRACING_ENABLED: ${TRADEPASS_TRACING_ENABLED:-false}
+      SW_AGENT_NAME: tradepass-gateway
+      SW_AGENT_COLLECTOR_BACKEND_SERVICES: ${SW_AGENT_COLLECTOR_BACKEND_SERVICES:-skywalking-oap:11800}
+      JAVA_OPTS: -Xms64m -Xmx256m -XX:ActiveProcessorCount=2
+      TRADEPASS_IDENTITY_URL: http://identity:8080
+      TRADEPASS_CONTRACT_URL: http://contract:8080
+      TRADEPASS_TRADE_URL: http://trade:8080
+      TRADEPASS_SETTLEMENT_URL: http://settlement:8080
+      TRADEPASS_FILE_URL: http://file:8080
+
+networks:
+  tradepass:
+    external: true
+    name: ${TRADEPASS_NETWORK_NAME:-tradepass-server}

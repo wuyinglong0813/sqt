@@ -1,0 +1,194 @@
+name: tradepass-infra-static
+
+x-infra: &infra
+  restart: unless-stopped
+  networks: [tradepass]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '3'}
+
+services:
+  mysql:
+    <<: *infra
+    image: mysql:8.4
+    mem_limit: 1g
+    stop_grace_period: 90s
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Fill MYSQL_ROOT_PASSWORD in .env}
+      IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?Generate an independent 64-character hex password}
+      CONTRACT_DB_PASSWORD: ${CONTRACT_DB_PASSWORD:?Generate an independent 64-character hex password}
+      TRADE_DB_PASSWORD: ${TRADE_DB_PASSWORD:?Generate an independent 64-character hex password}
+      SETTLEMENT_DB_PASSWORD: ${SETTLEMENT_DB_PASSWORD:?Generate an independent 64-character hex password}
+      XXL_JOB_DB_PASSWORD: ${XXL_JOB_DB_PASSWORD:?Generate an independent 64-character hex password}
+      XXL_JOB_ADMIN_PASSWORD: ${XXL_JOB_ADMIN_PASSWORD:?Generate a 64-character hex admin password}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --innodb-buffer-pool-size=256M
+      - --max-connections=60
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql/10-owned-databases.sh:/docker-entrypoint-initdb.d/10-owned-databases.sh:ro
+      - ./xxl-job/schema.sql:/opt/tradepass/xxl-job/schema.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql --protocol=TCP -h127.0.0.1 -uroot -Nse "SELECT 1" >/dev/null']
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 90s
+
+  seata:
+    <<: *infra
+    image: apache/seata-server:2.1.0
+    mem_limit: 768m
+    stop_grace_period: 90s
+    environment:
+      SEATA_IP: seata
+      SEATA_PORT: 8091
+      SEATA_CONSOLE_USERNAME: ${SEATA_CONSOLE_USERNAME:-tradepass}
+      SEATA_CONSOLE_PASSWORD: ${SEATA_CONSOLE_PASSWORD:?Set the Seata console password}
+      SEATA_SECURITY_SECRET_KEY: ${SEATA_SECURITY_SECRET_KEY:?Set a random base64 signing key}
+      JVM_XMS: 128m
+      JVM_XMX: 384m
+      JVM_XMN: 64m
+    volumes:
+      - ./seata/application.yml:/seata-server/resources/application.yml:ro
+      - seata-sessions:/seata-server/sessionStore
+      - seata-logs:/seata-server/logs
+    healthcheck:
+      test: [CMD, bash, -ec, 'exec 3<>/dev/tcp/127.0.0.1/8091']
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+
+  xxl-job-admin:
+    <<: *infra
+    image: xuxueli/xxl-job-admin:3.2.0
+    profiles: [jobs]
+    mem_limit: 768m
+    depends_on:
+      mysql: {condition: service_healthy}
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/xxl_job?useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=Asia/Shanghai
+      SPRING_DATASOURCE_USERNAME: tradepass_jobs
+      SPRING_DATASOURCE_PASSWORD: ${XXL_JOB_DB_PASSWORD:?Set the scheduler database password}
+      XXL_JOB_ACCESSTOKEN: ${XXL_JOB_ACCESS_TOKEN:?Set the same executor token as contract}
+      JAVA_OPTS: -Xms128m -Xmx384m
+    volumes:
+      - xxl-job-logs:/data/applogs
+
+  redis:
+    <<: *infra
+    image: redis:7.4-alpine
+    mem_limit: 192m
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Fill REDIS_PASSWORD in .env}
+    command:
+      - /bin/sh
+      - -ec
+      - 'exec redis-server --appendonly yes --maxmemory 64mb --maxmemory-policy allkeys-lru --requirepass "$${REDIS_PASSWORD}"'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -qx PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Enable --profile mq when the contract messaging profile is active.
+  rocketmq-init:
+    image: apache/rocketmq:5.3.4
+    profiles: [mq]
+    restart: 'no'
+    user: '0:0'
+    networks: [tradepass]
+    entrypoint: [/bin/sh, -ec]
+    command: ['chown 3000:3000 /mq-namesrv-logs /mq-broker-logs /mq-store']
+    volumes:
+      - rocketmq-namesrv-logs:/mq-namesrv-logs
+      - rocketmq-broker-logs:/mq-broker-logs
+      - rocketmq-store:/mq-store
+
+  rocketmq-namesrv:
+    <<: *infra
+    image: apache/rocketmq:5.3.4
+    profiles: [mq]
+    mem_limit: 384m
+    depends_on:
+      rocketmq-init: {condition: service_completed_successfully}
+    environment:
+      HEAP_OPTS: -Xms128m -Xmx128m -Xmn64m
+      JAVA_OPT_EXT: -Xms128m -Xmx128m -Xmn64m -XX:MaxDirectMemorySize=64m -XX:MaxMetaspaceSize=128m
+    command: [sh, mqnamesrv]
+    volumes:
+      - rocketmq-namesrv-logs:/home/rocketmq/logs
+    healthcheck:
+      test: [CMD, bash, -ec, 'exec 3<>/dev/tcp/127.0.0.1/9876']
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  rocketmq-topic-init:
+    <<: *infra
+    image: apache/rocketmq:5.3.4
+    profiles: [mq]
+    restart: 'no'
+    depends_on:
+      rocketmq-broker: {condition: service_healthy}
+    environment:
+      JAVA_OPT_EXT: -Xms64m -Xmx128m
+    command:
+      - sh
+      - -ec
+      - |
+        sh mqadmin updateTopic -n rocketmq-namesrv:9876 -c DefaultCluster -t tradepass-callback-events -r 4 -w 4
+        sh mqadmin updateSubGroup -n rocketmq-namesrv:9876 -c DefaultCluster -g tradepass-module-contract/tradepass-module-contract-server-callback-consumer
+
+  rocketmq-broker:
+    <<: *infra
+    image: apache/rocketmq:5.3.4
+    profiles: [mq]
+    mem_limit: 1536m
+    stop_grace_period: 90s
+    depends_on:
+      rocketmq-init: {condition: service_completed_successfully}
+      rocketmq-namesrv: {condition: service_healthy}
+    environment:
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+      HEAP_OPTS: -Xms256m -Xmx512m -Xmn128m -XX:MaxDirectMemorySize=128m
+      JAVA_OPT_EXT: -Xms256m -Xmx512m -Xmn128m -XX:MaxDirectMemorySize=128m -XX:MaxMetaspaceSize=192m -XX:-AlwaysPreTouch
+    command:
+      - sh
+      - -ec
+      - |
+        cp /etc/rocketmq/broker.conf /tmp/tradepass-broker.conf
+        set -- $$(hostname -i)
+        printf '\nbrokerIP1=%s\n' "$$1" >> /tmp/tradepass-broker.conf
+        exec sh mqbroker --enable-proxy -c /tmp/tradepass-broker.conf
+    volumes:
+      - ./rocketmq/broker.conf:/etc/rocketmq/broker.conf:ro,z
+      - rocketmq-broker-logs:/home/rocketmq/logs
+      - rocketmq-store:/home/rocketmq/store
+    healthcheck:
+      test: [CMD, bash, -ec, 'exec 3<>/dev/tcp/127.0.0.1/10911; exec 4<>/dev/tcp/127.0.0.1/8081']
+      interval: 15s
+      timeout: 5s
+      retries: 16
+      start_period: 90s
+
+networks:
+  tradepass:
+    external: true
+    name: ${TRADEPASS_NETWORK_NAME:-tradepass-server}
+
+volumes:
+  mysql-data: {}
+  redis-data: {}
+  rocketmq-namesrv-logs: {}
+  rocketmq-broker-logs: {}
+  rocketmq-store: {}
+  seata-sessions: {}
+  seata-logs: {}
+  xxl-job-logs: {}

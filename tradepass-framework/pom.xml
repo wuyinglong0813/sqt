@@ -1,0 +1,24 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.tradepass</groupId>
+    <artifactId>tradepass-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+  <artifactId>tradepass-framework</artifactId>
+  <packaging>pom</packaging>
+  <modules>
+    <module>tradepass-common</module>
+    <module>tradepass-spring-boot-starter-web</module>
+    <module>tradepass-spring-boot-starter-cache</module>
+    <module>tradepass-spring-boot-starter-mybatis</module>
+    <module>tradepass-spring-boot-starter-audit</module>
+    <module>tradepass-spring-boot-starter-storage</module>
+    <module>tradepass-spring-boot-starter-fadada</module>
+    <module>tradepass-spring-boot-starter-governance</module>
+    <module>tradepass-spring-boot-starter-rpc</module>
+    <module>tradepass-spring-boot-starter-service</module>
+    <module>tradepass-spring-boot-starter-core</module>
+  </modules>
+</project>

@@ -1,0 +1,18 @@
+spring:
+  cloud:
+    sentinel:
+      enabled: true
+      filter:
+        enabled: false
+      transport:
+        dashboard: ${SENTINEL_DASHBOARD:}
+      datasource:
+        gateway-flow:
+          nacos:
+            server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+            namespace: ${NACOS_NAMESPACE:}
+            group-id: ${NACOS_GROUP:TRADEPASS}
+            username: ${NACOS_USERNAME:}
+            password: ${NACOS_PASSWORD:}
+            data-id: tradepass-gateway-flow.json
+            rule-type: gw-flow

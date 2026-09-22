@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+rule_files: [alerts.yml]
+scrape_configs:
+  - job_name: tradepass
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: [identity:8081, contract:8081, trade:8081, settlement:8081, file:8081, gateway:8081]
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: [alertmanager:9093]

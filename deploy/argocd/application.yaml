@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tradepass-staging
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/REPLACE_ORGANIZATION/REPLACE_REPOSITORY.git
+    targetRevision: REPLACE_REVIEWED_COMMIT
+    path: deploy/helm/tradepass
+    helm:
+      valueFiles: [values.yaml, values-staging.yaml]
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tradepass-staging
+  # Deliberate manual sync: inspect the pinned release, database cutover and Secret revision first.
+  syncPolicy:
+    syncOptions: [CreateNamespace=true]
+  revisionHistoryLimit: 5

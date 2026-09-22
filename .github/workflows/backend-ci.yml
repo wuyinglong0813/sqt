@@ -1,0 +1,130 @@
+name: Backend compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [direct, nacos]
+    services:
+      nacos:
+        image: nacos/nacos-server:v2.3.2-slim
+        env:
+          MODE: standalone
+          NACOS_AUTH_ENABLE: 'false'
+          JVM_XMS: 256m
+          JVM_XMX: 512m
+          JVM_XMN: 128m
+        ports:
+          - 127.0.0.1:18848:8848
+          - 127.0.0.1:19848:9848
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: tradepass_ci_only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -ptradepass_ci_only"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify delivery scripts
+        run: |
+          python3 -m pip install -r scripts/ci/requirements.txt
+          python3 -m unittest discover -s scripts/ci/tests -v
+      - name: Create isolated databases
+        env:
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: |
+          docker exec -e MYSQL_PWD=tradepass_ci_only "$MYSQL_CONTAINER" mysql -uroot -e '
+            CREATE DATABASE tradepass_fix_validation_ci_workflow;
+            CREATE DATABASE tradepass_fix_validation_ci_services;
+          '
+      - name: Wait for isolated Nacos
+        if: matrix.transport == 'nacos'
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18848/nacos/v1/console/health/readiness; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Backend unit, architecture, HTTP and MySQL regression tests
+        env:
+          TRADEPASS_TEST_NACOS_SERVER: ${{ matrix.transport == 'nacos' && '127.0.0.1:18848' || '' }}
+          TRADEPASS_TEST_MYSQL_URL: jdbc:mysql://127.0.0.1:3306/tradepass_fix_validation_ci_workflow?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+          TRADEPASS_TEST_SERVICES_URL: jdbc:mysql://127.0.0.1:3306/tradepass_fix_validation_ci_services?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+          TRADEPASS_TEST_MYSQL_USERNAME: root
+          TRADEPASS_TEST_MYSQL_PASSWORD: tradepass_ci_only
+        run: bash scripts/verify-backend.sh
+      - name: Validate monitoring configuration and alert behavior
+        run: |
+          docker run --rm --network none --read-only \
+            -v "$PWD/observability/prometheus:/work:ro" -w /work \
+            --entrypoint /bin/promtool prom/prometheus:v2.55.1 check config prometheus.yml
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,size=128m \
+            -v "$PWD/observability/prometheus:/work:ro" -w /work \
+            --entrypoint /bin/promtool prom/prometheus:v2.55.1 test rules alerts.test.yml
+          docker run --rm --network none --read-only \
+            -v "$PWD/deploy/microservices/monitoring/prometheus.yml:/work/prometheus.yml:ro" \
+            -v "$PWD/observability/prometheus/alerts.yml:/work/alerts.yml:ro" -w /work \
+            --entrypoint /bin/promtool prom/prometheus:v2.55.1 check config prometheus.yml
+      - name: Build six independent service images
+        run: |
+          dockerfile_for() {
+            case "$1" in
+              gateway) echo tradepass-gateway/Dockerfile ;;
+              *) echo "tradepass-module-$1/tradepass-module-$1-server/Dockerfile" ;;
+            esac
+          }
+          for service in identity contract trade settlement file gateway; do
+            docker build -f "$(dockerfile_for "$service")" \
+              --tag "tradepass-$service:${{ github.sha }}" .
+          done
+             - name: Validate service deployment configuration
+        run: docker compose --env-file deploy/microservices/.env.example -f deploy/microservices/compose.yml config --quiet
+      - name: Verify fresh server initialization and the real scheduled recovery job
+        if: matrix.transport == 'direct'
+        env:
+          TRADEPASS_IMAGE_TAG: ${{ github.sha }}
+        run: bash scripts/ci/verify-compose.sh
+      - name: Preserve test and compatibility reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-reports-${{ matrix.transport }}
+          path: |
+            deploy/integration-tests/target/surefire-reports/
+            deploy/smoke-tests/target/failsafe-reports/
+            deploy/smoke-tests/target/process-logs/
+            deploy/coverage/target/site/jacoco-aggregate/
+            */target/surefire-reports/
+            */target/failsafe-reports/
+            */*/target/surefire-reports/
+            dist/ci/
+          retention-days: 14

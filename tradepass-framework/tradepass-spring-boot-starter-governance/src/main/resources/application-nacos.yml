@@ -1,0 +1,33 @@
+# Required imports: fail startup if environment configuration cannot be loaded.
+spring:
+  config:
+    import:
+      - nacos:tradepass-common.yaml?group=${NACOS_GROUP:TRADEPASS}&refreshEnabled=false
+      - nacos:${spring.application.name}.yaml?group=${NACOS_GROUP:TRADEPASS}&refreshEnabled=false
+  cloud:
+    nacos:
+      discovery:
+        enabled: true
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: ${NACOS_GROUP:TRADEPASS}
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+      config:
+        enabled: true
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: ${NACOS_GROUP:TRADEPASS}
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+    loadbalancer:
+      retry:
+        enabled: false
+tradepass:
+  services:
+    # An empty Feign URL selects the service name and LoadBalancer.
+    identity-url: ''
+    contract-url: ''
+    trade-url: ''
+    settlement-url: ''
+    file-url: ''

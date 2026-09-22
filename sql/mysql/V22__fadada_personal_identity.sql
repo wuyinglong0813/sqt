@@ -1,0 +1,40 @@
+CREATE TABLE fadada_user_identity (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    client_user_id VARCHAR(128) NOT NULL,
+    open_user_id VARCHAR(128) NULL,
+    local_status VARCHAR(32) NOT NULL DEFAULT 'NOT_STARTED',
+    binding_status VARCHAR(32) NOT NULL DEFAULT 'unauthorized',
+    ident_status VARCHAR(32) NOT NULL DEFAULT 'unidentified',
+    ident_process_status VARCHAR(32) NOT NULL DEFAULT 'no_start',
+    auth_scopes VARCHAR(512) NOT NULL DEFAULT '["ident_info"]',
+    ident_method VARCHAR(64) NULL,
+    verified_name VARCHAR(64) NULL,
+    failure_reason VARCHAR(512) NULL,
+    ident_submitted_at DATETIME NULL,
+    ident_verified_at DATETIME NULL,
+    last_sync_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_fadada_user_identity_user (user_id),
+    UNIQUE KEY uk_fadada_user_identity_client (client_user_id),
+    UNIQUE KEY uk_fadada_user_identity_open (open_user_id),
+    CONSTRAINT fk_fadada_user_identity_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
+);
+
+CREATE TABLE fadada_callback_event (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    event_id VARCHAR(128) NOT NULL,
+    event_type VARCHAR(64) NOT NULL,
+    subject_type VARCHAR(32) NOT NULL,
+    subject_id BIGINT NULL,
+    payload_sha256 CHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'RECEIVED',
+    failure_reason VARCHAR(512) NULL,
+    received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_fadada_callback_event (event_id),
+    INDEX idx_fadada_callback_subject (subject_type, subject_id, received_at)
+);

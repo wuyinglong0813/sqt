@@ -1,0 +1,9 @@
+# Shared production policy for the independent services.
+# Preserve the original prohibition on demo and privileged experience accounts.
+tradepass:
+  dev:
+    enabled: false
+  demo-data:
+    enabled: false
+  experience-test-accounts:
+    enabled: false

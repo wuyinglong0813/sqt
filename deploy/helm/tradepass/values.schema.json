@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "images",
+    "replicas",
+    "revision",
+    "datacenterId",
+    "runtime"
+  ],
+  "properties": {
+    "images": {
+      "type": "object",
+      "required": [
+        "identity",
+        "contract",
+        "trade",
+        "settlement",
+        "file",
+        "gateway"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "type": "string",
+          "pattern": "^.+-identity@sha256:[a-f0-9]{64}$"
+        },
+        "contract": {
+          "type": "string",
+          "pattern": "^.+-contract@sha256:[a-f0-9]{64}$"
+        },
+        "trade": {
+          "type": "string",
+          "pattern": "^.+-trade@sha256:[a-f0-9]{64}$"
+        },
+        "settlement": {
+          "type": "string",
+          "pattern": "^.+-settlement@sha256:[a-f0-9]{64}$"
+        },
+        "file": {
+          "type": "string",
+          "pattern": "^.+-file@sha256:[a-f0-9]{64}$"
+        },
+        "gateway": {
+          "type": "string",
+          "pattern": "^.+-gateway@sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "replicas": {
+      "type": "object",
+      "required": [
+        "identity",
+        "contract",
+        "trade",
+        "settlement",
+        "file",
+        "gateway"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "contract": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "trade": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "settlement": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "file": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "gateway": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        }
+      }
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "datacenterId": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 31
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+**/target/
+.m2/
+
+.DS_Store
+.idea/
+*.iml
+
+.runtime/
+dist/
+**/__pycache__/
+deploy/jenkins/*.env
+deploy/k8s/*.env
+*.log
+.env
+!.env.example

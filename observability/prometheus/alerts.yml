@@ -1,0 +1,45 @@
+groups:
+  - name: tradepass-runtime
+    rules:
+      - alert: TradePassScrapeTargetsMissing
+        expr: absent(up{job="tradepass"})
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TradePass monitoring targets are missing
+          description: Configure private management endpoints in targets.json.
+      - alert: TradePassInstanceDown
+        expr: up{job="tradepass"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'TradePass instance {{ $labels.instance }} is unreachable'
+          description: Check the process, management listener, network and recent deployment.
+      - alert: TradePassHttpServerErrors
+        expr: |
+          (
+            sum by (application, instance) (rate(http_server_requests_seconds_count{job="tradepass",uri=~"/api/.*",status=~"5.."}[5m]))
+            /
+            sum by (application, instance) (rate(http_server_requests_seconds_count{job="tradepass",uri=~"/api/.*"}[5m]))
+          ) > 0.05
+          and on (application, instance)
+          sum by (application, instance) (increase(http_server_requests_seconds_count{job="tradepass",uri=~"/api/.*"}[5m])) >= 20
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'TradePass HTTP 5xx ratio is elevated on {{ $labels.instance }}'
+          description: Inspect exceptions and downstream availability; the rule requires at least 20 requests in five minutes.
+      - alert: TradePassHeapPressure
+        expr: |
+          sum by (application, instance) (jvm_memory_used_bytes{job="tradepass",area="heap"})
+          /
+          sum by (application, instance) (jvm_memory_max_bytes{job="tradepass",area="heap"} > 0) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'TradePass heap usage is high on {{ $labels.instance }}'
+          description: Inspect GC activity, heap sizing and recent export or document workloads.

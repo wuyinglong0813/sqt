@@ -1,0 +1,26 @@
+filebeat.inputs:
+  - type: filestream
+    id: tradepass-docker-json
+    paths: [/var/lib/docker/containers/*/*-json.log]
+    parsers:
+      - ndjson:
+          target: docker
+          add_error_key: true
+          expand_keys: true
+    processors:
+      - drop_event:
+          when:
+            not:
+              regexp:
+                docker.attrs.com.docker.compose.project: '^tradepass-'
+      - decode_json_fields:
+          fields: [docker.log]
+          target: app
+          add_error_key: true
+      - drop_fields:
+          fields: [docker.log]
+          ignore_missing: true
+output.logstash:
+  hosts: [logstash:5044]
+logging.to_files: false
+logging.to_stderr: true

@@ -1,0 +1,10 @@
+tradepass:
+  jobs:
+    xxl:
+      enabled: true
+      admin-addresses: ${XXL_JOB_ADMIN_ADDRESSES}
+      access-token: ${XXL_JOB_ACCESS_TOKEN}
+      address: ${XXL_JOB_EXECUTOR_ADDRESS:}
+      ip: ${XXL_JOB_EXECUTOR_IP:}
+      port: ${XXL_JOB_EXECUTOR_PORT:9998}
+      log-path: ${XXL_JOB_LOG_PATH:/tmp/tradepass-jobs}

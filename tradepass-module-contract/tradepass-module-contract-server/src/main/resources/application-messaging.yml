@@ -1,0 +1,10 @@
+tradepass:
+  messaging:
+    rocketmq:
+      enabled: true
+      name-server: ${ROCKETMQ_NAME_SERVER}
+      callback-topic: ${ROCKETMQ_CALLBACK_TOPIC:tradepass-callback-events}
+      producer-group: ${ROCKETMQ_PRODUCER_GROUP:tradepass-module-contract/tradepass-module-contract-server-callback-producer}
+      consumer-group: ${ROCKETMQ_CONSUMER_GROUP:tradepass-module-contract/tradepass-module-contract-server-callback-consumer}
+      access-key: ${ROCKETMQ_ACCESS_KEY:}
+      secret-key: ${ROCKETMQ_SECRET_KEY:}

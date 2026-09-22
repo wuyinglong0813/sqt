@@ -1,0 +1,25 @@
+# Fill digest-pinned images and revision from dist/release/release.json.
+# Existing Secrets: tradepass-internal, tradepass-{role}, tradepass-registry.
+{
+  "revision": "",
+  "datacenterId": 2,
+  "secretRevision": "1",
+  "images": {
+    "identity": "",
+    "contract": "",
+    "trade": "",
+    "settlement": "",
+    "file": "",
+    "gateway": ""
+  },
+  "replicas": {
+    "identity": 1,
+    "contract": 1,
+    "trade": 1,
+    "settlement": 1,
+    "file": 1,
+    "gateway": 1
+  },
+  "runtime": {},
+  "contractProfiles": "observability,messaging,jobs"
+}

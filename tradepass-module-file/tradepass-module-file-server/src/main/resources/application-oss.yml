@@ -1,0 +1,12 @@
+tradepass:
+  storage:
+    provider: aliyun-oss
+    enabled: true
+    required: true
+    oss:
+      endpoint: ${OSS_ENDPOINT}
+      region: ${OSS_REGION}
+      bucket: ${OSS_BUCKET}
+      legacy-cos-bucket: ${TRADEPASS_LEGACY_COS_BUCKET:}
+      legacy-cos-region: ${TRADEPASS_LEGACY_COS_REGION:ap-shanghai}
+      legacy-cos-key-prefix: ${TRADEPASS_LEGACY_COS_KEY_PREFIX:tradepass}

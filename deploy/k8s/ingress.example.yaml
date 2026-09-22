@@ -1,0 +1,22 @@
+# Example only: change the host, TLS Secret, ingress class and matching NetworkPolicy namespace.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tradepass
+  namespace: tradepass-staging
+spec:
+  ingressClassName: your-ingress-class
+  tls:
+    - hosts: [api.example.invalid]
+      secretName: tradepass-api-tls
+  rules:
+    - host: api.example.invalid
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  name: http
