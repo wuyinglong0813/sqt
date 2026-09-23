@@ -20,7 +20,7 @@ public class RankingCacheOperationsHttp {
     public record Put4Request(long companyId, String direction, String period, List<RankingItem> ranking) {}
     public record Evict2Request(long companyId, String direction) {}
 
-    @FeignClient(name = "tradepass-trade", contextId = "RankingCacheOperationsHttp",
+    @FeignClient(name = "${tradepass.services.trade-name:tradepass-trade}", contextId = "RankingCacheOperationsHttp",
             url = "${tradepass.services.trade-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/RankingCacheOperations/get3")
@@ -32,7 +32,7 @@ public class RankingCacheOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'trade'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     RankingCacheOperations remoteRankingCacheOperations(Client client) {
         return new RankingCacheOperations() {
             @Override public List<RankingItem> get(long companyId, String direction, String period) { return client.get3(new Get3Request(companyId, direction, period)); }
@@ -42,7 +42,7 @@ public class RankingCacheOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "trade")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     public static class Endpoint {
         private final RankingCacheOperations operations;
         public Endpoint(RankingCacheOperations operations) { this.operations = operations; }

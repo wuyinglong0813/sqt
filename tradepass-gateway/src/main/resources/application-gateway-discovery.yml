@@ -1,7 +1,7 @@
 tradepass:
   services:
     identity-url: lb://tradepass-identity
-    contract-url: lb://tradepass-contract
-    trade-url: lb://tradepass-trade
-    settlement-url: lb://tradepass-settlement
-    file-url: lb://tradepass-file
+    contract-url: lb://${tradepass.services.contract-name:tradepass-contract}
+    trade-url: lb://${tradepass.services.trade-name:tradepass-trade}
+    settlement-url: lb://${tradepass.services.settlement-name:tradepass-settlement}
+    file-url: lb://${tradepass.services.file-name:tradepass-file}

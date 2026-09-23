@@ -58,7 +58,7 @@ class AuthInterceptorTest {
     void usesRequestedCompanyOnlyWhenMembershipIsActive() throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("Authorization", "Bearer token");
-        request.addHeader("X-CompanyDO-Id", "9");
+        request.addHeader("X-Company-Id", "9");
         when(sessionService.resolveUserId("Bearer token")).thenReturn(7L);
         when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
 
@@ -76,7 +76,7 @@ class AuthInterceptorTest {
     void rejectsInvalidOrUnauthorizedCompanyHeader() throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.addHeader("Authorization", "token");
-        request.addHeader("X-CompanyDO-Id", "not-a-number");
+        request.addHeader("X-Company-Id", "not-a-number");
         when(sessionService.resolveUserId("token")).thenReturn(7L);
 
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -107,7 +107,7 @@ class AuthInterceptorTest {
         when(memberMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
         MockHttpServletRequest business = new MockHttpServletRequest("GET", "/api/contracts");
         business.addHeader("Authorization", "token");
-        business.addHeader("X-CompanyDO-Id", "3");
+        business.addHeader("X-Company-Id", "3");
         MockHttpServletResponse denied = new MockHttpServletResponse();
         assertThat(interceptor.preHandle(business, denied, new Object())).isFalse();
         assertThat(denied.getStatus()).isEqualTo(403);

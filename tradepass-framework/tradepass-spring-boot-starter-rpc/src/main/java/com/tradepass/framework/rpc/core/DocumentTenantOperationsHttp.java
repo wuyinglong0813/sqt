@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.*;
 public class DocumentTenantOperationsHttp {
     public record Initialize2Request(long companyId, long operatorUserId) {}
 
-    @FeignClient(name = "tradepass-trade", contextId = "DocumentTenantOperationsHttp",
+    @FeignClient(name = "${tradepass.services.trade-name:tradepass-trade}", contextId = "DocumentTenantOperationsHttp",
             url = "${tradepass.services.trade-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/DocumentTenantOperations/initialize2")
@@ -24,7 +24,7 @@ public class DocumentTenantOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'trade'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     DocumentTenantOperations remoteDocumentTenantOperations(Client client) {
         return new DocumentTenantOperations() {
             @Override public void initialize(long companyId, long operatorUserId) { client.initialize2(new Initialize2Request(companyId, operatorUserId)); }
@@ -32,7 +32,7 @@ public class DocumentTenantOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "trade")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     public static class Endpoint {
         private final DocumentTenantOperations operations;
         public Endpoint(DocumentTenantOperations operations) { this.operations = operations; }

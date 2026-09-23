@@ -60,7 +60,7 @@ class ServiceDiscoveryTransportTest {
     }
 
     @Test void sentinelRejectsFileWritesBeforeTheyReachEitherInstance() {
-        var rule = new FlowRule("POST:http://tradepass-module-file/tradepass-module-file-server/internal/storage/put");
+        var rule = new FlowRule("POST:http://tradepass-file/internal/storage/put");
         rule.setGrade(RuleConstant.FLOW_GRADE_QPS); rule.setCount(0);
         FlowRuleManager.loadRules(List.of(rule));
         assertThatThrownBy(() -> storage.put(new InternalContracts.PutObject("key", new byte[]{1}, "image/png", "sha")))

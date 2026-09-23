@@ -21,7 +21,7 @@ public class ApprovalOperationsHttp {
     public record MarkResultRead1Request(Long id) {}
     public record RecordResult9Request(long recipientCompanyId, long sourceCompanyId, String resultType, long sourceId, Long contractId, String resultStatus, String title, String detail, String rejectedReason) {}
 
-    @FeignClient(name = "tradepass-trade", contextId = "ApprovalOperationsHttp",
+    @FeignClient(name = "${tradepass.services.trade-name:tradepass-trade}", contextId = "ApprovalOperationsHttp",
             url = "${tradepass.services.trade-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/ApprovalOperations/pendingFulfillment0")
@@ -37,7 +37,7 @@ public class ApprovalOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'trade'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     ApprovalOperations remoteApprovalOperations(Client client) {
         return new ApprovalOperations() {
             @Override public List<Map<String, Object>> pendingFulfillment() { return client.pendingFulfillment0(new PendingFulfillment0Request()); }
@@ -49,7 +49,7 @@ public class ApprovalOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "trade")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     public static class Endpoint {
         private final ApprovalOperations operations;
         public Endpoint(ApprovalOperations operations) { this.operations = operations; }

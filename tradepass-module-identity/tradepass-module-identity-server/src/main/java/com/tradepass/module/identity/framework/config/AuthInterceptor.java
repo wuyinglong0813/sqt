@@ -18,7 +18,7 @@ import java.util.List;
 
 /**
  * 鉴权拦截器：校验随机会话 token → 写入请求级 AuthContext。
- * 当前操作企业优先取请求头 X-CompanyDO-Id，否则回退到用户第一家 ACTIVE 企业。
+ * 当前操作企业优先取请求头 X-Company-Id，否则回退到用户第一家 ACTIVE 企业。
  * 未携带合法 token 时对受保护接口返回 401。
  */
 @Component
@@ -41,7 +41,7 @@ public class AuthInterceptor implements HandlerInterceptor {
             return false;
         }
 
-        String requestedCompanyId = request.getHeader("X-CompanyDO-Id");
+        String requestedCompanyId = request.getHeader("X-Company-Id");
         Long companyId;
         if (requestedCompanyId != null && !requestedCompanyId.isBlank()) {
             companyId = resolveRequestedCompanyId(userId, requestedCompanyId);

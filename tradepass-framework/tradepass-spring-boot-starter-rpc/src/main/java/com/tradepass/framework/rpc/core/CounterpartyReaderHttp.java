@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.*;
 public class CounterpartyReaderHttp {
     public record CountActiveBetween2Request(Long leftCompanyId, Long rightCompanyId) {}
 
-    @FeignClient(name = "tradepass-identity", contextId = "CounterpartyReaderHttp",
+    @FeignClient(name = "${tradepass.services.identity-name:tradepass-identity}", contextId = "CounterpartyReaderHttp",
             url = "${tradepass.services.identity-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/CounterpartyReader/countActiveBetween2")
@@ -24,7 +24,7 @@ public class CounterpartyReaderHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'identity'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     CounterpartyReader remoteCounterpartyReader(Client client) {
         return new CounterpartyReader() {
             @Override public long countActiveBetween(Long leftCompanyId, Long rightCompanyId) { return client.countActiveBetween2(new CountActiveBetween2Request(leftCompanyId, rightCompanyId)); }
@@ -32,7 +32,7 @@ public class CounterpartyReaderHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "identity")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     public static class Endpoint {
         private final CounterpartyReader operations;
         public Endpoint(CounterpartyReader operations) { this.operations = operations; }

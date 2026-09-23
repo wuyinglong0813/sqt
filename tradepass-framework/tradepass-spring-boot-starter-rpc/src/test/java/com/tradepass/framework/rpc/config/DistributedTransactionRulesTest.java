@@ -23,6 +23,14 @@ class DistributedTransactionRulesTest {
 
     @AfterEach void clearContext() { RootContext.unbind(); }
 
+    @Test void disabledSeataKeepsTheExistingSpringTransaction() throws Throwable {
+        var local = new DistributedTransactionConfiguration.WorkflowTransactions(new LocalManager(), false);
+        var call = call("normal");
+        when(call.proceed()).thenReturn("local");
+        assertEquals("local", local.invoke(call));
+        verify(call).proceed();
+    }
+
     @Test void failureRollsBackButOriginalNoRollbackForStillCommits() throws Throwable {
         var global = mock(GlobalTransaction.class);
         try (var globals = mockStatic(GlobalTransactionContext.class)) {

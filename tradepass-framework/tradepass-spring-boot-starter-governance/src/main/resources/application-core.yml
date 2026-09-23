@@ -1,0 +1,24 @@
+# Activate after nacos in all three applications. Hosted domains have one registered owner.
+spring:
+  cloud:
+    loadbalancer:
+      cache:
+        # Nacos already maintains an instance cache; avoid retaining an empty list after restart.
+        enabled: false
+seata:
+  enabled: false
+  enable-auto-data-source-proxy: false
+tradepass:
+  services:
+    contract-name: tradepass-business
+    trade-name: tradepass-business
+    settlement-name: tradepass-business
+    file-name: tradepass-business
+  jobs:
+    xxl:
+      enabled: false
+server:
+  tomcat:
+    threads:
+      max: 32
+      min-spare: 2

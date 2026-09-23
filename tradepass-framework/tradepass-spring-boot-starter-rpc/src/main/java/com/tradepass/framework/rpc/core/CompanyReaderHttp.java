@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.*;
 public class CompanyReaderHttp {
     public record SelectById1Request(Serializable id) {}
 
-    @FeignClient(name = "tradepass-identity", contextId = "CompanyReaderHttp",
+    @FeignClient(name = "${tradepass.services.identity-name:tradepass-identity}", contextId = "CompanyReaderHttp",
             url = "${tradepass.services.identity-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/CompanyReader/selectById1")
@@ -25,7 +25,7 @@ public class CompanyReaderHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'identity'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     CompanyReader remoteCompanyReader(Client client) {
         return new CompanyReader() {
             @Override public CompanyRespDTO selectById(Serializable id) { return client.selectById1(new SelectById1Request(id)); }
@@ -33,7 +33,7 @@ public class CompanyReaderHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "identity")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     public static class Endpoint {
         private final CompanyReader operations;
         public Endpoint(CompanyReader operations) { this.operations = operations; }

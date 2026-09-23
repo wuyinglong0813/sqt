@@ -39,7 +39,7 @@ public class TransportConfiguration {
     @Bean InternalContracts.StorageFallbackFactory storageFallbackFactory() { return new InternalContracts.StorageFallbackFactory(); }
 
     @Bean
-    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("'${tradepass.runtime.role}' != 'file'")
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role}', 'file')")
     ObjectStorageService remoteStorage(InternalContracts.StorageClient client, Environment environment, ObjectMapper mapper) {
         boolean enabled = environment.getProperty("tradepass.storage.enabled", Boolean.class, false);
         if (environment.getProperty("tradepass.storage.required", Boolean.class, false) && !enabled) {

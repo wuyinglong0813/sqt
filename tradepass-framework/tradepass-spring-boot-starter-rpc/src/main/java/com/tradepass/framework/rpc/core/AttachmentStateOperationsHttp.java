@@ -20,7 +20,7 @@ public class AttachmentStateOperationsHttp {
     public record VoidApproved1Request(Long id) {}
     public record PendingConfirmationCount1Request(long companyId) {}
 
-    @FeignClient(name = "tradepass-settlement", contextId = "AttachmentStateOperationsHttp",
+    @FeignClient(name = "${tradepass.services.settlement-name:tradepass-settlement}", contextId = "AttachmentStateOperationsHttp",
             url = "${tradepass.services.settlement-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/AttachmentStateOperations/state2")
@@ -36,7 +36,7 @@ public class AttachmentStateOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'settlement'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'settlement')")
     AttachmentStateOperations remoteAttachmentStateOperations(Client client) {
         return new AttachmentStateOperations() {
             @Override public AttachmentState state(Long id, boolean includeDeleted) { return client.state2(new State2Request(id, includeDeleted)); }
@@ -48,7 +48,7 @@ public class AttachmentStateOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "settlement")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'settlement')")
     public static class Endpoint {
         private final AttachmentStateOperations operations;
         public Endpoint(AttachmentStateOperations operations) { this.operations = operations; }

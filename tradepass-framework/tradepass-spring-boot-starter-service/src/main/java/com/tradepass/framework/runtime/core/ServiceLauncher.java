@@ -6,16 +6,22 @@ import java.util.Map;
 public final class ServiceLauncher {
     private ServiceLauncher() { }
     public static void run(String role, int port, Class<?> configuration, String[] args) {
-        if (!RouteOwnership.ROLES.contains(role)) throw new IllegalArgumentException("Unknown service role");
+        if (!RouteOwnership.ROLES.contains(role) && !role.equals("business")) throw new IllegalArgumentException("Unknown service role");
         SpringApplication app = new SpringApplication(configuration);
         if (role.equals("file")) app.setAdditionalProfiles("observability", "microservice", role);
+        else if (role.equals("business")) app.setAdditionalProfiles("observability", "microservice", "split", "business");
         else app.setAdditionalProfiles("observability", "microservice", "split", role);
         app.addInitializers(context -> {
             Map<String, Object> fixed = new java.util.HashMap<>();
             fixed.put("tradepass.runtime.role", role);
             fixed.put("wechat.cloud-open-api-enabled", false);
+            if (context.getEnvironment().matchesProfiles("core")) {
+                fixed.put("seata.enabled", false);
+                fixed.put("seata.enable-auto-data-source-proxy", false);
+                fixed.put("tradepass.jobs.xxl.enabled", false);
+            }
             String workerBase = context.getEnvironment().getProperty("TRADEPASS_IDS_WORKER_BASE");
-            if (workerBase != null) {
+            if (workerBase != null && !role.equals("business")) {
                 String pod = context.getEnvironment().getRequiredProperty("TRADEPASS_POD_NAME");
                 if (!pod.matches(java.util.regex.Pattern.quote(role) + "-[0-5]")) {
                     throw new IllegalArgumentException("An owned StatefulSet ordinal 0..5 is required for ID allocation");
@@ -25,7 +31,14 @@ public final class ServiceLauncher {
                 if (base != expected) throw new IllegalArgumentException("Incorrect worker range for " + role);
                 fixed.put("tradepass.ids.worker-id", base + Integer.parseInt(pod.substring(pod.lastIndexOf('-') + 1)));
             }
-            if (!role.equals("file")) fixed.put("tradepass.services.split", true);
+            if (role.equals("business")) {
+                fixed.put("tradepass.services.split", true);
+                fixed.put("seata.enabled", false);
+                fixed.put("seata.enable-auto-data-source-proxy", false);
+                fixed.put("spring.flyway.enabled", true);
+                fixed.put("spring.flyway.baseline-on-migrate", false);
+                fixed.put("spring.flyway.locations", "classpath:db/business");
+            } else if (!role.equals("file")) fixed.put("tradepass.services.split", true);
             if (role.equals("file")) fixed.put("management.endpoint.health.group.readiness.include", "readinessState");
             context.getEnvironment().getPropertySources().addFirst(
                     new org.springframework.core.env.MapPropertySource("service-identity", fixed));

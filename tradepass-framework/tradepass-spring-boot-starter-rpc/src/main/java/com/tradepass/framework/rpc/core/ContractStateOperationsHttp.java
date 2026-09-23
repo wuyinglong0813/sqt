@@ -17,7 +17,7 @@ public class ContractStateOperationsHttp {
     public record ElectronicTaskCount1Request(Long contractId) {}
     public record ChangeActiveStatus2Request(Long contractId, String nextStatus) {}
 
-    @FeignClient(name = "tradepass-contract", contextId = "ContractStateOperationsHttp",
+    @FeignClient(name = "${tradepass.services.contract-name:tradepass-contract}", contextId = "ContractStateOperationsHttp",
             url = "${tradepass.services.contract-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/ContractStateOperations/electronicTaskCount1")
@@ -27,7 +27,7 @@ public class ContractStateOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'contract'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'contract')")
     ContractStateOperations remoteContractStateOperations(Client client) {
         return new ContractStateOperations() {
             @Override public long electronicTaskCount(Long contractId) { return client.electronicTaskCount1(new ElectronicTaskCount1Request(contractId)); }
@@ -36,7 +36,7 @@ public class ContractStateOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "contract")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'contract')")
     public static class Endpoint {
         private final ContractStateOperations operations;
         public Endpoint(ContractStateOperations operations) { this.operations = operations; }

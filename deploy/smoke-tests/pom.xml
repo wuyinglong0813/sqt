@@ -8,6 +8,7 @@
   </parent>
   <artifactId>tradepass-smoke-tests</artifactId>
   <dependencies>
+    <dependency><groupId>org.apache.rocketmq</groupId><artifactId>rocketmq-client</artifactId><scope>test</scope></dependency>
     <dependency>
       <groupId>org.jacoco</groupId>
       <artifactId>org.jacoco.core</artifactId>

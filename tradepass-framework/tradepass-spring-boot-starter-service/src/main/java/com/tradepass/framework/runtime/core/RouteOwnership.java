@@ -1,5 +1,6 @@
 package com.tradepass.framework.runtime.core;
 
+import com.tradepass.framework.common.core.HostedRoles;
 import com.tradepass.framework.web.core.controller.ProbeController;
 
 import java.lang.reflect.Method;
@@ -21,6 +22,6 @@ public final class RouteOwnership {
 
     public static boolean serves(String role, Class<?> type, Method method) {
         String owner = owner(type, method);
-        return "all".equals(owner) || role.equals(owner);
+        return "all".equals(owner) || HostedRoles.hosts(role, owner);
     }
 }

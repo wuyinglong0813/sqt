@@ -21,7 +21,7 @@ public class ContractDirectoryOperationsHttp {
     public record PartyContracts5Request(long companyId, String counterpartyName, String status, int limit, long offset) {}
     public record PartyContractCount3Request(long companyId, String counterpartyName, String status) {}
 
-    @FeignClient(name = "tradepass-contract", contextId = "ContractDirectoryOperationsHttp",
+    @FeignClient(name = "${tradepass.services.contract-name:tradepass-contract}", contextId = "ContractDirectoryOperationsHttp",
             url = "${tradepass.services.contract-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/ContractDirectoryOperations/contractsByIds1")
@@ -37,7 +37,7 @@ public class ContractDirectoryOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'contract'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'contract')")
     ContractDirectoryOperations remoteContractDirectoryOperations(Client client) {
         return new ContractDirectoryOperations() {
             @Override public List<TradeContractRespDTO> contractsByIds(List<Long> ids) { return client.contractsByIds1(new ContractsByIds1Request(ids)); }
@@ -49,7 +49,7 @@ public class ContractDirectoryOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "contract")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'contract')")
     public static class Endpoint {
         private final ContractDirectoryOperations operations;
         public Endpoint(ContractDirectoryOperations operations) { this.operations = operations; }

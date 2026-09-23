@@ -1,0 +1,138 @@
+# 4GB 机器上的三个进程：gateway、identity、business。
+# business 同时提供合同、交易、结算和文件，统一连接新的 _business 库。
+# 不要和 yudao.compose.yml 或 service.compose.yml 同时启动。
+# 保留 Nacos、RocketMQ；Seata、XXL-JOB 和 tracing 关闭。
+name: tradepass-core
+
+x-runtime: &runtime
+  pull_policy: never
+  restart: "no"
+  mem_limit: 416m
+  user: "0:0"
+  network_mode: host
+  volumes:
+    - ${TRADEPASS_LOG_DIRECTORY:-/docker/tradepass/logs}:/root/logs
+
+x-common-environment: &common
+  TZ: Asia/Shanghai
+  TRADEPASS_TRACING_ENABLED: "false"
+  SW_AGENT_COLLECTOR_BACKEND_SERVICES: ${SW_AGENT_COLLECTOR_BACKEND_SERVICES:-127.0.0.1:11800}
+  SW_AGENT_TRACE_IGNORE_PATH: /actuator/**
+  MALLOC_ARENA_MAX: 2
+  JAVA_OPTS: -Xms64m -Xmx128m -XX:MaxMetaspaceSize=128m -XX:MaxDirectMemorySize=32m -XX:ReservedCodeCacheSize=32m -XX:+UseSerialGC -XX:ActiveProcessorCount=1
+  SERVER_ADDRESS: 127.0.0.1
+  SERVER_SHUTDOWN: graceful
+  SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 45s
+  SPRING_PROFILES_ACTIVE: observability,filelog,nacos,core
+  NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-127.0.0.1:8848}
+  NACOS_NAMESPACE: ${NACOS_NAMESPACE:-}
+  SPRING_CLOUD_NACOS_DISCOVERY_IP: 127.0.0.1
+  NACOS_GROUP: ${NACOS_GROUP:-TRADEPASS_CORE}
+  NACOS_USERNAME: ${NACOS_USERNAME:-nacos}
+  NACOS_PASSWORD: ${NACOS_PASSWORD:?Set the Nacos password}
+  SENTINEL_DASHBOARD: ${SENTINEL_DASHBOARD:-}
+  TRADEPASS_INTERNAL_KEY: ${TRADEPASS_INTERNAL_KEY:?Set an environment-specific random internal key}
+  TRADEPASS_IDS_DATACENTER_ID: ${TRADEPASS_IDS_DATACENTER_ID:?Set a datacenter ID from 0 to 31}
+  TRADEPASS_DEV_ENABLED: "false"
+  TRADEPASS_DEMO_DATA_ENABLED: "false"
+  TRADEPASS_EXPERIENCE_TEST_ACCOUNTS_ENABLED: "false"
+  TRADEPASS_STORAGE_PROVIDER: ${TRADEPASS_STORAGE_PROVIDER:-cloudbase-cos}
+  TRADEPASS_STORAGE_ENABLED: ${TRADEPASS_STORAGE_ENABLED:-false}
+  TRADEPASS_STORAGE_REQUIRED: ${TRADEPASS_STORAGE_REQUIRED:-false}
+  CLOUDBASE_STORAGE_BUCKET: ${CLOUDBASE_STORAGE_BUCKET:-}
+  CLOUDBASE_STORAGE_REGION: ${CLOUDBASE_STORAGE_REGION:-ap-shanghai}
+  SEATA_ENABLED: "false"
+
+x-business-environment: &business
+  SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 3
+  SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 0
+  TRADEPASS_REDIS_ENABLED: ${TRADEPASS_REDIS_ENABLED:-false}
+  REDIS_HOST: 127.0.0.1
+  REDIS_PORT: ${REDIS_PUBLISH_PORT:-6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  WECHAT_APP_ID: ${WECHAT_APP_ID:-}
+  WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:-}
+  FADADA_ENABLED: ${FADADA_ENABLED:-false}
+  FADADA_APP_ID: ${FADADA_APP_ID:-}
+  FADADA_APP_SECRET: ${FADADA_APP_SECRET:-}
+  FADADA_SERVER_URL: ${FADADA_SERVER_URL:-https://api.fadada.com/api/v5}
+  FADADA_CALLBACK_URL: ${FADADA_CALLBACK_URL:-}
+
+services:
+  identity:
+    <<: *runtime
+    image: tradepass-identity:${TRADEPASS_IMAGE_TAG:-local}
+    environment:
+      <<: [*common, *business]
+      SW_AGENT_NAME: tradepass-identity
+      SERVER_PORT: 1111
+      MANAGEMENT_PORT: 11111
+      LOGGING_FILE_NAME: /root/logs/tradepass-identity.log
+      TRADEPASS_IDS_WORKER_ID: 1
+      TRADEPASS_DATABASE_URL: ${IDENTITY_DATABASE_URL:?Set the existing identity JDBC URL}
+      DB_USERNAME: ${IDENTITY_DB_USERNAME:?Set the identity database user}
+      DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?Set the identity database password}
+  business:
+    <<: *runtime
+    mem_limit: 704m
+    depends_on:
+      identity: {condition: service_healthy}
+    image: tradepass-business:${TRADEPASS_IMAGE_TAG:-local}
+    environment:
+      <<: [*common, *business]
+      JAVA_OPTS: -Xms64m -Xmx256m -XX:MaxMetaspaceSize=160m -XX:MaxDirectMemorySize=32m -XX:ReservedCodeCacheSize=48m -XX:+UseSerialGC -XX:ActiveProcessorCount=1
+      SW_AGENT_NAME: tradepass-business
+      SERVER_PORT: 1112
+      MANAGEMENT_PORT: 11112
+      LOGGING_FILE_NAME: /root/logs/tradepass-business.log
+      TRADEPASS_IDS_WORKER_ID: 2
+      SPRING_PROFILES_ACTIVE: observability,filelog,nacos,core,messaging
+      ROCKETMQ_NAME_SERVER: 127.0.0.1:9876
+      ROCKETMQ_CALLBACK_TOPIC: ${ROCKETMQ_CALLBACK_TOPIC:-tradepass-callback-events}
+      ROCKETMQ_ACCESS_KEY: ${ROCKETMQ_ACCESS_KEY:-}
+      ROCKETMQ_SECRET_KEY: ${ROCKETMQ_SECRET_KEY:-}
+      TRADEPASS_DATABASE_URL: ${BUSINESS_DATABASE_URL:?Set the NEW unified business JDBC URL}
+      DB_USERNAME: ${BUSINESS_DB_USERNAME:?Set the business database user}
+      DB_PASSWORD: ${BUSINESS_DB_PASSWORD:?Set the business database password}
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+      OSS_REGION: ${OSS_REGION:-}
+      OSS_BUCKET: ${OSS_BUCKET:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_SESSION_TOKEN: ${OSS_SESSION_TOKEN:-}
+      TRADEPASS_LEGACY_COS_BUCKET: ${TRADEPASS_LEGACY_COS_BUCKET:-}
+      TRADEPASS_LEGACY_COS_REGION: ${TRADEPASS_LEGACY_COS_REGION:-ap-shanghai}
+      TRADEPASS_LEGACY_COS_KEY_PREFIX: ${TRADEPASS_LEGACY_COS_KEY_PREFIX:-tradepass}
+      TRADEPASS_LEGACY_COS_SECRET_ID: ${TRADEPASS_LEGACY_COS_SECRET_ID:-}
+      TRADEPASS_LEGACY_COS_SECRET_KEY: ${TRADEPASS_LEGACY_COS_SECRET_KEY:-}
+      TRADEPASS_LEGACY_COS_SESSION_TOKEN: ${TRADEPASS_LEGACY_COS_SESSION_TOKEN:-}
+  gateway:
+    <<: *runtime
+    mem_limit: 320m
+    depends_on:
+      identity: {condition: service_healthy}
+      business: {condition: service_healthy}
+    image: tradepass-gateway:${TRADEPASS_IMAGE_TAG:-local}
+    environment:
+      TZ: Asia/Shanghai
+      SPRING_PROFILES_ACTIVE: observability,filelog,nacos,core
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-127.0.0.1:8848}
+      NACOS_NAMESPACE: ${NACOS_NAMESPACE:-}
+      SPRING_CLOUD_NACOS_DISCOVERY_IP: 127.0.0.1
+      NACOS_GROUP: ${NACOS_GROUP:-TRADEPASS_CORE}
+      NACOS_USERNAME: ${NACOS_USERNAME:-nacos}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:?Set the Nacos password}
+      SENTINEL_DASHBOARD: ${SENTINEL_DASHBOARD:-}
+      SERVER_ADDRESS: 127.0.0.1
+      SERVER_PORT: 1110
+      MANAGEMENT_PORT: 10110
+      LOGGING_FILE_NAME: /root/logs/tradepass-gateway.log
+      SERVER_SHUTDOWN: graceful
+      SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 45s
+      TRADEPASS_TRACING_ENABLED: "false"
+      SW_AGENT_NAME: tradepass-gateway
+      SW_AGENT_COLLECTOR_BACKEND_SERVICES: ${SW_AGENT_COLLECTOR_BACKEND_SERVICES:-127.0.0.1:11800}
+      SW_AGENT_TRACE_IGNORE_PATH: /actuator/**
+      MALLOC_ARENA_MAX: 2
+      JAVA_OPTS: -Xms64m -Xmx96m -XX:MaxMetaspaceSize=96m -XX:MaxDirectMemorySize=32m -XX:ReservedCodeCacheSize=32m -XX:+UseSerialGC -XX:ActiveProcessorCount=1
+

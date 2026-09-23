@@ -23,8 +23,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 @ConditionalOnProperty(name = "tradepass.services.split", havingValue = "true")
 @EnableAspectJAutoProxy(proxyTargetClass = true)
 public class DistributedTransactionConfiguration {
-    @Bean WorkflowTransactions workflowTransactions(PlatformTransactionManager manager) {
-        return new WorkflowTransactions(manager);
+    @Bean WorkflowTransactions workflowTransactions(PlatformTransactionManager manager, org.springframework.core.env.Environment environment) {
+        return new WorkflowTransactions(manager, environment.getProperty("seata.enabled", Boolean.class, false));
     }
 
     @Aspect
@@ -32,10 +32,16 @@ public class DistributedTransactionConfiguration {
     public static class WorkflowTransactions {
         private final AnnotationTransactionAttributeSource attributes = new AnnotationTransactionAttributeSource();
         private final PlatformTransactionManager manager;
-        public WorkflowTransactions(PlatformTransactionManager manager) { this.manager = manager; }
+        private final boolean seataEnabled;
+        public WorkflowTransactions(PlatformTransactionManager manager) { this(manager, true); }
+        public WorkflowTransactions(PlatformTransactionManager manager, boolean seataEnabled) {
+            this.manager = manager;
+            this.seataEnabled = seataEnabled;
+        }
 
         @Around("execution(public * com.tradepass..service..*(..)) && @annotation(org.springframework.transaction.annotation.Transactional)")
         public Object invoke(ProceedingJoinPoint call) throws Throwable {
+            if (!seataEnabled) return call.proceed();
             var method = ((MethodSignature) call.getSignature()).getMethod();
             var attribute = attributes.getTransactionAttribute(method, call.getTarget().getClass());
             if (attribute == null) return call.proceed();

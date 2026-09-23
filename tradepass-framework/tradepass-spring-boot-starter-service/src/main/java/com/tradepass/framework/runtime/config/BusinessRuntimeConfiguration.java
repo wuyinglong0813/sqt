@@ -55,7 +55,13 @@ public class BusinessRuntimeConfiguration {
     static class SharedDatabaseMappers { }
 
     @Configuration(proxyBeanMethods = false)
-    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "tradepass.services.split", havingValue = "true")
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("${tradepass.services.split:false} && '${tradepass.runtime.role:}' != 'business'")
     @MapperScan(basePackages = {"com.tradepass.module.${tradepass.runtime.role}.dal.mysql", "com.tradepass.framework.audit.core"}, markerInterface = BaseMapper.class)
     static class OwnedDatabaseMappers { }
+
+    @Configuration(proxyBeanMethods = false)
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "business")
+    @MapperScan(basePackages = {"com.tradepass.module.contract.dal.mysql", "com.tradepass.module.trade.dal.mysql",
+            "com.tradepass.module.settlement.dal.mysql", "com.tradepass.framework.audit.core"}, markerInterface = BaseMapper.class)
+    static class HostedDatabaseMappers { }
 }

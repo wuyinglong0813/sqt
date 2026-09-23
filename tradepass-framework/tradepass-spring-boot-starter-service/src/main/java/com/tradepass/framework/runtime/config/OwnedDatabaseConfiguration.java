@@ -1,7 +1,7 @@
 package com.tradepass.framework.runtime.config;
 
 import org.springframework.beans.factory.SmartInitializingSingleton;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
@@ -9,7 +9,7 @@ import org.springframework.boot.autoconfigure.flyway.FlywayMigrationStrategy;
 import javax.sql.DataSource;
 
 @Configuration(proxyBeanMethods = false)
-@ConditionalOnProperty(name = "tradepass.services.split", havingValue = "true")
+@ConditionalOnExpression("${tradepass.services.split:false} && '${tradepass.runtime.role:}' != 'business'")
 public class OwnedDatabaseConfiguration {
     @Bean FlywayMigrationStrategy ownedSchemaMigration(Environment environment) {
         return flyway -> {
@@ -25,9 +25,6 @@ public class OwnedDatabaseConfiguration {
 
     private static void validateConfiguration(String database, Environment environment) {
         String role = environment.getRequiredProperty("tradepass.runtime.role");
-        if (!environment.getProperty("seata.enabled", Boolean.class, false)) {
-            throw new IllegalStateException("Owned databases require Seata transaction coordination");
-        }
         if (environment.getProperty("tradepass.demo-data.enabled", Boolean.class, false)) {
             throw new IllegalStateException("Shared-database demo initialization is unavailable in split services; use isolated service fixtures");
         }
@@ -40,8 +37,10 @@ public class OwnedDatabaseConfiguration {
         return () -> {
             try (var connection = dataSource.getConnection()) {
                 validateConfiguration(connection.getCatalog(), environment);
-                try (var statement = connection.createStatement(); var rows = statement.executeQuery("SELECT COUNT(*) FROM undo_log")) {
-                    if (!rows.next()) throw new IllegalStateException("Missing Seata rollback table");
+                if (environment.getProperty("seata.enabled", Boolean.class, false)) {
+                    try (var statement = connection.createStatement(); var rows = statement.executeQuery("SELECT COUNT(*) FROM undo_log")) {
+                        if (!rows.next()) throw new IllegalStateException("Missing Seata rollback table");
+                    }
                 }
             } catch (java.sql.SQLException failure) {
                 throw new IllegalStateException("Owned database validation failed", failure);

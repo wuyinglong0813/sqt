@@ -57,6 +57,10 @@
           <include>db/owned/**</include>
         </includes>
       </resource>
+      <resource>
+        <directory>../../tradepass-business/src/main/resources</directory>
+        <includes><include>db/business/**</include></includes>
+      </resource>
     </resources>
     <plugins>
       <plugin>

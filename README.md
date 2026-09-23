@@ -17,7 +17,9 @@
 | `deploy/smoke-tests` | 六进程打包集成测试（Failsafe，需独立 services 测试库） |
 | `deploy/coverage` | JaCoCo 聚合报告（`-Pcoverage verify`） |
 
-运行服务共六个，测试模块和公共库不单独部署。四个业务库使用独立账号，跨服务事务由 Seata 协调。各领域内部保留 `api`、`model`、`domain` 分层。
+4 核 4G 的推荐部署为 **gateway、identity、business 三个进程 + Nacos + RocketMQ**，见 [三进程部署与迁移](docs/server-core-cutover.md)。此模式核心业务使用一个本地事务数据库，不运行 Seata、ELK、SkyWalking。
+
+原分库部署运行服务共六个，测试模块和公共库不单独部署。四个业务库使用独立账号，跨服务事务由 Seata 协调。各领域内部保留 `api`、`model`、`domain` 分层。
 
 ## 构建与验证
 

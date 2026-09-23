@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        transport: [direct, nacos]
+        transport: [direct, nacos, core]
     services:
       nacos:
         image: nacos/nacos-server:v2.3.2-slim
@@ -67,7 +67,7 @@ jobs:
             CREATE DATABASE tradepass_fix_validation_ci_services;
           '
       - name: Wait for isolated Nacos
-        if: matrix.transport == 'nacos'
+        if: matrix.transport != 'direct'
         run: |
           for attempt in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:18848/nacos/v1/console/health/readiness; then exit 0; fi
@@ -76,7 +76,8 @@ jobs:
           exit 1
       - name: Backend unit, architecture, HTTP and MySQL regression tests
         env:
-          TRADEPASS_TEST_NACOS_SERVER: ${{ matrix.transport == 'nacos' && '127.0.0.1:18848' || '' }}
+          TRADEPASS_TEST_TOPOLOGY: ${{ matrix.transport == 'core' && 'core' || 'split' }}
+          TRADEPASS_TEST_NACOS_SERVER: ${{ matrix.transport != 'direct' && '127.0.0.1:18848' || '' }}
           TRADEPASS_TEST_MYSQL_URL: jdbc:mysql://127.0.0.1:3306/tradepass_fix_validation_ci_workflow?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
           TRADEPASS_TEST_SERVICES_URL: jdbc:mysql://127.0.0.1:3306/tradepass_fix_validation_ci_services?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
           TRADEPASS_TEST_MYSQL_USERNAME: root

@@ -19,7 +19,7 @@ public class ContractReaderHttp {
     public record SelectByIdForUpdate1Request(Long id) {}
     public record CountContractsAwaitingSignature1Request(long companyId) {}
 
-    @FeignClient(name = "tradepass-contract", contextId = "ContractReaderHttp",
+    @FeignClient(name = "${tradepass.services.contract-name:tradepass-contract}", contextId = "ContractReaderHttp",
             url = "${tradepass.services.contract-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/ContractReader/selectById1")
@@ -31,7 +31,7 @@ public class ContractReaderHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'contract'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'contract')")
     ContractReader remoteContractReader(Client client) {
         return new ContractReader() {
             @Override public TradeContractRespDTO selectById(Serializable id) { return client.selectById1(new SelectById1Request(id)); }
@@ -41,7 +41,7 @@ public class ContractReaderHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "contract")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'contract')")
     public static class Endpoint {
         private final ContractReader operations;
         public Endpoint(ContractReader operations) { this.operations = operations; }

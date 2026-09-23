@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.*;
 public class AttachmentApprovalOperationsHttp {
     public record PendingAttachments1Request(long companyId) {}
 
-    @FeignClient(name = "tradepass-settlement", contextId = "AttachmentApprovalOperationsHttp",
+    @FeignClient(name = "${tradepass.services.settlement-name:tradepass-settlement}", contextId = "AttachmentApprovalOperationsHttp",
             url = "${tradepass.services.settlement-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/AttachmentApprovalOperations/pendingAttachments1")
@@ -26,7 +26,7 @@ public class AttachmentApprovalOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'settlement'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'settlement')")
     AttachmentApprovalOperations remoteAttachmentApprovalOperations(Client client) {
         return new AttachmentApprovalOperations() {
             @Override public List<PendingAttachment> pendingAttachments(long companyId) { return client.pendingAttachments1(new PendingAttachments1Request(companyId)); }
@@ -34,7 +34,7 @@ public class AttachmentApprovalOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "settlement")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'settlement')")
     public static class Endpoint {
         private final AttachmentApprovalOperations operations;
         public Endpoint(AttachmentApprovalOperations operations) { this.operations = operations; }

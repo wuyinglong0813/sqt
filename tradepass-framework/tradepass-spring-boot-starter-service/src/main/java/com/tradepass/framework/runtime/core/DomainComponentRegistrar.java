@@ -1,5 +1,6 @@
 package com.tradepass.framework.runtime.core;
 
+import com.tradepass.framework.common.core.HostedRoles;
 import com.tradepass.module.file.api.file.ObjectStorageService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -48,9 +49,9 @@ public final class DomainComponentRegistrar implements BeanDefinitionRegistryPos
                 "com.tradepass.framework.web.core.handler.GlobalExceptionHandler", "com.tradepass.framework.web.core.interceptor.DevModeInterceptor",
                 "com.tradepass.framework.mybatis.config.IdentifierConfiguration", "com.tradepass.framework.storage.config.StorageProperties",
                 "com.tradepass.framework.fadada.config.FadadaProperties", "com.tradepass.framework.flyway.config.FlywaySafetyConfig"));
-        if (role.equals("identity")) roots.addAll(List.of("com.tradepass.module.identity.framework.config.AuthInterceptor",
+        if (HostedRoles.hosts(role, "identity")) roots.addAll(List.of("com.tradepass.module.identity.framework.config.AuthInterceptor",
                 "com.tradepass.module.identity.framework.config.SystemPermissionInitializer", "com.tradepass.module.identity.framework.config.DatabaseInitializer"));
-        if (role.equals("contract")) roots.addAll(List.of("com.tradepass.module.contract.framework.callback.FadadaCallbackRecovery",
+        if (HostedRoles.hosts(role, "contract")) roots.addAll(List.of("com.tradepass.module.contract.framework.callback.FadadaCallbackRecovery",
                 "com.tradepass.module.contract.job.LocalCallbackRecoveryScheduler"));
         candidates.keySet().stream().filter(type -> roots.contains(type.getName())).forEach(pending::add);
         while (!pending.isEmpty()) {
@@ -80,16 +81,16 @@ public final class DomainComponentRegistrar implements BeanDefinitionRegistryPos
     }
 
     private void enqueue(Class<?> dependency, Map<Class<?>, ?> candidates, Deque<Class<?>> pending) {
-        // Storage is supplied by the remote adapter, never by a local COS instance in business processes.
+        // Storage is supplied explicitly by the remote adapter or the hosted storage configuration.
         if (ObjectStorageService.class.isAssignableFrom(dependency)) return;
         candidates.keySet().stream().filter(dependency::isAssignableFrom).forEach(pending::add);
     }
 
     private boolean belongsTo(Class<?> type, String role) {
         String name = type.getName();
-        if (name.startsWith("com.tradepass.module.contract.framework.callback.")) return role.equals("contract");
+        if (name.startsWith("com.tradepass.module.contract.framework.callback.")) return HostedRoles.hosts(role, "contract");
         for (String domain : List.of("identity", "contract", "trade", "settlement", "file")) {
-            if (name.startsWith("com.tradepass.module." + domain + ".")) return domain.equals(role);
+            if (name.startsWith("com.tradepass.module." + domain + ".")) return HostedRoles.hosts(role, domain);
         }
         return true;
     }

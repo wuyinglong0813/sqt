@@ -21,7 +21,7 @@ public final class InternalContracts {
                           @RequestHeader(value = "X-Company-Id", required = false) String companyId);
     }
 
-    @FeignClient(name = "tradepass-file", url = "${tradepass.services.file-url:}",
+    @FeignClient(name = "${tradepass.services.file-name:tradepass-file}", url = "${tradepass.services.file-url:}",
             fallbackFactory = StorageFallbackFactory.class)
     public interface StorageClient {
         @PostMapping("/internal/storage/put") StoredObject put(@RequestBody PutObject object);

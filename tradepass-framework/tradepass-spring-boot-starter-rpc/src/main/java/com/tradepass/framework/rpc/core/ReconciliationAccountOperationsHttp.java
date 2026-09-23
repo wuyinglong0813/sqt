@@ -30,7 +30,7 @@ public class ReconciliationAccountOperationsHttp {
     public record RecordAttachment9Request(TradeContractRespDTO contract, String sourceType, long sourceId, LocalDate businessDate, String documentNo, BigDecimal amount, long issuerCompanyId, long approvedBy, LocalDateTime approvedAt) {}
     public record ReverseSource5Request(String sourceType, long sourceId, long actionRequestId, long approvedBy, LocalDateTime approvedAt) {}
 
-    @FeignClient(name = "tradepass-settlement", contextId = "ReconciliationAccountOperationsHttp",
+    @FeignClient(name = "${tradepass.services.settlement-name:tradepass-settlement}", contextId = "ReconciliationAccountOperationsHttp",
             url = "${tradepass.services.settlement-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/ReconciliationAccountOperations/listAccounts0")
@@ -54,7 +54,7 @@ public class ReconciliationAccountOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'settlement'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'settlement')")
     ReconciliationAccountOperations remoteReconciliationAccountOperations(Client client) {
         return new ReconciliationAccountOperations() {
             @Override public List<Map<String, Object>> listAccounts() { return client.listAccounts0(new ListAccounts0Request()); }
@@ -70,7 +70,7 @@ public class ReconciliationAccountOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "settlement")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'settlement')")
     public static class Endpoint {
         private final ReconciliationAccountOperations operations;
         public Endpoint(ReconciliationAccountOperations operations) { this.operations = operations; }

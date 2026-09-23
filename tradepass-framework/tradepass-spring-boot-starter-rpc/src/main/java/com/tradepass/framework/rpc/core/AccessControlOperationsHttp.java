@@ -29,7 +29,7 @@ public class AccessControlOperationsHttp {
     public record HasPermission2Request(long companyId, String permission) {}
     public record EffectiveRole2Request(long companyId, long userId) {}
 
-    @FeignClient(name = "tradepass-identity", contextId = "AccessControlOperationsHttp",
+    @FeignClient(name = "${tradepass.services.identity-name:tradepass-identity}", contextId = "AccessControlOperationsHttp",
             url = "${tradepass.services.identity-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/AccessControlOperations/isActiveMember2")
@@ -59,7 +59,7 @@ public class AccessControlOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'identity'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     AccessControlOperations remoteAccessControlOperations(Client client) {
         return new AccessControlOperations() {
             @Override public boolean isActiveMember(long companyId, long userId) { return client.isActiveMember2(new IsActiveMember2Request(companyId, userId)); }
@@ -78,7 +78,7 @@ public class AccessControlOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "identity")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     public static class Endpoint {
         private final AccessControlOperations operations;
         public Endpoint(AccessControlOperations operations) { this.operations = operations; }

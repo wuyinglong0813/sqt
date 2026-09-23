@@ -24,7 +24,7 @@ public class FadadaPersonalIdentityOperationsHttp {
     public record SyncByClientUserId1Request(String clientUserId) {}
     public record SyncCallback2Request(String clientUserId, JsonNode data) {}
 
-    @FeignClient(name = "tradepass-identity", contextId = "FadadaPersonalIdentityOperationsHttp",
+    @FeignClient(name = "${tradepass.services.identity-name:tradepass-identity}", contextId = "FadadaPersonalIdentityOperationsHttp",
             url = "${tradepass.services.identity-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/FadadaPersonalIdentityOperations/current0")
@@ -44,7 +44,7 @@ public class FadadaPersonalIdentityOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'identity'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     FadadaPersonalIdentityOperations remoteFadadaPersonalIdentityOperations(Client client) {
         return new FadadaPersonalIdentityOperations() {
             @Override public PersonalIdentityRespDTO current() { return client.current0(new Current0Request()); }
@@ -58,7 +58,7 @@ public class FadadaPersonalIdentityOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "identity")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     public static class Endpoint {
         private final FadadaPersonalIdentityOperations operations;
         public Endpoint(FadadaPersonalIdentityOperations operations) { this.operations = operations; }

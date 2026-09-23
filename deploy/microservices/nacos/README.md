@@ -1,3 +1,5 @@
+> 三进程模式的 Data ID 和服务名见 [三进程手册](../../../docs/server-core-cutover.md)，以下为六进程模式。
+
 # Nacos 配置清单
 
 使用 `TRADEPASS_SERVICE_PROFILES=observability,nacos,sentinel` 前，在目标 namespace、`NACOS_GROUP` 中建立以下 Data ID：
@@ -20,20 +22,20 @@
 
 业务 Feign 资源：
 
-- `POST:http://tradepass-module-identity/tradepass-module-identity-server/internal/identity/resolve`
-- `POST:http://tradepass-module-file/tradepass-module-file-server/internal/storage/put`
-- `POST:http://tradepass-module-file/tradepass-module-file-server/internal/storage/get`
+- `POST:http://tradepass-identity/internal/identity/resolve`
+- `POST:http://tradepass-file/internal/storage/put`
+- `POST:http://tradepass-file/internal/storage/get`
 
 例如身份调用并发隔离（每个调用方实例最多 50 个并发），写入相应调用方的 `-flow.json`：
 
 ```json
-[{"resource":"POST:http://tradepass-module-identity/tradepass-module-identity-server/internal/identity/resolve","grade":0,"count":50}]
+[{"resource":"POST:http://tradepass-identity/internal/identity/resolve","grade":0,"count":50}]
 ```
 
 熔断规则写入调用方 `-degrade.json`；以下只是压测起点，不会自动加载：
 
 ```json
-[{"resource":"POST:http://tradepass-module-file/tradepass-module-file-server/internal/storage/put","grade":1,"count":0.5,"minRequestAmount":20,"statIntervalMs":10000,"timeWindow":10}]
+[{"resource":"POST:http://tradepass-file/internal/storage/put","grade":1,"count":0.5,"minRequestAmount":20,"statIntervalMs":10000,"timeWindow":10}]
 ```
 
 网关限流返回 HTTP 429 和原 `code/message/data` JSON；Feign 阻断返回失败，身份验证返回 503，存储异常触发原事务回滚。不能为认证、库存、账款或文件写入配置“成功”降级结果。

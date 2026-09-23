@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ -z "${TRADEPASS_TEST_SEATA_SERVER:-}" ]]; then
+if [[ "${TRADEPASS_TEST_TOPOLOGY:-split}" != core && -z "${TRADEPASS_TEST_SEATA_SERVER:-}" ]]; then
   exec bash "$ROOT_DIR/scripts/ci/with-seata.sh" bash "$ROOT_DIR/scripts/verify-backend.sh"
 fi
 if [[ -z "${TRADEPASS_TEST_ROCKETMQ_SERVER:-}" ]]; then
@@ -31,8 +31,10 @@ if [[ "$SERVICES_DATABASE" == "$WORKFLOW_DATABASE" ]]; then
 fi
 
 cd "$ROOT_DIR"
+mvn -B -f tools/database-migrator/pom.xml -DskipTests package
 mvn -B clean verify \
-  "-Dtradepass.test.seata.server=$TRADEPASS_TEST_SEATA_SERVER" \
+  "-Dtradepass.test.topology=${TRADEPASS_TEST_TOPOLOGY:-split}" \
+  "-Dtradepass.test.seata.server=${TRADEPASS_TEST_SEATA_SERVER:-}" \
   "-Dtradepass.test.rocketmq.server=$TRADEPASS_TEST_ROCKETMQ_SERVER" \
   "-Dtradepass.test.nacos.server=${TRADEPASS_TEST_NACOS_SERVER:-}" \
   "-Dtradepass.test.mysql.url=$TRADEPASS_TEST_MYSQL_URL" \

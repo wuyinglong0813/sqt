@@ -30,7 +30,7 @@ public class BusinessDocumentOperationsHttp {
     public record TypeLabel1Request(String type) {}
     public record DefaultTemplateContent1Request(String type) {}
 
-    @FeignClient(name = "tradepass-trade", contextId = "BusinessDocumentOperationsHttp",
+    @FeignClient(name = "${tradepass.services.trade-name:tradepass-trade}", contextId = "BusinessDocumentOperationsHttp",
             url = "${tradepass.services.trade-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/BusinessDocumentOperations/listTemplates1")
@@ -62,7 +62,7 @@ public class BusinessDocumentOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'trade'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     BusinessDocumentOperations remoteBusinessDocumentOperations(Client client) {
         return new BusinessDocumentOperations() {
             @Override public List<Map<String, Object>> listTemplates(String type) { return client.listTemplates1(new ListTemplates1Request(type)); }
@@ -82,7 +82,7 @@ public class BusinessDocumentOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "trade")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     public static class Endpoint {
         private final BusinessDocumentOperations operations;
         public Endpoint(BusinessDocumentOperations operations) { this.operations = operations; }

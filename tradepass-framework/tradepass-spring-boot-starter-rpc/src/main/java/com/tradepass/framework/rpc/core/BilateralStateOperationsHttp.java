@@ -18,7 +18,7 @@ public class BilateralStateOperationsHttp {
     public record PendingResumes3Request(Long contractId, boolean contractOnly, boolean lock) {}
     public record CancelApprovedVoids1Request(Long contractId) {}
 
-    @FeignClient(name = "tradepass-trade", contextId = "BilateralStateOperationsHttp",
+    @FeignClient(name = "${tradepass.services.trade-name:tradepass-trade}", contextId = "BilateralStateOperationsHttp",
             url = "${tradepass.services.trade-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/BilateralStateOperations/approvedVoids2")
@@ -30,7 +30,7 @@ public class BilateralStateOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'trade'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     BilateralStateOperations remoteBilateralStateOperations(Client client) {
         return new BilateralStateOperations() {
             @Override public List<Long> approvedVoids(Long contractId, boolean lock) { return client.approvedVoids2(new ApprovedVoids2Request(contractId, lock)); }
@@ -40,7 +40,7 @@ public class BilateralStateOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "trade")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     public static class Endpoint {
         private final BilateralStateOperations operations;
         public Endpoint(BilateralStateOperations operations) { this.operations = operations; }

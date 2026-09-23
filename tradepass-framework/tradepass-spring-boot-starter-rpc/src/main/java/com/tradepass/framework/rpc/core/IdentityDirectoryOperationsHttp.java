@@ -22,7 +22,7 @@ public class IdentityDirectoryOperationsHttp {
     public record Counterparties1Request(long companyId) {}
     public record OrderedCompanyNames2Request(long companyAId, long companyBId) {}
 
-    @FeignClient(name = "tradepass-identity", contextId = "IdentityDirectoryOperationsHttp",
+    @FeignClient(name = "${tradepass.services.identity-name:tradepass-identity}", contextId = "IdentityDirectoryOperationsHttp",
             url = "${tradepass.services.identity-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/IdentityDirectoryOperations/companyNames1")
@@ -40,7 +40,7 @@ public class IdentityDirectoryOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'identity'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     IdentityDirectoryOperations remoteIdentityDirectoryOperations(Client client) {
         return new IdentityDirectoryOperations() {
             @Override public Map<Long, String> companyNames(List<Long> companyIds) { return client.companyNames1(new CompanyNames1Request(companyIds)); }
@@ -53,7 +53,7 @@ public class IdentityDirectoryOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "identity")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     public static class Endpoint {
         private final IdentityDirectoryOperations operations;
         public Endpoint(IdentityDirectoryOperations operations) { this.operations = operations; }

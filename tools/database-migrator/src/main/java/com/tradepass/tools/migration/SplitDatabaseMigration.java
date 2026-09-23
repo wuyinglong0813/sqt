@@ -19,6 +19,10 @@ public final class SplitDatabaseMigration {
     private record Fingerprint(long rows, String sha256) { }
 
     public static void main(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("--merge-business")) {
+            MergeBusinessMigration.main(Arrays.copyOfRange(args, 1, args.length));
+            return;
+        }
         if (args.length > 1 || args.length == 1 && !Set.of("--plan", "--apply").contains(args[0])) {
             throw new IllegalArgumentException("Usage: migration.jar [--plan|--apply]; credentials are environment variables");
         }

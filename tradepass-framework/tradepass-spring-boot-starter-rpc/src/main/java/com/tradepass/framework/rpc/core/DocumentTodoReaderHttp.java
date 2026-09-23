@@ -17,7 +17,7 @@ public class DocumentTodoReaderHttp {
     public record PendingDocumentCount1Request(long companyId) {}
     public record LatestPendingDocument1Request(long companyId) {}
 
-    @FeignClient(name = "tradepass-trade", contextId = "DocumentTodoReaderHttp",
+    @FeignClient(name = "${tradepass.services.trade-name:tradepass-trade}", contextId = "DocumentTodoReaderHttp",
             url = "${tradepass.services.trade-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/DocumentTodoReader/pendingDocumentCount1")
@@ -27,7 +27,7 @@ public class DocumentTodoReaderHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'trade'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     DocumentTodoReader remoteDocumentTodoReader(Client client) {
         return new DocumentTodoReader() {
             @Override public long pendingDocumentCount(long companyId) { return client.pendingDocumentCount1(new PendingDocumentCount1Request(companyId)); }
@@ -36,7 +36,7 @@ public class DocumentTodoReaderHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "trade")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     public static class Endpoint {
         private final DocumentTodoReader operations;
         public Endpoint(DocumentTodoReader operations) { this.operations = operations; }

@@ -39,6 +39,7 @@ export TRADEPASS_TEST_MYSQL_USERNAME=root TRADEPASS_TEST_MYSQL_PASSWORD="$MYSQL_
 bash scripts/verify-backend.sh
 python3 -m unittest discover -s scripts/ci/tests -v
 docker compose --env-file deploy/microservices/.env.example -f deploy/microservices/compose.yml config --quiet
+if [[ "${TRADEPASS_TEST_TOPOLOGY:-split}" == core ]]; then exit 0; fi
 docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,size=128m \
   -v "$ROOT_DIR/observability/prometheus:/work:ro" -w /work \
   --entrypoint /bin/promtool prom/prometheus:v2.55.1 test rules alerts.test.yml

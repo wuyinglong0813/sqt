@@ -1,0 +1,224 @@
+# Same project name preserves existing MySQL/Redis/MQ volumes. Do not use down -v.
+name: tradepass-infra-static
+services:
+  mysql:
+    restart: on-failure:2
+    networks: &id001
+    - tradepass
+    logging: &id002
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    image: mysql:8.4
+    mem_limit: 640m
+    stop_grace_period: 90s
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Fill MYSQL_ROOT_PASSWORD in .env}
+      IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?Generate an independent 64-character
+        hex password}
+      BUSINESS_DB_PASSWORD: ${BUSINESS_DB_PASSWORD:?Set a 64-character hex password}
+    command:
+    - --character-set-server=utf8mb4
+    - --collation-server=utf8mb4_0900_ai_ci
+    - --innodb-buffer-pool-size=64M
+    - --max-connections=60
+    volumes:
+    - mysql-data:/var/lib/mysql
+    - ./mysql/11-core-databases.sh:/docker-entrypoint-initdb.d/11-core-databases.sh:ro
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql --protocol=TCP -h127.0.0.1 -uroot
+        -Nse "SELECT 1" >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 90s
+    ports:
+    - 127.0.0.1:${MYSQL_PORT:-3306}:3306
+  redis:
+    restart: on-failure:2
+    networks: *id001
+    logging: *id002
+    image: redis:7.4-alpine
+    mem_limit: 96m
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Fill REDIS_PASSWORD in .env}
+    command:
+    - /bin/sh
+    - -ec
+    - exec redis-server --appendonly yes --maxmemory 48mb --maxmemory-policy allkeys-lru
+      --requirepass "$${REDIS_PASSWORD}"
+    volumes:
+    - redis-data:/data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -qx PONG
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    ports:
+    - 127.0.0.1:${REDIS_PUBLISH_PORT:-6379}:6379
+  rocketmq-init:
+    image: apache/rocketmq:5.3.4
+    restart: 'no'
+    user: 0:0
+    networks:
+    - tradepass
+    entrypoint:
+    - /bin/sh
+    - -ec
+    command:
+    - chown 3000:3000 /mq-namesrv-logs /mq-broker-logs /mq-store
+    volumes:
+    - rocketmq-namesrv-logs:/mq-namesrv-logs
+    - rocketmq-broker-logs:/mq-broker-logs
+    - rocketmq-store:/mq-store
+  rocketmq-namesrv:
+    restart: on-failure:2
+    networks: *id001
+    logging: *id002
+    image: apache/rocketmq:5.3.4
+    mem_limit: 160m
+    depends_on:
+      rocketmq-init:
+        condition: service_completed_successfully
+    environment:
+      HEAP_OPTS: -Xms48m -Xmx64m -Xmn32m
+      JAVA_OPT_EXT: -Xms48m -Xmx64m -Xmn32m -XX:MaxDirectMemorySize=16m -XX:MaxMetaspaceSize=48m
+    command:
+    - sh
+    - mqnamesrv
+    volumes:
+    - rocketmq-namesrv-logs:/home/rocketmq/logs
+    healthcheck:
+      test:
+      - CMD
+      - bash
+      - -ec
+      - exec 3<>/dev/tcp/127.0.0.1/9876
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    ports:
+    - 127.0.0.1:9876:9876
+  rocketmq-topic-init:
+    restart: 'no'
+    networks: *id001
+    logging: *id002
+    image: apache/rocketmq:5.3.4
+    mem_limit: 160m
+    depends_on:
+      rocketmq-broker:
+        condition: service_healthy
+    environment:
+      JAVA_OPT_EXT: -Xms48m -Xmx64m
+    command:
+    - sh
+    - -ec
+    - 'sh mqadmin updateTopic -n rocketmq-namesrv:9876 -c DefaultCluster -t tradepass-callback-events
+      -r 4 -w 4
+
+      sh mqadmin updateSubGroup -n rocketmq-namesrv:9876 -c DefaultCluster -g tradepass-contract-callback-consumer
+
+      '
+  rocketmq-broker:
+    restart: on-failure:2
+    networks: *id001
+    logging: *id002
+    image: apache/rocketmq:5.3.4
+    mem_limit: 576m
+    stop_grace_period: 90s
+    depends_on:
+      rocketmq-init:
+        condition: service_completed_successfully
+      rocketmq-namesrv:
+        condition: service_healthy
+    environment:
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+      HEAP_OPTS: -Xms128m -Xmx192m -Xmn64m -XX:MaxDirectMemorySize=128m
+      JAVA_OPT_EXT: -Xms128m -Xmx192m -Xmn64m -XX:MaxDirectMemorySize=128m -XX:MaxMetaspaceSize=96m
+        -XX:-AlwaysPreTouch
+    command:
+    - sh
+    - -ec
+    - 'cp /etc/rocketmq/broker.conf /tmp/tradepass-broker.conf
+
+      printf ''\nbrokerIP1=127.0.0.1\n'' >> /tmp/tradepass-broker.conf
+
+      exec sh mqbroker -c /tmp/tradepass-broker.conf
+
+      '
+    volumes:
+    - ./rocketmq/broker.conf:/etc/rocketmq/broker.conf:ro,z
+    - rocketmq-broker-logs:/home/rocketmq/logs
+    - rocketmq-store:/home/rocketmq/store
+    healthcheck:
+      test:
+      - CMD
+      - bash
+      - -ec
+      - exec 3<>/dev/tcp/127.0.0.1/10911
+      interval: 15s
+      timeout: 5s
+      retries: 16
+      start_period: 90s
+    ports:
+    - 127.0.0.1:10911:10911
+    - 127.0.0.1:10909:10909
+  nacos:
+    image: nacos/nacos-server:v2.3.2-slim
+    restart: on-failure:2
+    mem_limit: 576m
+    networks:
+    - tradepass
+    ports:
+    - 127.0.0.1:8848:8848
+    - 127.0.0.1:9848:9848
+    environment:
+      MODE: standalone
+      PREFER_HOST_MODE: hostname
+      NACOS_AUTH_ENABLE: 'true'
+      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:?Set a random base64 Nacos token}
+      NACOS_AUTH_IDENTITY_KEY: tradepass
+      NACOS_AUTH_IDENTITY_VALUE: ${NACOS_AUTH_IDENTITY_VALUE:?Set a random identity
+        secret}
+      JVM_XMS: 64m
+      JVM_XMX: 256m
+      JVM_XMN: 64m
+      JVM_MS: 64m
+      JVM_MMS: 128m
+    volumes:
+    - nacos-data:/home/nacos/data
+    - nacos-logs:/home/nacos/logs
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - --fail
+      - --silent
+      - http://127.0.0.1:8848/nacos/v1/console/health/readiness
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+networks:
+  tradepass:
+    external: true
+    name: ${TRADEPASS_NETWORK_NAME:-tradepass-server}
+volumes:
+  mysql-data: {}
+  redis-data: {}
+  rocketmq-namesrv-logs: {}
+  rocketmq-broker-logs: {}
+  rocketmq-store: {}
+  nacos-data: {}
+  nacos-logs: {}

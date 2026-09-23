@@ -100,7 +100,9 @@ def generate():
     owned = [table for tables in OWNERS.values() for table in tables]
     if len(owned) != len(set(owned)) or set(owned) | {'audit_log'} != created - dropped:
         raise ValueError('Ownership must cover every final business table exactly once')
-    for role, tables in OWNERS.items():
+    layouts = dict(OWNERS)
+    layouts['business'] = [table for role in ('contract', 'trade', 'settlement') for table in OWNERS[role]]
+    for role, tables in layouts.items():
         tables = set(tables) | {'audit_log'}
         output = ['-- Generated from original V1–V36 DDL; for an EMPTY owned database only.',
                   '-- Historical data must be copied by the cutover tool after source V36.',
@@ -115,7 +117,8 @@ def generate():
                     output += [f'\n-- {source}', statement + ';']
             elif role == 'identity' and re.match(r'(?:INSERT(?: IGNORE)? INTO|DELETE FROM|UPDATE) perm_def\b', sql, re.I):
                 output += [f'\n-- {source}: system permission definitions', sql + ';']
-        output += ['''
+        if role != 'business':
+            output += ['''
 CREATE TABLE undo_log (
     branch_id BIGINT NOT NULL,
     xid VARCHAR(128) NOT NULL,
@@ -125,13 +128,13 @@ CREATE TABLE undo_log (
     log_created DATETIME(6) NOT NULL,
     log_modified DATETIME(6) NOT NULL,
     UNIQUE KEY ux_undo_log (xid, branch_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-SET FOREIGN_KEY_CHECKS = @tradepass_previous_fk_checks;
-''']
-        directory = ROOT / f'tradepass-module-{role}/tradepass-module-{role}-server/src/main/resources/db/owned/{role}'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;''']
+        output += ['SET FOREIGN_KEY_CHECKS = @tradepass_previous_fk_checks;\n']
+        directory = ROOT / ('tradepass-business/src/main/resources/db/business' if role == 'business' else
+                            f'tradepass-module-{role}/tradepass-module-{role}-server/src/main/resources/db/owned/{role}')
         directory.mkdir(parents=True, exist_ok=True)
         (directory / 'V1__owned_baseline.sql').write_text('\n'.join(output))
-    print('Generated four owned database baselines; original migrations unchanged')
+    print('Generated four owned and one unified business baseline; original migrations unchanged')
 
 if __name__ == '__main__':
     generate()

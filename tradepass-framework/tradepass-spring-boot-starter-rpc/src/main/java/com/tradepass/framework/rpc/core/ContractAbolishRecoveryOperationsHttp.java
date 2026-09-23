@@ -16,7 +16,7 @@ import org.springframework.web.bind.annotation.*;
 public class ContractAbolishRecoveryOperationsHttp {
     public record ResumeAfterBilateralApproval1Request(Long contractId) {}
 
-    @FeignClient(name = "tradepass-contract", contextId = "ContractAbolishRecoveryOperationsHttp",
+    @FeignClient(name = "${tradepass.services.contract-name:tradepass-contract}", contextId = "ContractAbolishRecoveryOperationsHttp",
             url = "${tradepass.services.contract-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/ContractAbolishRecoveryOperations/resumeAfterBilateralApproval1")
@@ -24,7 +24,7 @@ public class ContractAbolishRecoveryOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'contract'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'contract')")
     ContractAbolishRecoveryOperations remoteContractAbolishRecoveryOperations(Client client) {
         return new ContractAbolishRecoveryOperations() {
             @Override public void resumeAfterBilateralApproval(Long contractId) { client.resumeAfterBilateralApproval1(new ResumeAfterBilateralApproval1Request(contractId)); }
@@ -32,7 +32,7 @@ public class ContractAbolishRecoveryOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "contract")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'contract')")
     public static class Endpoint {
         private final ContractAbolishRecoveryOperations operations;
         public Endpoint(ContractAbolishRecoveryOperations operations) { this.operations = operations; }

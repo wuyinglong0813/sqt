@@ -1,0 +1,11 @@
+# All hosted modules share this data source and its local Spring transaction manager.
+spring:
+  datasource:
+    url: ${TRADEPASS_DATABASE_URL}
+  flyway:
+    enabled: true
+    baseline-on-migrate: false
+    locations: classpath:db/business
+seata:
+  enabled: false
+  enable-auto-data-source-proxy: false

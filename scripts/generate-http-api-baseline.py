@@ -1,92 +1,68 @@
 #!/usr/bin/env python3
-"""Rebuild deploy/smoke-tests HTTP API baseline from controller source annotations."""
-from __future__ import annotations
-
-import re
+"""Rebuild the HTTP contract from controller mappings, including media constraints."""
 from pathlib import Path
+import json
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "deploy/smoke-tests/src/test/resources/architecture/http-api-baseline.txt"
-ROLES = ("identity", "contract", "trade", "settlement", "file")
-
-METHOD_ANNOTATIONS = {
-    "GetMapping": "GET",
-    "PostMapping": "POST",
-    "PutMapping": "PUT",
-    "DeleteMapping": "DELETE",
-    "PatchMapping": "PATCH",
-}
+OUT = ROOT / 'deploy/smoke-tests/src/test/resources/architecture/http-api-baseline.txt'
+ROLES = ('identity', 'contract', 'trade', 'settlement', 'file')
+MEDIA = {'APPLICATION_JSON_VALUE': 'application/json', 'APPLICATION_PDF_VALUE': 'application/pdf',
+         'MULTIPART_FORM_DATA_VALUE': 'multipart/form-data',
+         'APPLICATION_FORM_URLENCODED_VALUE': 'application/x-www-form-urlencoded',
+         'APPLICATION_OCTET_STREAM_VALUE': 'application/octet-stream'}
+STRING = r'"(?:\\.|[^"\\])*"'
 
 
-def class_prefix(source: str) -> str:
-    match = re.search(r"@RequestMapping\s*\(\s*(?:value\s*=\s*)?\"([^\"]+)\"", source)
-    if match:
-        return match.group(1).rstrip("/")
-    match = re.search(r"@RequestMapping\s*\(\s*\"([^\"]+)\"", source)
-    return match.group(1).rstrip("/") if match else ""
+def path_value(args):
+    match = re.search(r'(?:^\s*|\b(?:value|path)\s*=\s*)(' + STRING + ')', args)
+    return json.loads(match[1]) if match else ''
 
 
-def method_paths(source: str) -> list[tuple[str, str, str | None]]:
-    entries: list[tuple[str, str, str | None]] = []
-    for annotation, http in METHOD_ANNOTATIONS.items():
-        for match in re.finditer(rf"@{annotation}\s*\(\s*(?:value\s*=\s*)?\"([^\"]+)\"", source):
-            entries.append((http, match.group(1), None))
-        for match in re.finditer(rf"@{annotation}\s*\(\s*\"([^\"]+)\"", source):
-            entries.append((http, match.group(1), None))
-        for match in re.finditer(rf"@{annotation}\s*\(\s*consumes\s*=\s*MediaType\.MULTIPART_FORM_DATA_VALUE\s*\)", source):
-            entries.append((http, "", "multipart/form-data"))
-        bare = re.search(rf"@{annotation}\s*\(\s*\)", source)
-        if bare:
-            entries.append((http, "", None))
-        if re.search(rf"@{annotation}\s*$", source, re.MULTILINE):
-            entries.append((http, "", None))
+def media_value(args, key):
+    match = re.search(r'\b' + key + r'\s*=\s*(MediaType\.(\w+)|' + STRING + ')', args)
+    if not match:
+        if re.search(r'\b' + key + r'\s*=', args):
+            raise ValueError('Unsupported mapping media expression: ' + args)
+        return ''
+    return MEDIA[match[2]] if match[2] else json.loads(match[1])
+
+
+def collect_source(source):
+    class_mapping = re.search(r'@RequestMapping\s*\(([^)]*)\)', source)
+    args = class_mapping[1] if class_mapping else ''
+    prefix = path_value(args).rstrip('/')
+    entries = []
+    for match in re.finditer(r'@(Get|Post|Put|Delete|Patch)Mapping\b(?:[ \t]*\(([^)]*)\))?', source):
+        method_args = match[2] or ''
+        suffix = path_value(method_args)
+        path = prefix + ('/' + suffix.lstrip('/') if suffix else '')
+        clause = '{' + match[1].upper() + ' [' + (path or '/') + ']'
+        for key in ('consumes', 'produces'):
+            value = media_value(method_args, key) or media_value(args, key)
+            if value:
+                clause += ', ' + key + ' [' + value + ']'
+        entries.append(clause + '}')
     return entries
 
 
-def join_path(prefix: str, suffix: str) -> str:
-    if not prefix:
-        return suffix if suffix.startswith("/") else "/" + suffix
-    if not suffix:
-        return prefix if prefix.startswith("/") else "/" + prefix
-    if suffix.startswith("/"):
-        return suffix
-    return f"{prefix}/{suffix}".replace("//", "/")
-
-
-def collect() -> list[str]:
-    lines: set[str] = set()
+def collect():
+    entries = set()
     for role in ROLES:
-        base = ROOT / f"tradepass-module-{role}/tradepass-module-{role}-server/src/main/java"
-        if not base.exists():
-            continue
-        for path in base.rglob("*Controller.java"):
-            if "/controller/app/" not in str(path):
-                continue
-            source = path.read_text(encoding="utf-8")
-            prefix = class_prefix(source)
-            for http, suffix, consumes in method_paths(source):
-                full = join_path(prefix, suffix)
-                clause = "{" + http + " [" + full + "]"
-                if consumes:
-                    clause += ", consumes [" + consumes + "]"
-                clause += ", produces [application/json]}"
-                lines.add(clause)
-    probe = ROOT / "tradepass-framework/tradepass-spring-boot-starter-web/src/main/java/com/tradepass/framework/web/core/controller/ProbeController.java"
-    if probe.exists():
-        source = probe.read_text(encoding="utf-8")
-        for http, suffix, consumes in method_paths(source):
-            full = join_path(class_prefix(source), suffix)
-            clause = "{" + http + " [" + full + "], produces [application/json]}"
-            lines.add(clause)
-    return sorted(lines)
+        base = ROOT / f'tradepass-module-{role}/tradepass-module-{role}-server/src/main/java'
+        for path in base.rglob('*Controller.java'):
+            if '/controller/app/' in str(path):
+                entries.update(collect_source(path.read_text()))
+    probe = ROOT / 'tradepass-framework/tradepass-spring-boot-starter-web/src/main/java/com/tradepass/framework/web/core/controller/ProbeController.java'
+    entries.update(collect_source(probe.read_text()))
+    return sorted(entries)
 
 
-def main() -> None:
-    OUT.parent.mkdir(parents=True, exist_ok=True)
+def main():
     lines = collect()
-    OUT.write_text("# Generated by scripts/generate-http-api-baseline.py\n" + "\n".join(lines) + "\n", encoding="utf-8")
-    print(f"Wrote {len(lines)} mappings to {OUT}")
+    OUT.write_text('# Generated by scripts/generate-http-api-baseline.py\n' + '\n'.join(lines) + '\n')
+    print(f'Wrote {len(lines)} mappings to {OUT}')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

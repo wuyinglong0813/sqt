@@ -19,10 +19,10 @@ spring:
           default:
             readTimeout: 180000
 seata:
-  enabled: true
+  enabled: ${SEATA_ENABLED:true}
   application-id: ${spring.application.name}
   tx-service-group: tradepass_tx_group
-  enable-auto-data-source-proxy: true
+  enable-auto-data-source-proxy: ${SEATA_ENABLED:true}
   data-source-proxy-mode: AT
   registry:
     type: file

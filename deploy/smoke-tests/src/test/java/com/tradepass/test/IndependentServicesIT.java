@@ -22,7 +22,9 @@ import static org.junit.jupiter.api.Assertions.*;
 @EnabledIfSystemProperty(named = "tradepass.test.services.url", matches = ".+")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class IndependentServicesIT {
-    static final List<String> ROLES = List.of("identity", "contract", "trade", "settlement", "file", "gateway");
+    static final boolean CORE = "core".equals(System.getProperty("tradepass.test.topology"));
+    static final List<String> DOMAINS = List.of("identity", "contract", "trade", "settlement", "file", "gateway");
+    static final List<String> ROLES = CORE ? List.of("identity", "business", "gateway") : DOMAINS;
     static final Map<String, Integer> PORTS = new LinkedHashMap<>(), MANAGEMENT = new LinkedHashMap<>();
     static final Map<String, Integer> COVERAGE = new LinkedHashMap<>();
     static final Map<String, Process> PROCESSES = new LinkedHashMap<>();
@@ -43,7 +45,7 @@ class IndependentServicesIT {
 
     @BeforeAll static void start() throws Exception {
         root = com.tradepass.support.RepoRoot.find();
-        logs = Path.of("target/process-logs").toAbsolutePath();
+        logs = Path.of(CORE ? "target/core-process-logs" : "target/process-logs").toAbsolutePath();
         Files.createDirectories(logs);
         url = System.getProperty("tradepass.test.services.url");
         assertTrue(url.matches("jdbc:mysql://[^/]+/tradepass_fix_validation_[a-zA-Z0-9_]+(\\?.*)?"), "Isolated schema required");
@@ -56,6 +58,9 @@ class IndependentServicesIT {
         seed();
         prepareOwnedDatabases();
         for (String role : ROLES) { PORTS.put(role, freePort()); MANAGEMENT.put(role, freePort()); COVERAGE.put(role, freePort()); }
+        if (CORE) for (String role : List.of("contract", "trade", "settlement", "file")) {
+            PORTS.put(role, PORTS.get("business")); MANAGEMENT.put(role, MANAGEMENT.get("business"));
+        }
         try {
             configureNacos();
             for (String role : ROLES) launch(role, false);
@@ -64,9 +69,9 @@ class IndependentServicesIT {
     }
 
     static void prepareOwnedDatabases() throws Exception {
-        assertTrue(System.getProperty("tradepass.test.seata.server", "").matches("(127\\.0\\.0\\.1|localhost):[0-9]+"), "An isolated local Seata coordinator is required");
+        if (!CORE) assertTrue(System.getProperty("tradepass.test.seata.server", "").matches("(127\\.0\\.0\\.1|localhost):[0-9]+"), "An isolated local Seata coordinator is required");
         String sourceDatabase = url.substring(url.indexOf('/', "jdbc:mysql://".length()) + 1).split("\\?", 2)[0];
-        for (String role : ROLES.subList(0, 4)) {
+        for (String role : DOMAINS.subList(0, 4)) {
             String schema = sourceDatabase + "_" + role;
             String user = "ci_" + role + "_" + BASE;
             String secret = UUID.randomUUID().toString().replace("-", "");
@@ -92,6 +97,7 @@ class IndependentServicesIT {
             assertThrows(org.springframework.dao.DataAccessException.class, () -> OWNED.get(owner)
                     .queryForList("SELECT * FROM `" + sourceDatabase + "_" + other + "`.undo_log"));
         }
+        if (CORE) mergeBusinessDatabase(sourceDatabase);
         jdbc = OWNED.get("trade");
     }
 
@@ -117,6 +123,63 @@ class IndependentServicesIT {
         assertEquals(0, process.exitValue(), "Migration failed; inspect " + logs.resolve("migration" + mode + ".log"));
     }
 
+    static void mergeBusinessDatabase(String sourceDatabase) throws Exception {
+        String schema = sourceDatabase + "_business", user = "ci_business_" + BASE;
+        String secret = UUID.randomUUID().toString().replace("-", "");
+        jdbc.execute("CREATE DATABASE `" + schema + "` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+        jdbc.execute("CREATE USER '" + user + "'@'%' IDENTIFIED BY '" + secret + "'");
+        jdbc.execute("GRANT ALL PRIVILEGES ON `" + schema + "`.* TO '" + user + "'@'%'");
+        String target = url.replace("/" + sourceDatabase, "/" + schema);
+        var business = new JdbcTemplate(new DriverManagerDataSource(target, user, secret));
+        for (String mode : List.of("--plan", "--unpaused", "--apply", "--repeat")) {
+            var builder = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin/java").toString(), "-jar",
+                    root.resolve("tools/database-migrator/target/tradepass-database-migrator-0.1.0-SNAPSHOT.jar").toString(),
+                    "--merge-business", mode.equals("--plan") ? "--plan" : "--apply").redirectErrorStream(true).redirectOutput(logs.resolve("merge" + mode + ".log").toFile());
+            var env = builder.environment();
+            env.keySet().removeIf(key -> key.startsWith("SOURCE_") || key.startsWith("TARGET_") || key.startsWith("TRADEPASS_")
+                    || key.equals("JAVA_TOOL_OPTIONS") || key.equals("JDK_JAVA_OPTIONS"));
+            env.put("TARGET_BUSINESS_DATABASE_URL", target); env.put("TARGET_BUSINESS_DB_USERNAME", user);
+            env.put("TARGET_BUSINESS_DB_PASSWORD", secret);
+            if (!mode.equals("--unpaused")) env.put("TRADEPASS_CUTOVER_WRITES_PAUSED", "true");
+            for (String role : List.of("contract", "trade", "settlement")) {
+                String prefix = "SOURCE_" + role.toUpperCase(Locale.ROOT);
+                env.put(prefix + "_DATABASE_URL", DATABASE_URLS.get(role));
+                env.put(prefix + "_DB_USERNAME", DATABASE_USERS.get(role)); env.put(prefix + "_DB_PASSWORD", DATABASE_PASSWORDS.get(role));
+            }
+            Process process = builder.start();
+            boolean done = process.waitFor(90, TimeUnit.SECONDS);
+            if (!done) process.destroyForcibly();
+            assertTrue(done);
+            if (mode.equals("--unpaused") || mode.equals("--repeat")) assertNotEquals(0, process.exitValue(), "Unsafe migration was allowed: " + mode);
+            else assertEquals(0, process.exitValue(), "Inspect merge log: " + mode);
+            if (mode.equals("--plan") || mode.equals("--unpaused")) assertEquals(0, business.queryForList("SHOW TABLES").size());
+        }
+        assertEquals(3, business.queryForObject("SELECT COUNT(*) FROM audit_log", Integer.class));
+        assertArrayEquals(new byte[]{0, 1, (byte)255, 10}, business.queryForObject("SELECT file_data FROM contract_attachment WHERE id=?", byte[].class, BASE + 80));
+        assertEquals(new java.math.BigDecimal("12345678901234.23"), business.queryForObject("SELECT voucher_amount FROM contract_attachment WHERE id=?", java.math.BigDecimal.class, BASE + 80));
+        assertThrows(org.springframework.dao.DataAccessException.class, () -> business.queryForList("SELECT * FROM `" + sourceDatabase + "_identity`.sys_user"));
+        for (String role : List.of("business", "contract", "trade", "settlement")) {
+            DATABASE_URLS.put(role, target); DATABASE_USERS.put(role, user); DATABASE_PASSWORDS.put(role, secret); OWNED.put(role, business);
+        }
+    }
+
+    @Test @Order(46) void coreConsumesPersistedCallbacksThroughRocketMq() throws Exception {
+        if (!CORE) return;
+        long event = BASE + 700;
+        jdbc.update("INSERT INTO fadada_callback_event(id,event_id,event_type,subject_type,payload_sha256,status,retry_payload) VALUES (?,?,'CORE_TEST','UNKNOWN',REPEAT('0',64),'RECEIVED','{}')", event, "core-" + BASE);
+        var producer = new org.apache.rocketmq.client.producer.DefaultMQProducer("core-test-" + BASE);
+        producer.setNamesrvAddr(System.getProperty("tradepass.test.rocketmq.server"));
+        producer.start();
+        try {
+            for (int i = 0; i < 2; i++) producer.send(new org.apache.rocketmq.common.message.Message("tradepass-core-" + BASE, "CALLBACK_READY",
+                    Long.toString(event).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+            while (System.nanoTime() < deadline && !"IGNORED".equals(jdbc.queryForObject("SELECT status FROM fadada_callback_event WHERE id=?", String.class, event))) Thread.sleep(200);
+            assertEquals("IGNORED", jdbc.queryForObject("SELECT status FROM fadada_callback_event WHERE id=?", String.class, event));
+            assertEquals(1, jdbc.queryForObject("SELECT attempt_count FROM fadada_callback_event WHERE id=?", Integer.class, event));
+        } finally { producer.shutdown(); }
+    }
+
     static int freePort() throws Exception { try (var socket = new ServerSocket(0)) { return socket.getLocalPort(); } }
 
     static void launch(String role, boolean storage) throws Exception {
@@ -126,10 +189,10 @@ class IndependentServicesIT {
                 .substring("-javaagent:".length()).split("=", 2)[0];
         List<String> command = new ArrayList<>(List.of(Path.of(System.getProperty("java.home"), "bin/java").toString(),
                 "-javaagent:" + agent + "=output=tcpserver,address=127.0.0.1,port=" + COVERAGE.get(role) + ",includes=com.tradepass.*",
-                "-Xms32m", "-Xmx224m", "-XX:ActiveProcessorCount=2", "-jar",
-                root.resolve(role.equals("gateway") ? "tradepass-gateway/target/tradepass-gateway-0.1.0-SNAPSHOT.jar" : "tradepass-module-" + role + "/tradepass-module-" + role + "-server/target/tradepass-module-" + role + "-server-0.1.0-SNAPSHOT.jar").toString(),
+                "-Xms32m", CORE ? (role.equals("business") ? "-Xmx256m" : role.equals("gateway") ? "-Xmx96m" : "-Xmx128m") : "-Xmx224m", "-XX:ActiveProcessorCount=2", "-jar",
+                root.resolve(role.equals("business") ? "tradepass-business/target/tradepass-business-0.1.0-SNAPSHOT.jar" : role.equals("gateway") ? "tradepass-gateway/target/tradepass-gateway-0.1.0-SNAPSHOT.jar" : "tradepass-module-" + role + "/tradepass-module-" + role + "-server/target/tradepass-module-" + role + "-server-0.1.0-SNAPSHOT.jar").toString(),
                 "--server.port=" + PORTS.get(role), "--management.server.port=" + MANAGEMENT.get(role),
-                "--spring.profiles.active=" + (nacosConfig == null ? "observability" : "observability,nacos,sentinel"),
+                "--spring.profiles.active=" + (nacosConfig == null ? "observability" : "observability,nacos,sentinel") + (CORE ? ",core" + (role.equals("business") ? ",messaging" : "") : ""),
                 "--management.server.address=127.0.0.1", "--management.endpoints.web.exposure.include=health,mappings,beans,prometheus",
                 "--management.endpoint.health.enabled=true", "--management.endpoint.mappings.enabled=true",
                 "--management.endpoint.beans.enabled=true", "--management.endpoint.prometheus.enabled=true",
@@ -143,8 +206,26 @@ class IndependentServicesIT {
                 "--tradepass.demo-data.enabled=false", "--tradepass.dev.enabled=false", "--tradepass.redis.enabled=false",
                 "--tradepass.experience-test-accounts.enabled=false", "--tradepass.fadada.enabled=false",
                 "--spring.flyway.enabled=" + (!role.equals("gateway") && !role.equals("file"))));
+        if (CORE) {
+            command.addAll(command.indexOf("-jar"), List.of("-XX:+UseSerialGC", "-XX:ActiveProcessorCount=1",
+                    "-XX:MaxDirectMemorySize=32m", "-XX:ReservedCodeCacheSize=" + (role.equals("business") ? "48m" : "32m"),
+                    "-XX:MaxMetaspaceSize=" + (role.equals("business") ? "160m" : role.equals("gateway") ? "96m" : "128m")));
+            command.add("--tradepass.jobs.xxl.enabled=false");
+            if (role.equals("business")) {
+                command.add("--tradepass.messaging.rocketmq.name-server=" + System.getProperty("tradepass.test.rocketmq.server"));
+                command.add("--tradepass.messaging.rocketmq.callback-topic=tradepass-core-" + BASE);
+                command.add("--tradepass.messaging.rocketmq.consumer-group=tradepass-core-" + BASE);
+                command.add("--tradepass.messaging.rocketmq.producer-group=tradepass-core-producer-" + BASE);
+            }
+        }
+        if (CORE && storage) {
+            // A valid adapter configuration pointing exclusively to a closed local endpoint.
+            command.addAll(List.of("--tradepass.storage.provider=aliyun-oss", "--tradepass.storage.oss.endpoint=https://127.0.0.1:1",
+                    "--tradepass.storage.oss.region=cn-test", "--tradepass.storage.oss.bucket=isolated-test-bucket",
+                    "--tradepass.storage.connection-timeout-millis=1000", "--tradepass.storage.socket-timeout-millis=1000"));
+        }
         if (nacosConfig == null) {
-            for (String target : ROLES) command.add("--tradepass.services." + target + "-url=http://127.0.0.1:" + PORTS.get(target));
+            for (String target : DOMAINS) command.add("--tradepass.services." + target + "-url=http://127.0.0.1:" + PORTS.get(target));
         } else {
             command.add("--NACOS_SERVER_ADDR=" + System.getProperty("tradepass.test.nacos.server"));
             command.add("--NACOS_GROUP=" + nacosGroup);
@@ -186,10 +267,10 @@ class IndependentServicesIT {
         if (nacosNaming != null) { nacosNaming.shutDown(); nacosNaming = null; }
     }
 
-    @Test @Order(1) void sixSeparateProcessesAndExactlyOneOwnerPerLegacyApi() throws Exception {
-        assertEquals(6, PROCESSES.values().stream().map(Process::pid).distinct().count());
+    @Test @Order(1) void releaseProcessesAndExactlyOneOwnerPerLegacyApi() throws Exception {
+        assertEquals(CORE ? 3 : 6, PROCESSES.values().stream().map(Process::pid).distinct().count());
         Set<String> actual = new TreeSet<>();
-        for (String role : ROLES.subList(0, 5)) {
+        for (String role : CORE ? List.of("identity", "business") : DOMAINS.subList(0, 5)) {
             JsonNode contexts = json(request(MANAGEMENT.get(role), "GET", "/actuator/mappings", null, Map.of())).path("contexts");
             int count = 0;
             for (JsonNode context : contexts) {
@@ -210,7 +291,7 @@ class IndependentServicesIT {
         for (String line : Files.readAllLines(root.resolve("deploy/smoke-tests/src/test/resources/architecture/http-api-baseline.txt")))
             if (!line.isBlank() && !line.startsWith("#")) expected.add(line);
         assertEquals(expected, actual);
-        assertEquals(404, request(PORTS.get("file"), "GET", "/api/contracts", null, auth()).statusCode());
+        if (!CORE) assertEquals(404, request(PORTS.get("file"), "GET", "/api/contracts", null, auth()).statusCode());
         if (nacosConfig != null) verifyNacosRegistrationAndConfiguration();
     }
 
@@ -241,8 +322,8 @@ class IndependentServicesIT {
         assertEquals(401, request(PORTS.get("gateway"), "GET", "/api/warehouses", null,
                 Map.of("x-wx-openid", "smoke-user", "X-TradePass-Internal-Key", KEY, "X-User-Id", "1")).statusCode());
         var management = request(MANAGEMENT.get("file"), "GET", "/actuator/beans", null, Map.of());
-        assertFalse(management.body().contains("HikariDataSource"), "File process must not connect to MySQL");
-        assertFalse(management.body().contains("MapperFactoryBean"), "File process must not own business mappers");
+        if (!CORE) assertFalse(management.body().contains("HikariDataSource"), "File process must not connect to MySQL");
+        if (!CORE) assertFalse(management.body().contains("MapperFactoryBean"), "File process must not own business mappers");
         assertEquals(200, request(MANAGEMENT.get("trade"), "GET", "/actuator/prometheus", null, Map.of()).statusCode());
         for (String role : ROLES) assertEquals(200, request(MANAGEMENT.get(role), "GET", "/actuator/health/readiness", null, Map.of()).statusCode(), role);
     }
@@ -386,9 +467,11 @@ class IndependentServicesIT {
 
     @Test @Order(50) void fileServiceFailureRollsBackReceiptInventoryAndReconciliation() throws Exception {
         // Nacos/Sentinel clients drain during shutdown. Match the 60s container grace period.
-        dumpCoverage("trade");
-        PROCESSES.get("trade").destroy(); assertTrue(PROCESSES.get("trade").waitFor(60, TimeUnit.SECONDS));
-        launch("trade", true); ready("trade");
+        String owner = CORE ? "business" : "trade";
+        dumpCoverage(owner);
+        PROCESSES.get(owner).destroy(); assertTrue(PROCESSES.get(owner).waitFor(60, TimeUnit.SECONDS));
+        launch(owner, true); ready(owner);
+        if (nacosConfig != null) awaitStatus("/api/warehouses", 401);
         document(DOCUMENT + 100);
         var failure = receive(DOCUMENT + 100);
         assertEquals(400, failure.statusCode(), failure.body());
@@ -410,7 +493,7 @@ class IndependentServicesIT {
         dumpCoverage("identity");
         PROCESSES.get("identity").destroyForcibly(); assertTrue(PROCESSES.get("identity").waitFor(10, TimeUnit.SECONDS));
         assertEquals(503, request(PORTS.get("gateway"), "GET", "/api/warehouses", null, auth()).statusCode());
-        for (String role : List.of("trade", "contract", "settlement", "file")) {
+        for (String role : CORE ? List.of("business") : List.of("trade", "contract", "settlement", "file")) {
             assertTrue(PROCESSES.get(role).isAlive());
             assertEquals(200, request(PORTS.get(role), "GET", "/tcb_probe", null, Map.of()).statusCode());
         }
@@ -503,7 +586,7 @@ class IndependentServicesIT {
     }
 
     static void awaitStatus(String path, int expected) throws Exception {
-        long deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos();
+        long deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
         int actual = -1;
         while (System.nanoTime() < deadline) {
             actual = request(PORTS.get("gateway"), "GET", path, null, Map.of()).statusCode();

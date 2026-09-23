@@ -23,7 +23,7 @@ public class BilateralActionOperationsHttp {
     public record RequireContractMutable1Request(TradeContractRespDTO contract) {}
     public record IsContractReadOnly1Request(TradeContractRespDTO contract) {}
 
-    @FeignClient(name = "tradepass-trade", contextId = "BilateralActionOperationsHttp",
+    @FeignClient(name = "${tradepass.services.trade-name:tradepass-trade}", contextId = "BilateralActionOperationsHttp",
             url = "${tradepass.services.trade-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/BilateralActionOperations/request5")
@@ -43,7 +43,7 @@ public class BilateralActionOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'trade'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     BilateralActionOperations remoteBilateralActionOperations(Client client) {
         return new BilateralActionOperations() {
             @Override public Map<String, Object> request(String bizType, Long bizId, String actionType, String reason, boolean riskConfirmed) { return client.request5(new Request5Request(bizType, bizId, actionType, reason, riskConfirmed)); }
@@ -57,7 +57,7 @@ public class BilateralActionOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "trade")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'trade')")
     public static class Endpoint {
         private final BilateralActionOperations operations;
         public Endpoint(BilateralActionOperations operations) { this.operations = operations; }

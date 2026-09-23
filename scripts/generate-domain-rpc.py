@@ -36,7 +36,7 @@ for role in ('identity', 'contract', 'trade', 'settlement'):
         api = path.stem
         package = re.search(r'package ([\w.]+);', source)[1]
         imports = '\n'.join(re.findall(r'^import .+;', source, re.M))
-        methods = re.findall(r'public\s+(?!static\b|record\b|enum\b)([\w<>., ?\[\]]+?)\s+(\w+)\(([^()]*)\)\s*;', source)
+        methods = re.findall(r'^    (?! )(?:public\s+)?(?!static\b|record\b|enum\b)([\w<>., ?\[\]]+?)\s+(\w+)\(([^()]*)\)\s*;', source, re.M)
         if not methods:
             raise ValueError(f'No explicit methods found: {path}')
         name = api + 'Http'
@@ -66,7 +66,7 @@ public class {name} {{
             lines.append(f'    public record {record}(' + ', '.join(t.replace('...', '[]') + ' ' + n for t, n in ps) + ') {}\n')
             entries.append((ret.strip(), method, key, record, ps))
         lines.append(f'''
-    @FeignClient(name = "tradepass-{role}", contextId = "{name}",
+    @FeignClient(name = "${{tradepass.services.{role}-name:tradepass-{role}}}", contextId = "{name}",
             url = "${{tradepass.services.{role}-url:}}", configuration = DomainFeignConfiguration.class)
     public interface Client {{
 ''')
@@ -75,7 +75,7 @@ public class {name} {{
         lines.append(f'''    }}
 
     @Bean
-    @ConditionalOnExpression("'${{tradepass.runtime.role:}}' != '{role}'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${{tradepass.runtime.role:}}', '{role}')")
     {api} remote{api}(Client client) {{
         return new {api}() {{
 ''')
@@ -88,7 +88,7 @@ public class {name} {{
     }}
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "{role}")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${{tradepass.runtime.role:}}', '{role}')")
     public static class Endpoint {{
         private final {api} operations;
         public Endpoint({api} operations) {{ this.operations = operations; }}

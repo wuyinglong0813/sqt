@@ -56,7 +56,11 @@ docker compose --env-file .env -f yudao.compose.yml up -d --no-build --wait --wa
 
 数据库地址固定为 `127.0.0.1` 上的 `tradepass_staging_identity`、`tradepass_staging_contract`、`tradepass_staging_trade`、`tradepass_staging_settlement`。密码仍从 `.env` 读取。本机 3306、6379、8080、8081、8091、9876、10911 已被占用时，先改 `MYSQL_PORT` 或 `REDIS_PUBLISH_PORT`，或停掉占用进程。这些端口不要对公网开放。
 
-打开调用链时，把 agent 解压到 `/data/skywalking/skywalking-agent`，并设置 `TRADEPASS_TRACING_ENABLED=true`。目录里没有 `skywalking-agent.jar` 时，继续使用镜像内置的 agent。
+## 4GB 机器：三个进程，保留 Nacos 和 RocketMQ
+
+推荐使用 `yudao.core.compose.yml`（gateway、identity、business）和 `infra.core.compose.yml`（MySQL、Redis、Nacos、RocketMQ）。Seata、XXL-JOB、ELK、SkyWalking 不启动。business 复用合同、交易、结算、文件模块，核心数据库合并为新的 `_business` 库，通过本地事务保持核心写入一致性；identity 保留原库。
+
+**不能把旧的三个业务库直接填进新 business 配置。** 新环境及已有服务器的迁移、构建、Nacos 初始化、启动顺序和回退限制见 [三进程切换手册](../../docs/server-core-cutover.md)。使用单独的 `.env.core`；不要混用六进程的 profiles 或同时启动两套业务。
 
 ## 业务服务
 

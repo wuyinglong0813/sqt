@@ -1,0 +1,10 @@
+name: tradepass-edge
+services:
+  nginx:
+    image: nginx:1.27.4-alpine
+    restart: unless-stopped
+    network_mode: host
+    mem_limit: 64m
+    volumes:
+      - ./nginx-core-https.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${TRADEPASS_TLS_DIRECTORY:?Set the directory containing fullchain.pem and privkey.pem}:/etc/nginx/tls:ro

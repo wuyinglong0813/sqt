@@ -22,7 +22,7 @@ public class FadadaContractSigningOperationsHttp {
     public record SyncBySignTaskId1Request(String signTaskId) {}
     public record AbolishUrl2Request(Long contractId, String reason) {}
 
-    @FeignClient(name = "tradepass-contract", contextId = "FadadaContractSigningOperationsHttp",
+    @FeignClient(name = "${tradepass.services.contract-name:tradepass-contract}", contextId = "FadadaContractSigningOperationsHttp",
             url = "${tradepass.services.contract-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/FadadaContractSigningOperations/current1")
@@ -40,7 +40,7 @@ public class FadadaContractSigningOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'contract'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'contract')")
     FadadaContractSigningOperations remoteFadadaContractSigningOperations(Client client) {
         return new FadadaContractSigningOperations() {
             @Override public ContractSigningRespDTO current(Long contractId) { return client.current1(new Current1Request(contractId)); }
@@ -53,7 +53,7 @@ public class FadadaContractSigningOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "contract")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'contract')")
     public static class Endpoint {
         private final FadadaContractSigningOperations operations;
         public Endpoint(FadadaContractSigningOperations operations) { this.operations = operations; }

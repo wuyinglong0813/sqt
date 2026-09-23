@@ -17,7 +17,7 @@ public class UserIdentityOperationsHttp {
     public record CurrentDisplayName0Request() {}
     public record RequireCurrentVerifiedName1Request(long companyId) {}
 
-    @FeignClient(name = "tradepass-identity", contextId = "UserIdentityOperationsHttp",
+    @FeignClient(name = "${tradepass.services.identity-name:tradepass-identity}", contextId = "UserIdentityOperationsHttp",
             url = "${tradepass.services.identity-url:}", configuration = DomainFeignConfiguration.class)
     public interface Client {
         @PostMapping("/internal/domain/UserIdentityOperations/currentDisplayName0")
@@ -27,7 +27,7 @@ public class UserIdentityOperationsHttp {
     }
 
     @Bean
-    @ConditionalOnExpression("'${tradepass.runtime.role:}' != 'identity'")
+    @ConditionalOnExpression("!T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     UserIdentityOperations remoteUserIdentityOperations(Client client) {
         return new UserIdentityOperations() {
             @Override public String currentDisplayName() { return client.currentDisplayName0(new CurrentDisplayName0Request()); }
@@ -36,7 +36,7 @@ public class UserIdentityOperationsHttp {
     }
 
     @RestController
-    @ConditionalOnProperty(name = "tradepass.runtime.role", havingValue = "identity")
+    @ConditionalOnExpression("T(com.tradepass.framework.common.core.HostedRoles).hosts('${tradepass.runtime.role:}', 'identity')")
     public static class Endpoint {
         private final UserIdentityOperations operations;
         public Endpoint(UserIdentityOperations operations) { this.operations = operations; }

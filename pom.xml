@@ -26,6 +26,7 @@
     <module>tradepass-module-trade</module>
     <module>tradepass-module-settlement</module>
     <module>tradepass-module-file</module>
+    <module>tradepass-business</module>
     <module>tradepass-gateway</module>
     <module>deploy/smoke-tests</module>
     <module>deploy/integration-tests</module>
