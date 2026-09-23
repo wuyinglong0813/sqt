@@ -7,6 +7,9 @@
 !tradepass-gateway/
 !tradepass-gateway/target/
 !tradepass-gateway/target/tradepass-gateway-0.1.0-SNAPSHOT.jar
+!tradepass-business/
+!tradepass-business/target/
+!tradepass-business/target/tradepass-business-0.1.0-SNAPSHOT.jar
 !tradepass-module-*/
 !tradepass-module-*/tradepass-module-*-server/
 !tradepass-module-*/tradepass-module-*-server/target/
