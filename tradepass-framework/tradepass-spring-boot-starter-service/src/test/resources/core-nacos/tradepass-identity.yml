@@ -1,0 +1,15 @@
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/test_identity
+    username: test_identity
+    password: test-identity-secret
+    hikari:
+      maximum-pool-size: 3
+      minimum-idle: 0
+tradepass:
+  services:
+    identity-url: ''
+    contract-url: ''
+    trade-url: ''
+    settlement-url: ''
+    file-url: ''

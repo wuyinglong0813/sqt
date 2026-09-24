@@ -45,13 +45,16 @@ class CoreDeploymentTest(unittest.TestCase):
         self.assertEqual({"identity", "business", "gateway"}, set(core["services"]))
         for service in core["services"].values():
             env = service["environment"]
-            self.assertIn("nacos", env["SPRING_PROFILES_ACTIVE"].split(","))
             self.assertIn("core", env["SPRING_PROFILES_ACTIVE"].split(","))
+            self.assertEqual("file:/app/nacos-bootstrap.yml", env["SPRING_CONFIG_ADDITIONAL_LOCATION"])
             self.assertEqual("false", env["TRADEPASS_TRACING_ENABLED"])
             self.assertFalse(any(k.startswith("TRADEPASS_") and k.endswith("_URL")
                                  and k != "TRADEPASS_DATABASE_URL" for k in env))
         env = core["services"]["business"]["environment"]
-        self.assertIn("BUSINESS_DATABASE_URL", env["TRADEPASS_DATABASE_URL"])
+        self.assertNotIn("TRADEPASS_DATABASE_URL", env)
+        self.assertNotIn("DB_PASSWORD", env)
+        self.assertNotIn("FADADA_ENABLED", env)
+        self.assertNotIn("WECHAT_APP_SECRET", env)
         self.assertIn("messaging", env["SPRING_PROFILES_ACTIVE"])
         self.assertFalse(any(k.startswith(("CONTRACT_DB", "TRADE_DB", "SETTLEMENT_DB")) for k in env))
 

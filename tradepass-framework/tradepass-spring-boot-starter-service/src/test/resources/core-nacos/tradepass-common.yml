@@ -1,0 +1,26 @@
+tradepass:
+  services:
+    internal-key: test-internal-key-not-a-real-secret
+  ids:
+    datacenter-id: 2
+  redis:
+    enabled: false
+  fadada:
+    enabled: true
+    app-id: test-fdd
+    app-secret: test-fdd-secret
+    server-url: https://api.fadada.com/api/v5
+    callback-url: ''
+spring:
+  data:
+    redis:
+      password: ''
+      port: 6379
+      host: 127.0.0.1
+wechat:
+  app-id: wx0123456789abcdef
+  app-secret: test-wechat-secret
+management:
+  health:
+    redis:
+      enabled: false

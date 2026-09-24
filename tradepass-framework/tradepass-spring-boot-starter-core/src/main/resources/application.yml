@@ -50,9 +50,15 @@ tradepass:
       endpoint: ${OSS_ENDPOINT:}
       region: ${OSS_REGION:}
       bucket: ${OSS_BUCKET:}
+      access-key-id: ${OSS_ACCESS_KEY_ID:}
+      access-key-secret: ${OSS_ACCESS_KEY_SECRET:}
+      session-token: ${OSS_SESSION_TOKEN:}
       legacy-cos-bucket: ${TRADEPASS_LEGACY_COS_BUCKET:}
       legacy-cos-region: ${TRADEPASS_LEGACY_COS_REGION:ap-shanghai}
       legacy-cos-key-prefix: ${TRADEPASS_LEGACY_COS_KEY_PREFIX:tradepass}
+      legacy-cos-secret-id: ${TRADEPASS_LEGACY_COS_SECRET_ID:}
+      legacy-cos-secret-key: ${TRADEPASS_LEGACY_COS_SECRET_KEY:}
+      legacy-cos-session-token: ${TRADEPASS_LEGACY_COS_SESSION_TOKEN:}
     enabled: ${TRADEPASS_STORAGE_ENABLED:false}
     required: ${TRADEPASS_STORAGE_REQUIRED:false}
     migrate-legacy-blobs: ${TRADEPASS_STORAGE_MIGRATE_LEGACY_BLOBS:false}

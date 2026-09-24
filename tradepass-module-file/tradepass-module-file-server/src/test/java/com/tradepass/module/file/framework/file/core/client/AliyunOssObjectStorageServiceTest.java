@@ -19,6 +19,22 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class AliyunOssObjectStorageServiceTest {
+    @Test void usesSpringPropertiesForOssCredentialsIncludingSessionTokens() {
+        var config = new OssStorageProperties();
+        config.setAccessKeyId("test-id");
+        config.setAccessKeySecret("test-secret");
+        var credentials = AliyunOssObjectStorageService.credentials(config).getCredentials();
+        assertThat(credentials.getAccessKeyId()).isEqualTo("test-id");
+        assertThat(credentials.getSecretAccessKey()).isEqualTo("test-secret");
+        assertThat(credentials.useSecurityToken()).isFalse();
+        config.setSessionToken("test-session-token");
+        credentials = AliyunOssObjectStorageService.credentials(config).getCredentials();
+        assertThat(credentials.getSecurityToken()).isEqualTo("test-session-token");
+        assertThat(credentials.useSecurityToken()).isTrue();
+        config.setAccessKeySecret("");
+        assertThatThrownBy(() -> AliyunOssObjectStorageService.credentials(config)).isInstanceOf(IllegalStateException.class);
+    }
+
     final OSS client = mock(OSS.class);
     final CloudBaseCosObjectStorageService legacy = mock(CloudBaseCosObjectStorageService.class);
     final byte[] bytes = {0, -1, 127, -128, 4};

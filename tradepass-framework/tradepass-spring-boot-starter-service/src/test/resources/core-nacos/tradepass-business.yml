@@ -1,0 +1,41 @@
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/test_business
+    username: test_business
+    password: test-business-secret
+    hikari:
+      maximum-pool-size: 3
+      minimum-idle: 0
+tradepass:
+  services:
+    identity-url: ''
+    contract-url: ''
+    trade-url: ''
+    settlement-url: ''
+    file-url: ''
+  messaging:
+    rocketmq:
+      callback-topic: tradepass-callback-events
+      access-key: ''
+      secret-key: ''
+      enabled: true
+      name-server: 127.0.0.1:9876
+  storage:
+    provider: cloudbase-cos
+    enabled: false
+    required: false
+    bucket: ''
+    region: ap-shanghai
+    oss:
+      endpoint: ''
+      region: ''
+      bucket: ''
+      access-key-id: test-oss-id
+      access-key-secret: test-oss-secret
+      session-token: ''
+      legacy-cos-bucket: ''
+      legacy-cos-region: ap-shanghai
+      legacy-cos-key-prefix: tradepass
+      legacy-cos-secret-id: ''
+      legacy-cos-secret-key: ''
+      legacy-cos-session-token: ''

@@ -1,0 +1,7 @@
+tradepass:
+  services:
+    identity-url: lb://tradepass-identity
+    contract-url: lb://tradepass-business
+    trade-url: lb://tradepass-business
+    settlement-url: lb://tradepass-business
+    file-url: lb://tradepass-business

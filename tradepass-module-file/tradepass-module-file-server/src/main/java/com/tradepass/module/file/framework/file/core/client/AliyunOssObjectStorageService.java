@@ -4,7 +4,8 @@ import com.tradepass.module.file.api.file.ObjectStorageService;
 import com.tradepass.module.file.framework.file.config.OssStorageProperties;
 
 import com.aliyun.oss.*;
-import com.aliyun.oss.common.auth.CredentialsProviderFactory;
+import com.aliyun.oss.common.auth.CredentialsProvider;
+import com.aliyun.oss.common.auth.DefaultCredentialProvider;
 import com.aliyun.oss.common.comm.SignVersion;
 import com.aliyun.oss.model.*;
 import com.qcloud.cos.COSClient;
@@ -53,7 +54,7 @@ public class AliyunOssObjectStorageService implements ObjectStorageService {
         config.setSocketTimeout(Math.max(1000, storage.getSocketTimeoutMillis()));
         config.setMaxErrorRetry(0);
         client = OSSClientBuilder.create().endpoint(properties.getEndpoint()).region(properties.getRegion())
-                .credentialsProvider(CredentialsProviderFactory.newEnvironmentVariableCredentialsProvider())
+                .credentialsProvider(credentials(properties))
                 .clientConfiguration(config).build();
         try { legacy = legacyReader(storage, properties); }
         catch (RuntimeException error) { client.shutdown(); throw error; }
@@ -174,9 +175,9 @@ public class AliyunOssObjectStorageService implements ObjectStorageService {
 
     private static CloudBaseCosObjectStorageService legacyReader(StorageProperties storage, OssStorageProperties properties) {
         if (!hasText(properties.getLegacyCosBucket())) return null;
-        String id = System.getenv("TRADEPASS_LEGACY_COS_SECRET_ID");
-        String secret = System.getenv("TRADEPASS_LEGACY_COS_SECRET_KEY");
-        String token = System.getenv("TRADEPASS_LEGACY_COS_SESSION_TOKEN");
+        String id = properties.getLegacyCosSecretId();
+        String secret = properties.getLegacyCosSecretKey();
+        String token = properties.getLegacyCosSessionToken();
         if (!hasText(id) || !hasText(secret)) throw new IllegalStateException("历史 COS 读取需要独立的只读凭证");
         COSCredentials credentials = hasText(token) ? new BasicSessionCredentials(id, secret, token) : new BasicCOSCredentials(id, secret);
         StorageProperties legacyProperties = new StorageProperties();
@@ -195,6 +196,14 @@ public class AliyunOssObjectStorageService implements ObjectStorageService {
     @PreDestroy public void shutdown() {
         if (client != null) client.shutdown();
         if (legacy != null) legacy.shutdown();
+    }
+    static CredentialsProvider credentials(OssStorageProperties properties) {
+        if (!hasText(properties.getAccessKeyId()) || !hasText(properties.getAccessKeySecret())) {
+            throw new IllegalStateException("OSS 必须配置 access-key-id 和 access-key-secret");
+        }
+        return hasText(properties.getSessionToken())
+                ? new DefaultCredentialProvider(properties.getAccessKeyId(), properties.getAccessKeySecret(), properties.getSessionToken())
+                : new DefaultCredentialProvider(properties.getAccessKeyId(), properties.getAccessKeySecret());
     }
     private void requireEnabled() { if (!isEnabled()) throw new BusinessException("文件安全存储服务尚未启用"); }
     private static boolean hasText(String value) { return value != null && !value.isBlank(); }

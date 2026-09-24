@@ -1,151 +1,121 @@
-# 三进程部署：Nacos + RocketMQ，无 Seata
+# 三进程部署：Nacos 配置中心 + RocketMQ
 
-应用为 gateway（1110）、identity（1111）、business（1112）。business 装配 contract、trade、settlement、file 模块；同进程调用保留模块 API，使用同一个 DataSource 和 Spring 本地事务。原 HTTP 路径不变。核心数据在新 `_business` 库，identity 继续使用 `_identity` 库。对象存储和法大大外部调用仍有自己的持久化恢复语义，不属于数据库事务。
+应用为 gateway（1110）、identity（1111）、business（1112）。business 装配合同、交易、结算、文件模块；统一使用 `_business` 数据库和 Spring 本地事务。identity 使用 `_identity` 数据库。Seata、ELK、SkyWalking、XXL-JOB 不启用。
 
-## 配置和资源
+## 配置只维护在 Nacos
 
-- 复制 `deploy/server/.env.core.example` 到私有 `.env.core`，权限 600。已有服务器必须沿用 MySQL root、identity、Redis 密码，以及 MySQL/MQ 原项目名、卷名、网络。先用旧 Compose 的 `config` 和 `docker inspect` 核对实际卷，尤其是之前使用过 `-p` 的环境。
-- `.env.core` 使用宿主机可达地址。仅支持 Linux 单机 host 网络；Nacos 注册 IP 为 127.0.0.1。多机不能直接沿用此配置。
-- business 使用新的 `BUSINESS_DATABASE_URL/DB_USERNAME/DB_PASSWORD`，不再读取 contract/trade/settlement 三组数据库凭据。数据库名必须以 `_business` 结尾，Flyway 不允许对非空旧库自动 baseline。
-- Nacos 配置组默认 `TRADEPASS_CORE`，Data ID 为 `tradepass-common.yaml`、`tradepass-gateway.yaml`、`tradepass-identity.yaml`、`tradepass-business.yaml`。三个服务均启用 `nacos,core`，business 另外启用 `messaging`。配置启动时读取，修改后重启生效。
-- RocketMQ 使用现有 remoting 客户端，单 NameServer 和单 Broker，无 Proxy 和控制台；保留原 MQ 持久卷。默认回调 topic/group 与六进程版一致，切换期间只允许一套消费者运行。自定义 topic 时，必须先在 Broker 创建对应 topic。
-- Seata、XXL-JOB、SkyWalking agent 关闭。回调由 MQ 推送，数据库事件、消费幂等、领取租约及每 30 秒本地恢复继续保留。MQ 不是核心事务的替代品。
-- 应用及常驻基础容器内存上限合计 3584 MiB，加上 Nginx 为 3648 MiB；相对额定 4 GiB 剩余 448 MiB。必须以 `free -m` 的实际总内存为准：若系统只显示约 3.6 GiB，这些容器不能同时用满上限。上限不是预留量，也不是容量保证。按低并发验证 PDF、Excel、文件上传峰值和 MQ 积压。不要同机运行 Jenkins 构建、ELK 或 SkyWalking。OOM、GC 或 IO 压力持续时应增加内存或移出中间件。
-- 保持已有 `restart: "no"` 应用策略；启动和机器重启后需要显式拉起业务。检查 `docker stats --no-stream` 及容器 OOM 状态。
+应用运行时不再使用 `.env.core`，也不再通过 Docker 环境变量传入数据库、微信、法大大、Redis、RocketMQ 和对象存储配置。Docker 只管理镜像、端口、资源限制、日志路径和启动配置文件挂载。修改应用配置时在 Nacos 控制台编辑 YAML，发布后重启相应服务；当前关闭热更新，数据库和密钥不会在请求进行中切换。
 
-## NameServer OOM 后恢复 business
+默认 namespace 为 public（空 namespace ID），Group 为 `TRADEPASS_CORE`：
 
-若 business 启动时报 `callbackConsumer`、`getTopicRouteInfoFromNameServer`、`connect to null failed`，先检查 NameServer。仅凭这条异常不能判断 OOM；以下检查中 `OOMKilled=true` 才确认容器遭遇了 OOM：
+| Data ID | 内容 |
+| --- | --- |
+| `tradepass-common.yaml` | 微信、法大大、Redis、内部调用密钥、datacenter ID |
+| `tradepass-identity.yaml` | identity 数据源、连接池和内部服务发现设置 |
+| `tradepass-business.yaml` | business 数据源、RocketMQ、存储及内部服务发现设置 |
+| `tradepass-gateway.yaml` | `lb://tradepass-identity` / `lb://tradepass-business` 网关路由目标 |
+
+使用原生 Spring 配置键，例如 `wechat.app-secret`、`tradepass.fadada.app-secret`、`spring.datasource.password`；不要把 `.env` 的 `KEY=value` 内容直接贴成 Nacos YAML。数据库密码分别放在所属服务，不在 common 共用同一数据库账号。
+
+本地唯一的应用引导文件是 `.runtime/nacos/bootstrap.yml`，仅含 Nacos 地址、namespace、group、账号及配置导入声明。模板见 [bootstrap.example.yml](../deploy/server/nacos/bootstrap.example.yml)。应用要先连接 Nacos 才能取配置，所以 Nacos 的连接信息不能只存在 Nacos 内部。
+
+外部引导文件通过 `spring.config.additional-location` 加载，优先于 JAR 内置配置，并导入 common 和当前服务的配置。原理见 [Spring Boot 外部配置文档](https://docs.spring.io/spring-boot/3.3/reference/features/external-config.html)。应用 Compose 不再注入同名业务配置，避免覆盖 Nacos。
+
+## 已部署服务器：一次性导入现有值
+
+在服务器仓库根目录执行。需要 Docker Compose 和 `scripts/ci/requirements.txt` 中的 PyYAML；若提示缺少 yaml，先执行 `python3 -m pip install -r scripts/ci/requirements.txt`。
 
 ```bash
-docker inspect --format 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' tradepass-infra-static-rocketmq-namesrv-1
-docker logs --tail 60 tradepass-infra-static-rocketmq-namesrv-1
+python3 scripts/server/configure-core-nacos.py --publish
 ```
 
-旧配置的 160 MiB 上限已发生重复 OOM。现在提高到 256 MiB，Java 堆仍为 64 MiB，并限制代码缓存和 JVM 可见 CPU 数，为堆外内存、线程和元数据留出空间。保留有限自动重试，避免无限重启掩盖故障。该调整需要重建 NameServer 容器；只执行 `restart` 不会应用新的内存/JVM 配置。
+工具只在这次导入时读取现有 `deploy/server/.env.core`，由 Docker Compose 解析引号及特殊字符。使用现有 Nacos 服务和配置组：保留 Nacos 当前已有的值，仅补齐缺失项；发布前校验数据库归属、凭据和内部密钥，已有配置使用 CAS 防止覆盖并发修改，发布后回读验证。不会打印密码、创建旧配置备份或操作容器。若中途失败，已发布的 Data ID 会保留，修复后可重新运行；全部成功前不生成新的启动文件。
 
-拉取最新代码后，在 `deploy/server` 执行。两个 Compose 使用原有项目及持久卷，`--no-deps` 只操作指定服务；无需重新构建 Java 镜像：
+成功后生成以下私有文件（权限 600，Git 忽略）：
+
+- `.runtime/nacos/bootstrap.yml`：Nacos 连接配置。
+- `.runtime/core.compose.yml`：应用启动文件，业务参数来自 Nacos。
+- `.runtime/infra.compose.yml`：MySQL、Redis、MQ、Nacos 自身的启动参数。
+- `.runtime/edge.compose.yml`：Nginx 和证书目录。
+
+后两项不能由尚未启动的 Nacos 提供。MySQL 初始化账号、Redis 服务端密码、Nacos 鉴权参数属于基础设施启动参数，转换后直接写入私有启动 YAML。Nacos 中的数据库/Redis 客户端凭据必须与实际服务端账号保持一致；编辑 Nacos 不会自动修改数据库用户密码。
+
+确认脚本全部成功后，在 `deploy/server` 执行：
 
 ```bash
-docker compose --env-file .env.core -f infra.core.compose.yml \
-  up -d --no-deps --force-recreate --wait --wait-timeout 120 rocketmq-namesrv &&
-docker compose --env-file .env.core -f yudao.core.compose.yml \
-  up -d --no-deps --force-recreate --wait --wait-timeout 360 business
+docker compose -f .runtime/core.compose.yml up -d --no-deps --force-recreate --wait --wait-timeout 360 identity &&
+docker compose -f .runtime/core.compose.yml up -d --no-deps --force-recreate --wait --wait-timeout 360 business &&
+docker compose -f .runtime/core.compose.yml up -d --no-deps --force-recreate --wait --wait-timeout 180 gateway
+```
 
+现有基础设施无需因本次应用配置切换而重建。以后启动基础设施或 Nginx：
+
+```bash
+docker compose -f .runtime/infra.compose.yml up -d --wait --wait-timeout 360
+docker compose -f .runtime/edge.compose.yml up -d
+```
+
+这些命令不需要 `--env-file`。生成的文件保留原 Compose 项目名、镜像标签、卷名和绝对挂载路径。之后不再运行旧的 `configure-core-integrations.py`；微信、法大大等配置统一在 Nacos 修改。`.env.core` 不再被运行文件引用，可在切换验证完成后删除；不要删除 `.runtime`。
+
+## 新镜像与对象存储
+
+微信、法大大、数据源等现有 Spring 配置支持上述引导方式。OSS 与历史 COS 凭据的读取已从系统环境变量改为 Spring 属性；启用这部分功能时需要部署本次更新后的 business 镜像，否则旧镜像不会读取 Nacos 中的存储密钥。
+
+在构建机执行，避免在 4G 业务服务器并发构建：
+
+```bash
+mvn -B -pl tradepass-business -am -DskipTests package
+docker build -f tradepass-business/Dockerfile -t tradepass-business:local .
+```
+
+OSS 凭据位于 business 的 `tradepass.storage.oss.access-key-id/access-key-secret/session-token`；历史 COS 凭据对应 `legacy-cos-secret-id/legacy-cos-secret-key/legacy-cos-session-token`。CloudBase COS 适配器仍依赖云托管临时凭据服务，把 provider 改成 cloudbase-cos 并不能使其在普通服务器上工作。现有存储关闭状态不会被导入工具自动开启。
+
+## 日常修改与验证
+
+在 Nacos 编辑后执行以下命令即可重新读取配置，无需修改 Compose 或重新打包 Java。common 中的共享配置变化要重启所有引用它的服务；只修改某服务配置时可仅重启该服务：
+
+```bash
+docker compose -f .runtime/core.compose.yml restart identity business gateway
 curl -i --max-time 10 http://127.0.0.1:11112/actuator/health/readiness
+curl -i --max-time 10 https://sqt.org.cn/tcb_probe
+curl -i --max-time 10 https://sqt.org.cn/api/me
+```
+
+预期依次为 200/UP、200、未登录 401。接着用新体验版验证微信登录、企业、合同、文件和法大大回调。健康检查不代替外部接口和数据验收。
+
+Nacos 只绑定服务器回环地址。电脑可用 SSH 隧道访问控制台：
+
+```bash
+ssh -N -L 18848:127.0.0.1:8848 root@124.221.190.63
+```
+
+然后打开 `http://127.0.0.1:18848/nacos`。仍使用当前 Nacos 账号，密码只保存在服务器私有文件和 Nacos 中，不提交 Git。
+
+## 4G 内存与 NameServer OOM
+
+应用及常驻基础容器上限合计 3584 MiB，含 Nginx 为 3648 MiB；相对额定 4 GiB 剩余 448 MiB。以 `free -m` 实际总内存为准：系统显示约 3.6 GiB 时不能允许所有容器同时顶满上限。低并发测试文件处理、PDF、签署和 MQ 积压；持续内存不足时需扩容或移出中间件。
+
+NameServer 上限已从 160 调到 256 MiB，Java 堆保持 64 MiB并限制代码缓存与 JVM 可见 CPU 数。若 business 出现 `callbackConsumer`、`getTopicRouteInfoFromNameServer`、`connect to null failed`，先检查 NameServer 状态，不能仅凭此异常判断 OOM：
+
+```bash
+docker inspect --format 'status={{.State.Status}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}' tradepass-infra-static-rocketmq-namesrv-1
+docker logs --tail 60 tradepass-infra-static-rocketmq-namesrv-1
 docker stats --no-stream
 free -h
 ```
 
-NameServer 的端口健康检查只证明监听恢复，Broker 重新注册路由可能有短暂延迟。若 business 仍失败，检查它的新日志及 Broker 日志，不要删除 MQ 卷或重置 topic。短时启动通过不代表长期内存稳定，仍需观察 NameServer 的 OOM 状态、重启次数和整机可用内存。
+修复启动参数后需重建对应容器，`restart` 不应用新的内存限制。应用保留 `restart: "no"`，机器重启后显式启动应用。不要删除数据卷或重新创建已有数据库。
 
-## 构建
+## HTTPS 证书
 
-仓库根目录执行；镜像在构建机生成，不在 4G 业务服务器上并发构建：
+Nginx 代理到 `127.0.0.1:1110`，保留 `/api` 路径，阻止公网 `/internal`、`/actuator`。TLS 目录应有 `fullchain.pem` 与 `privkey.pem`。云防火墙放行 80/443，应用和中间件端口保持回环监听。
 
-```bash
-mvn -B -DskipTests package
-mvn -B -f tools/database-migrator/pom.xml -DskipTests package
-docker build -f tradepass-gateway/Dockerfile -t tradepass-gateway:local .
-docker build -f tradepass-module-identity/tradepass-module-identity-server/Dockerfile -t tradepass-identity:local .
-docker build -f tradepass-business/Dockerfile -t tradepass-business:local .
-```
-
-三个镜像及迁移 JAR 一起交付，`.env.core` 的 tag 与镜像保持一致。原六服务发布脚本仍是六服务发布通道，不能用于本模式。服务器安装包包含本模式的 Compose、配置模板和操作手册。
-
-## 新环境
-
-在 `deploy/server` 执行：
+替换证书后：
 
 ```bash
-docker network create tradepass-server
-docker compose --env-file .env.core -f infra.core.compose.yml up -d --wait --wait-timeout 360
+docker compose -f .runtime/edge.compose.yml exec nginx nginx -t &&
+docker compose -f .runtime/edge.compose.yml exec nginx nginx -s reload
 ```
-
-如果服务器已有单独运行的 Nacos，复用其地址和账号，避免重复占用端口。此时基础设施命令明确选择服务：`docker compose --env-file .env.core -f infra.core.compose.yml up -d --wait mysql redis rocketmq-topic-init`，它会按依赖启动 Broker/NameServer；不要再启动本文件中的 nacos。
-
-MySQL 空卷自动创建 identity/business 库及独立账号。Nacos 只绑定回环地址，通过 SSH 隧道访问控制台，先设置私有管理员密码，再填入 `.env.core` 的 `NACOS_PASSWORD`。`NACOS_AUTH_TOKEN` 和 `NACOS_AUTH_IDENTITY_VALUE` 是服务端鉴权配置，不会自动修改管理员密码。
-
-加载私有环境并创建缺失的 Data ID（脚本保留已有配置，不覆盖）：
-
-```bash
-set -a
-source .env.core
-set +a
-python3 ../../scripts/server/init-core-nacos.py
-docker compose --env-file .env.core -f yudao.core.compose.yml up -d --no-build --wait --wait-timeout 360
-```
-
-不要在 Nacos 继续导入六进程版的地址配置。核心模块的 Feign 名称为 `tradepass-business`，identity 为 `tradepass-identity`；网关保留原路由分类，但四个核心领域都路由到 `lb://tradepass-business`。
-
-HTTPS 可继续使用宿主机已有 Nginx，将上游改为 `127.0.0.1:1110`。若使用仓库内 Nginx，设置 `TRADEPASS_TLS_DIRECTORY` 后运行 `docker compose --env-file .env.core -f edge.core.compose.yml up -d`。不要同时运行旧 edge 配置；它的 `gateway:8080` 上游只适用于旧 bridge 网络。三进程应用端口仅监听回环地址。
-
-## 不使用编辑器补齐微信和法大大配置
-
-在服务器仓库根目录运行：
-
-```bash
-python3 scripts/server/configure-core-integrations.py
-```
-
-脚本更新现有 `deploy/server/.env.core` 中的微信 AppID/密钥、法大大开关/AppID/密钥/接口地址/回调地址七项配置。自动读取同目录旧 `.env` 中可复用的值；只有 AppID 一致，且法大大接口地址也一致时才复用对应密钥。已启用的新环境配置优先，未启用模板里的生产地址不会覆盖旧环境的 UAT 地址。其余数据库、中间件、存储、TLS 配置保持原样。
-
-缺少的值会在终端提示输入，密钥输入不回显。输入法大大接口地址时，从旧环境复制完整地址，与对应应用的密钥保持同一环境；不要从截断的截图猜测。也可通过 `--source /path/to/old.env` 指定其他旧配置文件，通过 `--wechat-app-id`、`--fadada-app-id`、`--fadada-server-url`、`--callback-url` 指定非密钥字段。密钥不通过命令行参数传入。
-
-脚本只接受已存在且权限为 600 的目标文件；写入前校验全部值，保存权限为 600 的 `.env.core.backup-*` 备份，再原子替换目标文件。不会创建空部署配置、修改数据库密码或自动重启服务。私有环境文件及备份均由 Git 忽略。
-
-更新成功后，重新创建 identity/business 使容器读取配置，再检查网关和登录：
-
-```bash
-cd deploy/server
-docker compose --env-file .env.core -f yudao.core.compose.yml up -d --no-deps --force-recreate identity business
-curl -i https://sqt.org.cn/tcb_probe
-```
-
-回调数据、微信登录、文件和实际签署仍需部署环境验收；复制配置不等于迁移旧数据库数据。
-
-## 首次使用 Docker Nginx
-
-服务器已经安装 Docker 时，不需要在宿主机另装 Nginx。使用 `edge.core.compose.yml` 启动一个内存上限为 64 MiB 的 Nginx 容器，转发到宿主机 `127.0.0.1:1110`，80 端口跳转 HTTPS。
-
-1. 在 SSL 证书平台下载覆盖 `sqt.org.cn` 的 Nginx 格式证书，并把完整证书链和对应私钥上传到服务器。证书仅配置在旧云托管平台上不会自动安装到新服务器。不要把私钥提交到仓库。
-
-```bash
-install -d -m 700 /docker/tradepass/tls
-```
-
-将完整证书链保存为 `/docker/tradepass/tls/fullchain.pem`，私钥保存为 `/docker/tradepass/tls/privkey.pem`。若平台提供独立中间证书，按站点证书在前、中间证书在后的顺序合并证书链；不要把私钥放进证书链文件。
-
-```bash
-chmod 600 /docker/tradepass/tls/privkey.pem
-chmod 644 /docker/tradepass/tls/fullchain.pem
-```
-
-2. 在当前服务器 `server` 部署目录的私有 `.env.core` 中设置或修改以下一项，保留其他已有配置：
-
-```dotenv
-TRADEPASS_TLS_DIRECTORY=/docker/tradepass/tls
-```
-
-3. 同一目录应已有 `edge.core.compose.yml` 和 `nginx-core-https.conf`。确认宿主机 80/443 无其他服务占用，再拉取镜像、验证配置和启动。每一步成功后再执行下一步：
-
-```bash
-docker compose --env-file .env.core -f edge.core.compose.yml pull nginx
-docker compose --env-file .env.core -f edge.core.compose.yml run --rm --no-deps nginx nginx -t
-docker compose --env-file .env.core -f edge.core.compose.yml up -d nginx
-docker compose --env-file .env.core -f edge.core.compose.yml ps
-```
-
-4. 不修改 DNS 就可以先验证新入口，包括证书域名、证书链和代理路由：
-
-```bash
-curl -i --resolve sqt.org.cn:443:127.0.0.1 https://sqt.org.cn/tcb_probe
-curl -i --resolve sqt.org.cn:443:127.0.0.1 https://sqt.org.cn/api/me
-```
-
-分别应返回 HTTP 200 和未登录的 HTTP 401。若失败，查看 `docker compose --env-file .env.core -f edge.core.compose.yml logs --tail=80 nginx`，不要用 `-k` 绕过证书验证。安全组和宿主机防火墙需放行 TCP 80/443；公网无需放行应用的 1110/1111/1112 端口。在外网机器上把 `--resolve` 的 `127.0.0.1` 换成服务器公网 IP，再确认访问成功后安排 DNS 和小程序版本切流。
-
-更新证书时替换挂载目录中的证书和私钥，先执行 `docker compose --env-file .env.core -f edge.core.compose.yml exec nginx nginx -t`，成功后再执行 `docker compose --env-file .env.core -f edge.core.compose.yml exec nginx nginx -s reload`。此部署不包含自动续期。
 
 ## 已有四库环境迁移
 
@@ -156,8 +126,8 @@ curl -i --resolve sqt.org.cn:443:127.0.0.1 https://sqt.org.cn/api/me
 3. 已存在的 MySQL 数据卷不会执行初始化脚本。新建空 business 库和独立账号（下面命令只创建 business，已存在时失败，不覆盖）：
 
 ```bash
-docker compose --env-file .env.core -f infra.core.compose.yml up -d --wait --wait-timeout 360
-docker compose --env-file .env.core -f infra.core.compose.yml exec -T mysql bash /docker-entrypoint-initdb.d/11-core-databases.sh --business-only
+docker compose -f .runtime/infra.compose.yml up -d --wait --wait-timeout 360
+docker compose -f .runtime/infra.compose.yml exec -T mysql bash /docker-entrypoint-initdb.d/11-core-databases.sh --business-only
 ```
 
 4. 在私有迁移环境文件设置下列环境变量，所有 JDBC URL 使用执行迁移机器可达的地址：
@@ -181,10 +151,9 @@ java -jar tools/database-migrator/target/tradepass-database-migrator-0.1.0-SNAPS
 
 MySQL DDL 不可随数据事务回滚：复制失败后，新目标可能保留空表和 Flyway 历史；原库不变。排查错误后使用另一个空 `_business` 库重试，不要清理原库。不得在原业务库运行此工具。
 
-5. 按新环境步骤初始化 Nacos 配置，启动三进程。验证登录、企业切换、合同、收货库存对账、文件与法大大回调、重复消息和错误路径后再开放写入。旧业务容器与新 business 不得同时消费同一回调组。
+5. 按上文步骤准备 Nacos 配置，启动三进程。验证登录、企业切换、合同、收货库存对账、文件与法大大回调、重复消息和错误路径后再开放写入。旧业务容器与新 business 不得同时消费同一回调组。
 
-## 回退与验证
 
-开放业务写入前，可停止新应用并回到旧镜像和原四库（需恢复 Seata、旧消费/调度配置）。开放写入后，新 business 已产生新数据，不能直接切回旧库；需要数据回流方案。
+## 验证范围
 
-本地完整验证：`bash scripts/ci/verify-core.sh`。脚本创建隔离 MySQL、Nacos 和 RocketMQ，不启动 Seata。复用原 API 基线和业务测试，并验证四库到统一库迁移、三进程、Nacos 注册配置/路由、MQ 消费、重复事件、库存/结算失败回滚及合同更新后的后续失败回滚。真实法大大/OSS 凭据和服务器 4G 内存负载需要部署环境单独验收。
+`bash scripts/ci/verify-core.sh` 是原三进程的完整业务兼容性验证入口。Nacos 原生配置的加载优先级另由 `NacosApplicationConfigTest` 检查，导入与发布逻辑由 `test_core_nacos.py` 检查。真实 Nacos 服务、外部密钥及 4G 长时间负载仍需在部署环境验收。

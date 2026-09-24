@@ -1,3 +1,7 @@
+# 当前三进程部署
+
+gateway / identity / business 已改为从 Nacos 读取应用配置，不再使用 `.env.core` 运行应用。已有服务器先执行 `python3 scripts/server/configure-core-nacos.py --publish` 完成一次导入，之后使用 `docker compose -f .runtime/core.compose.yml up -d`。完整步骤见 [三进程 Nacos 部署手册](../../docs/server-core-cutover.md)。以下内容用于原部署通道。
+
 # 服务器 Compose 部署
 
 本目录部署四个独立业务库、Seata、RocketMQ、XXL-JOB，以及 identity、contract、trade、settlement、file、gateway 六个应用。业务镜像使用 JDK 17。服务器有 Docker/Compose 即可；完整迁移和运维说明见 [分库切换手册](../../docs/server-microservices-cutover.md)。

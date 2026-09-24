@@ -1,0 +1,24 @@
+# Only bootstrap coordinates belong on the server. Copy privately through the
+# configure-core-nacos.py command; do not commit the real password.
+spring:
+  config:
+    import:
+      - nacos:tradepass-common.yaml?group=TRADEPASS_CORE&refreshEnabled=false
+      - nacos:${spring.application.name}.yaml?group=TRADEPASS_CORE&refreshEnabled=false
+  cloud:
+    nacos:
+      discovery:
+        enabled: true
+        server-addr: 127.0.0.1:8848
+        namespace: ''
+        group: TRADEPASS_CORE
+        username: nacos
+        password: CHANGE_ME
+        ip: 127.0.0.1
+      config:
+        enabled: true
+        server-addr: 127.0.0.1:8848
+        namespace: ''
+        group: TRADEPASS_CORE
+        username: nacos
+        password: CHANGE_ME

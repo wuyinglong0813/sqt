@@ -1,0 +1,23 @@
+# Test transport only: imported content matches Nacos documents without contacting a server.
+spring:
+  config:
+    import:
+    - classpath:core-nacos/tradepass-common.yml
+    - classpath:core-nacos/${spring.application.name}.yml
+  cloud:
+    nacos:
+      config:
+        enabled: true
+        server-addr: 127.0.0.1:8848
+        namespace: ''
+        group: TRADEPASS_CORE
+        username: nacos
+        password: test-nacos-password
+      discovery:
+        enabled: true
+        server-addr: 127.0.0.1:8848
+        namespace: ''
+        group: TRADEPASS_CORE
+        username: nacos
+        password: test-nacos-password
+        ip: 127.0.0.1
