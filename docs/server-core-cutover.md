@@ -54,6 +54,49 @@ docker compose --env-file .env.core -f yudao.core.compose.yml up -d --no-build -
 
 HTTPS 可继续使用宿主机已有 Nginx，将上游改为 `127.0.0.1:1110`。若使用仓库内 Nginx，设置 `TRADEPASS_TLS_DIRECTORY` 后运行 `docker compose --env-file .env.core -f edge.core.compose.yml up -d`。不要同时运行旧 edge 配置；它的 `gateway:8080` 上游只适用于旧 bridge 网络。三进程应用端口仅监听回环地址。
 
+## 首次使用 Docker Nginx
+
+服务器已经安装 Docker 时，不需要在宿主机另装 Nginx。使用 `edge.core.compose.yml` 启动一个内存上限为 64 MiB 的 Nginx 容器，转发到宿主机 `127.0.0.1:1110`，80 端口跳转 HTTPS。
+
+1. 在 SSL 证书平台下载覆盖 `sqt.org.cn` 的 Nginx 格式证书，并把完整证书链和对应私钥上传到服务器。证书仅配置在旧云托管平台上不会自动安装到新服务器。不要把私钥提交到仓库。
+
+```bash
+install -d -m 700 /docker/tradepass/tls
+```
+
+将完整证书链保存为 `/docker/tradepass/tls/fullchain.pem`，私钥保存为 `/docker/tradepass/tls/privkey.pem`。若平台提供独立中间证书，按站点证书在前、中间证书在后的顺序合并证书链；不要把私钥放进证书链文件。
+
+```bash
+chmod 600 /docker/tradepass/tls/privkey.pem
+chmod 644 /docker/tradepass/tls/fullchain.pem
+```
+
+2. 在当前服务器 `server` 部署目录的私有 `.env.core` 中设置或修改以下一项，保留其他已有配置：
+
+```dotenv
+TRADEPASS_TLS_DIRECTORY=/docker/tradepass/tls
+```
+
+3. 同一目录应已有 `edge.core.compose.yml` 和 `nginx-core-https.conf`。确认宿主机 80/443 无其他服务占用，再拉取镜像、验证配置和启动。每一步成功后再执行下一步：
+
+```bash
+docker compose --env-file .env.core -f edge.core.compose.yml pull nginx
+docker compose --env-file .env.core -f edge.core.compose.yml run --rm --no-deps nginx nginx -t
+docker compose --env-file .env.core -f edge.core.compose.yml up -d nginx
+docker compose --env-file .env.core -f edge.core.compose.yml ps
+```
+
+4. 不修改 DNS 就可以先验证新入口，包括证书域名、证书链和代理路由：
+
+```bash
+curl -i --resolve sqt.org.cn:443:127.0.0.1 https://sqt.org.cn/tcb_probe
+curl -i --resolve sqt.org.cn:443:127.0.0.1 https://sqt.org.cn/api/me
+```
+
+分别应返回 HTTP 200 和未登录的 HTTP 401。若失败，查看 `docker compose --env-file .env.core -f edge.core.compose.yml logs --tail=80 nginx`，不要用 `-k` 绕过证书验证。安全组和宿主机防火墙需放行 TCP 80/443；公网无需放行应用的 1110/1111/1112 端口。在外网机器上把 `--resolve` 的 `127.0.0.1` 换成服务器公网 IP，再确认访问成功后安排 DNS 和小程序版本切流。
+
+更新证书时替换挂载目录中的证书和私钥，先执行 `docker compose --env-file .env.core -f edge.core.compose.yml exec nginx nginx -t`，成功后再执行 `docker compose --env-file .env.core -f edge.core.compose.yml exec nginx nginx -s reload`。此部署不包含自动续期。
+
 ## 已有四库环境迁移
 
 1. 备份数据库、原镜像版本和配置，暂停入口业务写入，停止外部任务，等待 Seata 全局事务完成（包括回滚重试、各库 `undo_log` 清空）。停止六个旧应用。保留 MySQL、Redis 和 MQ 数据卷。
