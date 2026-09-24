@@ -54,6 +54,30 @@ docker compose --env-file .env.core -f yudao.core.compose.yml up -d --no-build -
 
 HTTPS 可继续使用宿主机已有 Nginx，将上游改为 `127.0.0.1:1110`。若使用仓库内 Nginx，设置 `TRADEPASS_TLS_DIRECTORY` 后运行 `docker compose --env-file .env.core -f edge.core.compose.yml up -d`。不要同时运行旧 edge 配置；它的 `gateway:8080` 上游只适用于旧 bridge 网络。三进程应用端口仅监听回环地址。
 
+## 不使用编辑器补齐微信和法大大配置
+
+在服务器仓库根目录运行：
+
+```bash
+python3 scripts/server/configure-core-integrations.py
+```
+
+脚本更新现有 `deploy/server/.env.core` 中的微信 AppID/密钥、法大大开关/AppID/密钥/接口地址/回调地址七项配置。自动读取同目录旧 `.env` 中可复用的值；只有 AppID 一致，且法大大接口地址也一致时才复用对应密钥。已启用的新环境配置优先，未启用模板里的生产地址不会覆盖旧环境的 UAT 地址。其余数据库、中间件、存储、TLS 配置保持原样。
+
+缺少的值会在终端提示输入，密钥输入不回显。输入法大大接口地址时，从旧环境复制完整地址，与对应应用的密钥保持同一环境；不要从截断的截图猜测。也可通过 `--source /path/to/old.env` 指定其他旧配置文件，通过 `--wechat-app-id`、`--fadada-app-id`、`--fadada-server-url`、`--callback-url` 指定非密钥字段。密钥不通过命令行参数传入。
+
+脚本只接受已存在且权限为 600 的目标文件；写入前校验全部值，保存权限为 600 的 `.env.core.backup-*` 备份，再原子替换目标文件。不会创建空部署配置、修改数据库密码或自动重启服务。私有环境文件及备份均由 Git 忽略。
+
+更新成功后，重新创建 identity/business 使容器读取配置，再检查网关和登录：
+
+```bash
+cd deploy/server
+docker compose --env-file .env.core -f yudao.core.compose.yml up -d --no-deps --force-recreate identity business
+curl -i https://sqt.org.cn/tcb_probe
+```
+
+回调数据、微信登录、文件和实际签署仍需部署环境验收；复制配置不等于迁移旧数据库数据。
+
 ## 首次使用 Docker Nginx
 
 服务器已经安装 Docker 时，不需要在宿主机另装 Nginx。使用 `edge.core.compose.yml` 启动一个内存上限为 64 MiB 的 Nginx 容器，转发到宿主机 `127.0.0.1:1110`，80 端口跳转 HTTPS。

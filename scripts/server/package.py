@@ -13,7 +13,7 @@ FILES = [
     "deploy/server/infra.compose.yml", "deploy/server/infra.localhost.compose.yml", "deploy/server/service.compose.yml", "deploy/server/yudao.compose.yml", "deploy/server/.env.example", "deploy/server/README.md",
     "deploy/server/edge.core.compose.yml", "deploy/server/nginx-core-https.conf",
     "deploy/server/yudao.core.compose.yml", "deploy/server/infra.core.compose.yml", "deploy/server/.env.core.example",
-    "deploy/server/mysql/11-core-databases.sh", "scripts/server/init-core-nacos.py", "docs/server-core-cutover.md",
+    "deploy/server/mysql/11-core-databases.sh", "scripts/server/init-core-nacos.py", "scripts/server/configure-core-integrations.py", "docs/server-core-cutover.md",
     "deploy/server/mysql/10-owned-databases.sh", "deploy/server/seata/application.yml", "deploy/server/rocketmq/broker.conf",
     "deploy/server/xxl-job/schema.sql", "deploy/server/xxl-job/callback-task.sql", "deploy/server/xxl-job/upstream-3.2.0.sql", "deploy/server/xxl-job/LICENSE",
     "deploy/server/edge.compose.yml", "deploy/server/nginx-https.conf", "scripts/server/arthas.sh",
