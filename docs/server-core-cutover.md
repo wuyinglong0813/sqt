@@ -10,8 +10,34 @@
 - Nacos 配置组默认 `TRADEPASS_CORE`，Data ID 为 `tradepass-common.yaml`、`tradepass-gateway.yaml`、`tradepass-identity.yaml`、`tradepass-business.yaml`。三个服务均启用 `nacos,core`，business 另外启用 `messaging`。配置启动时读取，修改后重启生效。
 - RocketMQ 使用现有 remoting 客户端，单 NameServer 和单 Broker，无 Proxy 和控制台；保留原 MQ 持久卷。默认回调 topic/group 与六进程版一致，切换期间只允许一套消费者运行。自定义 topic 时，必须先在 Broker 创建对应 topic。
 - Seata、XXL-JOB、SkyWalking agent 关闭。回调由 MQ 推送，数据库事件、消费幂等、领取租约及每 30 秒本地恢复继续保留。MQ 不是核心事务的替代品。
-- 应用及常驻基础容器内存上限合计约 3488 MiB，给系统及 Nginx 留约 608 MiB；这是预算，不是实测容量。按低并发验证 PDF、Excel、文件上传峰值和 MQ 积压。不要同机运行 Jenkins 构建、ELK 或 SkyWalking。OOM、GC 或 IO 压力持续时应增加内存或移出中间件。
+- 应用及常驻基础容器内存上限合计 3584 MiB，加上 Nginx 为 3648 MiB；相对额定 4 GiB 剩余 448 MiB。必须以 `free -m` 的实际总内存为准：若系统只显示约 3.6 GiB，这些容器不能同时用满上限。上限不是预留量，也不是容量保证。按低并发验证 PDF、Excel、文件上传峰值和 MQ 积压。不要同机运行 Jenkins 构建、ELK 或 SkyWalking。OOM、GC 或 IO 压力持续时应增加内存或移出中间件。
 - 保持已有 `restart: "no"` 应用策略；启动和机器重启后需要显式拉起业务。检查 `docker stats --no-stream` 及容器 OOM 状态。
+
+## NameServer OOM 后恢复 business
+
+若 business 启动时报 `callbackConsumer`、`getTopicRouteInfoFromNameServer`、`connect to null failed`，先检查 NameServer。仅凭这条异常不能判断 OOM；以下检查中 `OOMKilled=true` 才确认容器遭遇了 OOM：
+
+```bash
+docker inspect --format 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' tradepass-infra-static-rocketmq-namesrv-1
+docker logs --tail 60 tradepass-infra-static-rocketmq-namesrv-1
+```
+
+旧配置的 160 MiB 上限已发生重复 OOM。现在提高到 256 MiB，Java 堆仍为 64 MiB，并限制代码缓存和 JVM 可见 CPU 数，为堆外内存、线程和元数据留出空间。保留有限自动重试，避免无限重启掩盖故障。该调整需要重建 NameServer 容器；只执行 `restart` 不会应用新的内存/JVM 配置。
+
+拉取最新代码后，在 `deploy/server` 执行。两个 Compose 使用原有项目及持久卷，`--no-deps` 只操作指定服务；无需重新构建 Java 镜像：
+
+```bash
+docker compose --env-file .env.core -f infra.core.compose.yml \
+  up -d --no-deps --force-recreate --wait --wait-timeout 120 rocketmq-namesrv &&
+docker compose --env-file .env.core -f yudao.core.compose.yml \
+  up -d --no-deps --force-recreate --wait --wait-timeout 360 business
+
+curl -i --max-time 10 http://127.0.0.1:11112/actuator/health/readiness
+docker stats --no-stream
+free -h
+```
+
+NameServer 的端口健康检查只证明监听恢复，Broker 重新注册路由可能有短暂延迟。若 business 仍失败，检查它的新日志及 Broker 日志，不要删除 MQ 卷或重置 topic。短时启动通过不代表长期内存稳定，仍需观察 NameServer 的 OOM 状态、重启次数和整机可用内存。
 
 ## 构建
 

@@ -81,13 +81,17 @@ services:
     networks: *id001
     logging: *id002
     image: apache/rocketmq:5.3.4
-    mem_limit: 160m
+    # 160 MiB caused repeated container OOM kills after successful startup.
+    # Leave room beyond the Java heap for Netty, thread stacks and JVM metadata.
+    mem_limit: 256m
     depends_on:
       rocketmq-init:
         condition: service_completed_successfully
     environment:
+      MALLOC_ARENA_MAX: 2
       HEAP_OPTS: -Xms48m -Xmx64m -Xmn32m
-      JAVA_OPT_EXT: -Xms48m -Xmx64m -Xmn32m -XX:MaxDirectMemorySize=16m -XX:MaxMetaspaceSize=48m
+      JAVA_OPT_EXT: -Xms48m -Xmx64m -Xmn32m -XX:MaxDirectMemorySize=16m -XX:MetaspaceSize=32m
+        -XX:MaxMetaspaceSize=48m -XX:ReservedCodeCacheSize=32m -XX:ActiveProcessorCount=2
     command:
     - sh
     - mqnamesrv
