@@ -1,0 +1,16 @@
+# Merge this storage block into the EXISTING tradepass-business.yaml in TRADEPASS_CORE.
+# Deploy the new business image first. Preserve all existing datasource/MQ/other settings.
+# Fill secrets privately in Nacos before enabling. Never commit the populated file.
+tradepass:
+  storage:
+    provider: tencent-cos
+    enabled: true
+    required: true
+    migrate-legacy-blobs: false
+    bucket: sqt-1461413991
+    region: ap-shanghai
+    key-prefix: tradepass
+    cos:
+      secret-id: ''
+      secret-key: ''
+      session-token: ''

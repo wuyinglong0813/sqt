@@ -1,5 +1,7 @@
 # 三进程部署：Nacos 配置中心 + RocketMQ
 
+日常单服务/全部服务启停、健康检查及密码位置，见 [运维说明](server-operations.md)。
+
 应用为 gateway（1110）、identity（1111）、business（1112）。business 装配合同、交易、结算、文件模块；统一使用 `_business` 数据库和 Spring 本地事务。identity 使用 `_identity` 数据库。Seata、ELK、SkyWalking、XXL-JOB 不启用。
 
 ## 配置只维护在 Nacos
@@ -58,6 +60,8 @@ docker compose -f .runtime/edge.compose.yml up -d
 这些命令不需要 `--env-file`。生成的文件保留原 Compose 项目名、镜像标签、卷名和绝对挂载路径。之后不再运行旧的 `configure-core-integrations.py`；微信、法大大等配置统一在 Nacos 修改。`.env.core` 不再被运行文件引用，可在切换验证完成后删除；不要删除 `.runtime`。
 
 ## 新镜像与对象存储
+
+普通腾讯云 COS 已新增 `tencent-cos` 适配器，接入新桶及 Nacos 配置步骤见 [COS 接入说明](server-cos.md)。需要先部署新 business 镜像，再启用相应配置。
 
 微信、法大大、数据源等现有 Spring 配置支持上述引导方式。OSS 与历史 COS 凭据的读取已从系统环境变量改为 Spring 属性；启用这部分功能时需要部署本次更新后的 business 镜像，否则旧镜像不会读取 Nacos 中的存储密钥。
 
