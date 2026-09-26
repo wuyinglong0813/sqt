@@ -93,8 +93,9 @@ public class SdkFadadaUserGateway implements FadadaUserGateway {
                 String code = response == null ? "null" : response.getCode();
                 log.warn("Fadada {} failed: code={}, requestId={}, message={}", action, code, requestId,
                         safeDiagnosticMessage(response == null ? null : response.getMsg()));
-                if ("查询个人认证状态".equals(action)
-                        && ("210022".equals(code) || "100020".equals(code))) {
+                if (("查询个人认证状态".equals(action)
+                        && ("210022".equals(code) || "100020".equals(code)))
+                        || ("获取个人认证地址".equals(action) && "210002".equals(code))) {
                     throw new FadadaUserQueryException(code);
                 }
                 throw new BusinessException(action + "失败，请稍后重试");

@@ -114,12 +114,23 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
             throw new BusinessException("请先绑定手机号，再进行个人认证");
         }
         FadadaUserIdentityDO identity = ensureIdentity(userId);
+        if ("VERIFIED".equals(identity.getLocalStatus())) {
+            return new FadadaAuthUrlRespDTO(null, toPayload(identity));
+        }
         // redirectMiniAppUrl accepts an encoded native, non-tabBar page (FASC 5.1).
         // The return page confirms server state and restores the originating company flow.
-        FadadaUserGateway.AuthUrlResult result = gateway.createAuthUrl(new FadadaUserGateway.AuthUrlCommand(
+        FadadaUserGateway.AuthUrlResult result;
+        try {
+            result = gateway.createAuthUrl(new FadadaUserGateway.AuthUrlCommand(
                 identity.getClientUserId(), user.getPhone(), callbackUrl(),
                 null, java.net.URLEncoder.encode("/pages/service-return/service-return?scene=personal",
                         java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (com.tradepass.framework.fadada.core.FadadaUserQueryException exception) {
+            if (!"210002".equals(exception.providerCode())) throw exception;
+            // Already authorized is a reconciliation cue, not proof of verified identity.
+            // Respect the existing query cooldown; the result page waits for fresh evidence.
+            return new FadadaAuthUrlRespDTO(null, syncCurrent());
+        }
         validateAuthUrl(result.authUrl());
         identity.setLocalStatus("IN_PROGRESS");
         identity.setIdentProcessStatus("identifying");

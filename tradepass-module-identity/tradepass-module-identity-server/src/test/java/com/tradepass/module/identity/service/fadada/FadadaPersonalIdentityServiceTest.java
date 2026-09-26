@@ -214,6 +214,83 @@ class FadadaPersonalIdentityServiceTest {
         assertThat(service.requireCurrentVerified().status()).isEqualTo("VERIFIED");
     }
 
+    @Test
+    void alreadyAuthorizedReturnsVerifiedIdentityOnlyAfterProviderStateIsConfirmed() {
+        var identity = prepareAuth("IN_PROGRESS");
+        when(gateway.createAuthUrl(any())).thenThrow(new FadadaUserQueryException("210002"));
+        when(gateway.getUser("tradepass-user-8", null)).thenReturn(
+                new FadadaUserGateway.UserAccountResult("tradepass-user-8", "open-user-8",
+                        "authorized", "identified", List.of("ident_info")));
+        when(gateway.getIdentityInfo("open-user-8")).thenReturn(
+                new FadadaUserGateway.UserIdentityResult("open-user-8", "identified", "张三",
+                        "face", null, null));
+        var result = service.createAuthUrl();
+        assertThat(result.authUrl()).isNull();
+        assertThat(result.identity().status()).isEqualTo("VERIFIED");
+        assertThat(identity.getOpenUserId()).isEqualTo("open-user-8");
+    }
+
+    @Test
+    void alreadyAuthorizedWithMissingUserRemainsPendingAndRecoversAfterCooldown() {
+        var identity = prepareAuth("IN_PROGRESS");
+        when(gateway.createAuthUrl(any())).thenThrow(new FadadaUserQueryException("210002"));
+        when(gateway.getUser("tradepass-user-8", null)).thenThrow(new FadadaUserQueryException("210022"));
+        var result = service.createAuthUrl();
+        assertThat(result.authUrl()).isNull();
+        assertThat(result.identity().status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.identity().failureReason()).contains("尚未查询到个人授权");
+        assertThat(service.syncCurrent().status()).isEqualTo("IN_PROGRESS");
+        verify(gateway, org.mockito.Mockito.times(1)).getUser("tradepass-user-8", null);
+        org.mockito.Mockito.verify(gateway, org.mockito.Mockito.never()).getIdentityInfo(any());
+        identity.setLastSyncAt(LocalDateTime.now().minusSeconds(31));
+        org.mockito.Mockito.doReturn(new FadadaUserGateway.UserAccountResult("tradepass-user-8", "open-user-8",
+                "authorized", "identified", List.of("ident_info"))).when(gateway).getUser("tradepass-user-8", null);
+        when(gateway.getIdentityInfo("open-user-8")).thenReturn(
+                new FadadaUserGateway.UserIdentityResult("open-user-8", "identified", "张三", "face", null, null));
+        assertThat(service.syncCurrent().status()).isEqualTo("VERIFIED");
+        assertThat(identity.getFailureReason()).isEmpty();
+    }
+
+    @Test
+    void alreadyAuthorizedRespectsAnExistingQueryCooldown() {
+        var identity = prepareAuth("IN_PROGRESS");
+        identity.setLastSyncAt(LocalDateTime.now());
+        identity.setFailureReason(new FadadaUserQueryException("210022").getMessage());
+        when(gateway.createAuthUrl(any())).thenThrow(new FadadaUserQueryException("210002"));
+        var result = service.createAuthUrl();
+        assertThat(result.authUrl()).isNull();
+        assertThat(result.identity().status()).isEqualTo("IN_PROGRESS");
+        org.mockito.Mockito.verify(gateway, org.mockito.Mockito.never()).getUser(any(), any());
+    }
+
+    @Test
+    void verifiedPersonalIdentityDoesNotOpenEnrollmentOrLoseVerification() {
+        prepareAuth("VERIFIED");
+        var result = service.createAuthUrl();
+        assertThat(result.authUrl()).isNull();
+        assertThat(result.identity().status()).isEqualTo("VERIFIED");
+        verifyNoInteractions(gateway);
+    }
+
+    @Test
+    void alreadyAuthorizedDoesNotOverwriteSuccessCommittedByAConcurrentCallback() {
+        var pending = prepareAuth("IN_PROGRESS");
+        var verified = identity("VERIFIED");
+        when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(pending, verified);
+        when(gateway.createAuthUrl(any())).thenThrow(new FadadaUserQueryException("210002"));
+        assertThat(service.createAuthUrl().identity().status()).isEqualTo("VERIFIED");
+        org.mockito.Mockito.verify(identityMapper, org.mockito.Mockito.never()).updateById(any(FadadaUserIdentityDO.class));
+        org.mockito.Mockito.verify(gateway, org.mockito.Mockito.never()).getUser(any(), any());
+    }
+
+    private FadadaUserIdentityDO prepareAuth(String status) {
+        SysUserDO user = new SysUserDO(); user.setId(8L); user.setPhone("13800000000");
+        when(userMapper.selectById(8L)).thenReturn(user);
+        var identity = identity(status);
+        when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
+        return identity;
+    }
+
     private FadadaUserIdentityDO identity(String localStatus) {
         FadadaUserIdentityDO identity = new FadadaUserIdentityDO();
         identity.setId(18L);
