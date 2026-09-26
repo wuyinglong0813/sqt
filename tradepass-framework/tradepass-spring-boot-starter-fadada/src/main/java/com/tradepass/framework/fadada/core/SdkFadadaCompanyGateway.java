@@ -70,6 +70,18 @@ public class SdkFadadaCompanyGateway implements FadadaCompanyGateway {
     }
 
     @Override
+    public CompanyAccount getCompanyByCreditCode(String creditCode) {
+        if (!hasText(creditCode)) throw new BusinessException("企业统一社会信用代码缺失");
+        GetCorpReq request = new GetCorpReq();
+        request.setAccessToken(tokenProvider.get());
+        request.setCorpIdentNo(creditCode);
+        CorpRes response = invoke(() -> corpClient.get(request), "查询企业认证状态");
+        return new CompanyAccount(response.getClientCorpId(), response.getOpenCorpId(),
+                response.getBindingStatus(), response.getIdentStatus(), response.getAvailableStatus(),
+                response.getAuthScope());
+    }
+
+    @Override
     public CompanyIdentity getIdentity(String openCorpId) {
         GetCorpIdentityInfoReq request = new GetCorpIdentityInfoReq();
         request.setAccessToken(tokenProvider.get());
@@ -139,6 +151,12 @@ public class SdkFadadaCompanyGateway implements FadadaCompanyGateway {
                         response == null ? "null" : response.getCode(),
                         response == null ? "" : response.getRequestId(),
                         SdkFadadaUserGateway.safeDiagnosticMessage(response == null ? null : response.getMsg()));
+                String code = response == null ? "" : response.getCode();
+                if ("100020".equals(code)
+                        || ("查询企业认证状态".equals(action) && "210032".equals(code))
+                        || ("获取企业认证地址".equals(action) && "210002".equals(code))) {
+                    throw new FadadaCompanyQueryException(code);
+                }
                 throw new BusinessException(action + "失败，请稍后重试");
             }
             return response.getData();

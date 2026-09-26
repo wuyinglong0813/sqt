@@ -5,6 +5,7 @@ import java.util.List;
 public interface FadadaCompanyGateway {
     String createAuthUrl(AuthCommand command);
     CompanyAccount getCompany(String clientCorpId, String openCorpId);
+    CompanyAccount getCompanyByCreditCode(String creditCode);
     CompanyIdentity getIdentity(String openCorpId);
     List<SealInfo> listSeals(String openCorpId);
     String createSealManageUrl(String openCorpId, String clientUserId, String redirectUrl);

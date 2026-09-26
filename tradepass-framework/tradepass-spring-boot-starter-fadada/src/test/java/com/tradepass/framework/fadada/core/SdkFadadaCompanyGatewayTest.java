@@ -10,6 +10,38 @@ import static org.assertj.core.api.Assertions.*;
 class SdkFadadaCompanyGatewayTest {
     @Test
     @SuppressWarnings("unchecked")
+    void creditCodeLookupSendsOnlyCreditCodeAndPreservesProviderErrorCodes() throws Exception {
+        var properties = new FadadaProperties();
+        properties.setAppId("test"); properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var tokens = org.mockito.Mockito.mock(FadadaAccessTokenProvider.class);
+        var gateway = new SdkFadadaCompanyGateway(properties, tokens);
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.CorpClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "corpClient", client);
+        var detail = new com.fasc.open.api.v5_1.res.corp.CorpRes();
+        detail.setOpenCorpId("open-3"); detail.setClientCorpId("local-3");
+        com.fasc.open.api.bean.base.BaseRes<com.fasc.open.api.v5_1.res.corp.CorpRes> response =
+                org.mockito.Mockito.mock(com.fasc.open.api.bean.base.BaseRes.class);
+        org.mockito.Mockito.when(response.isSuccess()).thenReturn(true);
+        org.mockito.Mockito.when(response.getData()).thenReturn(detail);
+        org.mockito.Mockito.when(client.get(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+            GetCorpReq request = call.getArgument(0);
+            assertThat(request.getCorpIdentNo()).isEqualTo("TEST-CREDIT");
+            assertThat(request.getClientCorpId()).isNull();
+            assertThat(request.getOpenCorpId()).isNull();
+            return response;
+        });
+        assertThat(gateway.getCompanyByCreditCode("TEST-CREDIT").openCorpId()).isEqualTo("open-3");
+        org.mockito.Mockito.when(response.isSuccess()).thenReturn(false);
+        for (String code : java.util.List.of("210032", "100020")) {
+            org.mockito.Mockito.when(response.getCode()).thenReturn(code);
+            assertThatThrownBy(() -> gateway.getCompanyByCreditCode("TEST-CREDIT"))
+                    .isInstanceOfSatisfying(FadadaCompanyQueryException.class,
+                            error -> assertThat(error.providerCode()).isEqualTo(code));
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void legalVerificationUrlBindsTheCurrentPersonalAccountToTheVerifiedEnterprise() throws Exception {
         var properties = new com.tradepass.framework.fadada.config.FadadaProperties();
         properties.setAppId("test-app"); properties.setAppSecret("test-secret");

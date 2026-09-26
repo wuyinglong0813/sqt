@@ -19,6 +19,7 @@ import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpSealDO;
 import com.tradepass.framework.fadada.core.FadadaCompanyGateway;
+import com.tradepass.framework.fadada.core.FadadaCompanyQueryException;
 import com.fasc.open.api.enums.corp.OperatorTypeEnum;
 import com.tradepass.module.identity.service.certification.CompanyCertificationService.CertifiedApplicantRole;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMapper;
@@ -80,10 +81,22 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         requireCompanyFields(company);
         FadadaCorpIdentityDO identity = ensure(companyId, AuthContext.userId());
         // Completion is handled by client polling; do not send an internal page path as a URL.
-        String url = gateway.createAuthUrl(new FadadaCompanyGateway.AuthCommand(
+        if ("VERIFIED".equals(identity.getLocalStatus())) {
+            var result = syncCurrent(companyId);
+            return new ServiceUrlPayload(null, "company", result.status());
+        }
+        String url;
+        try {
+            url = gateway.createAuthUrl(new FadadaCompanyGateway.AuthCommand(
                 identity.getClientCorpId(), "tradepass-user-" + AuthContext.userId(),
                 company.getName(), company.getCreditCode(), AUTH_SCOPES, properties.getCallbackUrl(),
                 null));
+        } catch (FadadaCompanyQueryException exception) {
+            if (!"210002".equals(exception.providerCode())) throw exception;
+            // Already authorized is a cue to reconcile, never proof of this applicant's role.
+            var result = syncCurrent(companyId);
+            return new ServiceUrlPayload(null, "company", result.status());
+        }
         validateUrl(url);
         identity.setLocalStatus("IN_PROGRESS");
         identity.setFailureReason("");
@@ -100,7 +113,23 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
     public FadadaCompanyIdentityRespDTO syncCurrent(long companyId) {
         requireReady();
         accessControl.requireCertificationOperator(companyId);
-        return sync(companyId);
+        requireCompany(companyId);
+        FadadaCorpIdentityDO identity = findForUpdate(companyId);
+        if (identity == null) return payload(companyId, null);
+        if (!"VERIFIED".equals(identity.getLocalStatus()) && identity.getLastSyncAt() != null
+                && identity.getLastSyncAt().isAfter(LocalDateTime.now().minusSeconds(30))) {
+            return payload(companyId, identity);
+        }
+        try {
+            return sync(companyId);
+        } catch (FadadaCompanyQueryException exception) {
+            if ("VERIFIED".equals(identity.getLocalStatus())) throw exception;
+            // Commit the retry interval even on provider errors; callbacks can still sync immediately.
+            identity.setLastSyncAt(LocalDateTime.now());
+            identity.setFailureReason(exception.getMessage());
+            identityMapper.updateById(identity);
+            return payload(companyId, identity);
+        }
     }
 
     @Transactional
@@ -156,8 +185,15 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         CompanyDO company = requireCompany(companyId);
         FadadaCorpIdentityDO identity = findForUpdate(companyId);
         if (identity == null) return payload(companyId, null);
-        FadadaCompanyGateway.CompanyAccount account = gateway.getCompany(
-                identity.getClientCorpId(), identity.getOpenCorpId());
+        FadadaCompanyGateway.CompanyAccount account;
+        try {
+            account = gateway.getCompany(identity.getClientCorpId(), identity.getOpenCorpId());
+        } catch (FadadaCompanyQueryException exception) {
+            if (!"210032".equals(exception.providerCode())) throw exception;
+            // Recover a missing provider ID via the SDK's credit-code lookup. All company,
+            // authorization and operator checks below still apply before granting membership.
+            account = gateway.getCompanyByCreditCode(company.getCreditCode());
+        }
         if (hasText(account.openCorpId())) identity.setOpenCorpId(account.openCorpId());
         if (hasText(account.bindingStatus())) identity.setBindingStatus(account.bindingStatus());
         if (hasText(account.identStatus())) identity.setIdentStatus(account.identStatus());

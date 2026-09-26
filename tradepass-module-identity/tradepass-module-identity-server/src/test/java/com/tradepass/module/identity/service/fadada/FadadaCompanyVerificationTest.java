@@ -212,6 +212,71 @@ class FadadaCompanyVerificationTest {
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
     }
 
+    @Test
+    void recoversMissingProviderIdByCreditCodeAndStillVerifiesTheApplicant() {
+        var f = new Fixture();
+        f.detail("legal_rep", "open-user-7", "identified");
+        when(f.gateway.getCompany(anyString(), any())).thenThrow(
+                new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210032"));
+        when(f.gateway.getCompanyByCreditCode("TEST-CREDIT")).thenReturn(
+                new FadadaCompanyGateway.CompanyAccount("local-3", "corp-3", "authorized", "identified", "enable", SCOPES));
+        assertThat(f.service.syncCurrent(3L).status()).isEqualTo("VERIFIED");
+        verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(), eq(CertifiedApplicantRole.LEGAL));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"another-client,open-user-7", "local-3,another-user"})
+    void recoveryCannotBindAnotherClientOrGrantAnotherOperatorsCompany(String client, String operator) {
+        var f = new Fixture();
+        f.detail("legal_rep", operator, "identified");
+        when(f.gateway.getCompany(anyString(), any())).thenThrow(
+                new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210032"));
+        when(f.gateway.getCompanyByCreditCode("TEST-CREDIT")).thenReturn(
+                new FadadaCompanyGateway.CompanyAccount(client, "corp-3", "authorized", "identified", "enable", SCOPES));
+        assertThat(f.service.syncCurrent(3L).status()).isEqualTo("IN_PROGRESS");
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void rateLimitedCompanyQueryIsPersistedAndNextPollDoesNotHitProvider() {
+        var f = new Fixture();
+        when(f.gateway.getCompany(anyString(), any())).thenThrow(
+                new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("100020"));
+        assertThat(f.service.syncCurrent(3L).failureReason()).contains("30秒");
+        assertThat(f.service.syncCurrent(3L).status()).isEqualTo("IN_PROGRESS");
+        verify(f.gateway, times(1)).getCompany(anyString(), any());
+        verify(f.gateway, never()).getCompanyByCreditCode(anyString());
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void absentAuthorizationIsNotSuccessAndBothLookupsAreThrottled() {
+        var f = new Fixture();
+        var missing = new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210032");
+        when(f.gateway.getCompany(anyString(), any())).thenThrow(missing);
+        when(f.gateway.getCompanyByCreditCode(anyString())).thenThrow(missing);
+        assertThat(f.service.syncCurrent(3L).failureReason()).contains("授权记录");
+        f.service.syncCurrent(3L);
+        verify(f.gateway, times(1)).getCompany(anyString(), any());
+        verify(f.gateway, times(1)).getCompanyByCreditCode("TEST-CREDIT");
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void alreadyAuthorizedEnrollmentReconcilesInsteadOfGeneratingAnotherUrl() {
+        var f = new Fixture();
+        f.detail("deputy_auth", "open-user-7", "identified");
+        when(f.gateway.createAuthUrl(any())).thenThrow(
+                new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210002"));
+        AuthContext.set(7L, null);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("VERIFIED");
+            verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(), eq(CertifiedApplicantRole.ADMIN));
+        } finally { AuthContext.clear(); }
+    }
+
     private static class Fixture {
         final FadadaCorpIdentityMapper identities = mock(FadadaCorpIdentityMapper.class);
         final FadadaCorpSealMapper seals = mock(FadadaCorpSealMapper.class);
