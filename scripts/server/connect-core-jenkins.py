@@ -167,8 +167,10 @@ def main():
     if not info["State"]["Running"]:
         raise RuntimeError("现有 Jenkins 容器没有运行")
     ports = info["NetworkSettings"].get("Ports", {}).get("8080/tcp") or []
-    if not any(p["HostIp"] == "127.0.0.1" and p["HostPort"] == "18080" for p in ports):
-        raise RuntimeError("脚本需要现有 Jenkins 映射 127.0.0.1:18080 -> 8080，请先核对容器")
+    # An IPv4 wildcard binding also accepts requests to the local loopback address.
+    # Keep API requests on loopback; accepting this binding does not change exposure.
+    if not any(p["HostIp"] in ("127.0.0.1", "0.0.0.0") and p["HostPort"] == "18080" for p in ports):
+        raise RuntimeError("脚本需要 Jenkins 的 8080 映射到本机 IPv4 18080 端口（127.0.0.1 或 0.0.0.0），请核对容器")
     user = input("Jenkins 管理员用户名 [admin]: ").strip() or "admin"
     token = getpass.getpass("Jenkins 管理员 API Token（不是初始解锁密码，不回显）: ").strip()
     if not token:
