@@ -114,11 +114,12 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
             throw new BusinessException("请先绑定手机号，再进行个人认证");
         }
         FadadaUserIdentityDO identity = ensureIdentity(userId);
-        // Internal mini-program routes are not provider return URLs. The client polls
-        // identity status and refreshes on return, so no redirect URL is required here.
+        // redirectMiniAppUrl accepts an encoded native, non-tabBar page (FASC 5.1).
+        // The return page confirms server state and restores the originating company flow.
         FadadaUserGateway.AuthUrlResult result = gateway.createAuthUrl(new FadadaUserGateway.AuthUrlCommand(
                 identity.getClientUserId(), user.getPhone(), callbackUrl(),
-                null, null));
+                null, java.net.URLEncoder.encode("/pages/service-return/service-return?scene=personal",
+                        java.nio.charset.StandardCharsets.UTF_8)));
         validateAuthUrl(result.authUrl());
         identity.setLocalStatus("IN_PROGRESS");
         identity.setIdentProcessStatus("identifying");

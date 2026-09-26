@@ -80,7 +80,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         CompanyDO company = requireCompany(companyId);
         requireCompanyFields(company);
         FadadaCorpIdentityDO identity = ensure(companyId, AuthContext.userId());
-        // Completion is handled by client polling; do not send an internal page path as a URL.
+        // Native completion redirect plus client polling; the return page verifies server state.
         if ("VERIFIED".equals(identity.getLocalStatus())) {
             var result = syncCurrent(companyId);
             return new ServiceUrlPayload(null, "company", result.status());
@@ -90,7 +90,8 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             url = gateway.createAuthUrl(new FadadaCompanyGateway.AuthCommand(
                 identity.getClientCorpId(), "tradepass-user-" + AuthContext.userId(),
                 company.getName(), company.getCreditCode(), AUTH_SCOPES, properties.getCallbackUrl(),
-                null));
+                java.net.URLEncoder.encode("/pages/service-return/service-return?scene=company&companyId=" + companyId,
+                        java.nio.charset.StandardCharsets.UTF_8)));
         } catch (FadadaCompanyQueryException exception) {
             if (!"210002".equals(exception.providerCode())) throw exception;
             // Already authorized is a cue to reconcile, never proof of this applicant's role.
@@ -456,8 +457,11 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             throw new BusinessException("企业授权尚未完成，请继续办理企业认证与授权");
         }
         String applicantOpenUserId = personalIdentityService.verifiedOpenUserId(applicantUserId);
-        if (!hasText(detail.operatorId()) || !applicantOpenUserId.equals(detail.operatorId())) {
-            throw new BusinessException("认证经办人与当前申请账号尚未匹配，请使用申请人本人账号完成认证或联系管理员核验");
+        if (!hasText(detail.operatorId())) {
+            throw new BusinessException("企业实名已通过，但认证服务尚未返回经办人身份，暂未开通企业权限。请稍后重新同步，仍未恢复请联系管理员核验");
+        }
+        if (!applicantOpenUserId.equals(detail.operatorId())) {
+            throw new BusinessException("企业实名已通过，但经办人标识与当前账号的个人实名标识不一致，暂未开通企业权限。请联系管理员核验账号关联");
         }
         if (OperatorTypeEnum.LEGAL_REP.getCode().equals(detail.operatorType())) return CertifiedApplicantRole.LEGAL;
         if (OperatorTypeEnum.DEPUTY_AUTH.getCode().equals(detail.operatorType())) return CertifiedApplicantRole.ADMIN;

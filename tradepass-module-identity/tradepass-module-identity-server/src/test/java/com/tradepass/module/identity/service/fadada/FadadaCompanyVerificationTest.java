@@ -42,8 +42,24 @@ class FadadaCompanyVerificationTest {
             var service = new FadadaCompanyServiceImpl(f.identities, f.seals, f.companies, mock(AccessControlService.class),
                     f.certifications, f.personal, f.gateway, properties, new ObjectMapper());
             service.createAuthUrl(3L);
+            verify(f.gateway).createAuthUrl(argThat(command ->
+                    java.net.URLDecoder.decode(command.redirectMiniAppUrl(), java.nio.charset.StandardCharsets.UTF_8)
+                            .equals("/pages/service-return/service-return?scene=company&companyId=3")));
             verify(f.companies, never()).update(any(Wrapper.class));
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
+    }
+
+    @Test
+    void missingOperatorEvidenceIsDistinctFromAnAccountMismatchAndCanRecover() {
+        var f = new Fixture();
+        f.detail("legal_rep", null, "identified");
+        assertThat(f.service.sync(3L).failureReason()).contains("尚未返回经办人身份");
+        verifyNoInteractions(f.certifications);
+        f.detail("legal_rep", "another-user", "identified");
+        assertThat(f.service.sync(3L).failureReason()).contains("标识不一致");
+        verifyNoInteractions(f.certifications);
+        f.detail("legal_rep", "open-user-7", "identified");
+        assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
     }
 
     @ParameterizedTest

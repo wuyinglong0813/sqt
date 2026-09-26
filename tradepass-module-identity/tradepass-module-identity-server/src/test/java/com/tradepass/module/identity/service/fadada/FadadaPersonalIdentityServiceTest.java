@@ -82,7 +82,9 @@ class FadadaPersonalIdentityServiceTest {
         assertThat(command.getValue().accountName()).isEqualTo("13800000000");
         assertThat(command.getValue().callbackUrl())
                 .isEqualTo("https://tradepass.example.com/api/fadada/callback");
-        assertThat(command.getValue().redirectMiniAppUrl()).isNull();
+        assertThat(java.net.URLDecoder.decode(command.getValue().redirectMiniAppUrl(),
+                java.nio.charset.StandardCharsets.UTF_8))
+                .isEqualTo("/pages/service-return/service-return?scene=personal");
     }
 
     @Test
