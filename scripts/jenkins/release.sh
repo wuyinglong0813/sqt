@@ -22,6 +22,7 @@ server_action() {
   [[ -z $TP_BUNDLE ]] || options+=(--bundle "$TP_BUNDLE")
   if [[ -n ${DEPLOY_HOST:-} ]]; then
     : "${KNOWN_HOSTS_FILE:?Set the verified SSH known_hosts path}"
+    [[ -z ${DEPLOY_SSH_KEY:-} ]] || options+=(--identity-file "$DEPLOY_SSH_KEY")
     python3 scripts/cd/core_ssh.py "${options[@]}" --host "$DEPLOY_HOST" \
       --user "${DEPLOY_USER:-root}" --port "${DEPLOY_PORT:-22}" --known-hosts "$KNOWN_HOSTS_FILE"
   else

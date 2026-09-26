@@ -3,7 +3,6 @@ pipeline-model-definition
 git
 github-branch-source
 credentials-binding
-ssh-agent
 ssh-slaves
 junit
 maven-plugin

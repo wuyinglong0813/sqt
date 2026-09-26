@@ -70,16 +70,18 @@ python3 scripts/ci/release.py publish
         stage('Deploy or roll back staging') {
             when { expression { params.ACTION in ['deploy', 'rollback'] } }
             steps {
-                sshagent(credentials: ['tradepass-staging-ssh']) {
-                    withCredentials([file(credentialsId: 'tradepass-staging-known-hosts', variable: 'KNOWN_HOSTS_FILE')]) {
-                        sh '''#!/usr/bin/env bash
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'tradepass-staging-ssh', keyFileVariable: 'DEPLOY_SSH_KEY'),
+                    file(credentialsId: 'tradepass-staging-known-hosts', variable: 'KNOWN_HOSTS_FILE')
+                ]) {
+                    sh '''#!/usr/bin/env bash
 set -euo pipefail
+set +x
 args=("$ACTION" --host "$DEPLOY_HOST" --user "$DEPLOY_USER" --port "$DEPLOY_PORT" \
-  --root "$DEPLOY_ROOT" --known-hosts "$KNOWN_HOSTS_FILE")
+  --root "$DEPLOY_ROOT" --identity-file "$DEPLOY_SSH_KEY" --known-hosts "$KNOWN_HOSTS_FILE")
 if [[ -n "$ROLLBACK_RELEASE" ]]; then args+=(--release-id "$ROLLBACK_RELEASE"); fi
 python3 scripts/cd/ssh_release.py "${args[@]}"
 '''
-                    }
                 }
             }
         }

@@ -19,6 +19,7 @@ def module(name, path):
 
 apply = module("core_apply", "scripts/cd/core_apply.py")
 ssh = module("core_ssh", "scripts/cd/core_ssh.py")
+legacy_ssh = module("ssh_release", "scripts/cd/ssh_release.py")
 setup = module("connect_core_jenkins", "scripts/server/connect-core-jenkins.py")
 OLD = "sha256:" + "a" * 64
 NEW = "sha256:" + "b" * 64
@@ -144,6 +145,27 @@ class PublisherTest(unittest.TestCase):
 
 
 class DeliveryTest(unittest.TestCase):
+    def test_explicit_key_works_without_agent_and_keeps_host_verification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key = Path(directory) / "key with spaces"
+            hosts = Path(directory) / "known_hosts"
+            key.write_text("test key content")
+            hosts.write_text("test host key")
+            commands = [ssh.ssh_command("127.0.0.1", "root", 22, hosts, key)]
+            argv = ["ssh_release.py", "rollback", "--host", "127.0.0.1", "--identity-file", str(key),
+                    "--known-hosts", str(hosts)]
+            with patch("sys.argv", argv), patch.object(legacy_ssh.subprocess, "run") as run:
+                legacy_ssh.main()
+                commands.append(run.call_args.args[0])
+            for command in commands:
+                self.assertEqual(str(key.resolve()), command[command.index("-i") + 1])
+                self.assertIn("IdentityAgent=none", command)
+                self.assertIn("IdentitiesOnly=yes", command)
+                self.assertIn("StrictHostKeyChecking=yes", command)
+                self.assertNotIn("test key content", " ".join(command))
+            with self.assertRaisesRegex(ValueError, "私钥文件不存在"):
+                ssh.ssh_command("127.0.0.1", "root", 22, hosts, Path(directory) / "missing")
+
     def test_manifest_requires_exact_selection_and_immutable_matching_images(self):
         apply.validate_manifest(manifest(), ["business"])
         with self.assertRaises(ValueError):

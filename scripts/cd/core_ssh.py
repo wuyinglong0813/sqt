@@ -13,14 +13,19 @@ import uuid
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def ssh_command(host, user, port, known_hosts):
+def ssh_command(host, user, port, known_hosts, identity_file=None):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", host):
         raise ValueError("无效 SSH 主机名")
     if not re.fullmatch(r"[a-z_][a-z0-9_-]*", user) or not 1 <= port <= 65535:
         raise ValueError("无效 SSH 账号或端口")
     if not known_hosts.is_file():
         raise ValueError("需要已核验的 SSH known_hosts 文件凭据")
-    return ["ssh", "-p", str(port), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+    identity_options = []
+    if identity_file is not None:
+        if not identity_file.is_file():
+            raise ValueError("SSH 私钥文件不存在")
+        identity_options = ["-i", str(identity_file.resolve()), "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none"]
+    return ["ssh", "-p", str(port), *identity_options, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
             "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
             "-o", "UserKnownHostsFile=" + str(known_hosts.resolve()), user + "@" + host]
 
@@ -33,10 +38,11 @@ def main():
     parser.add_argument("--user", default="root")
     parser.add_argument("--port", type=int, default=22)
     parser.add_argument("--known-hosts", type=Path, required=True)
+    parser.add_argument("--identity-file", type=Path)
     parser.add_argument("--compose", default="")
     parser.add_argument("--bundle", type=Path, default=ROOT / "dist/core-release")
     args = parser.parse_args()
-    ssh = ssh_command(args.host, args.user, args.port, args.known_hosts)
+    ssh = ssh_command(args.host, args.user, args.port, args.known_hosts, args.identity_file)
     if args.compose and (not args.compose.startswith("/") or "\n" in args.compose):
         parser.error("CORE_COMPOSE 必须是绝对路径")
     staging = "/var/tmp/tradepass-core-release-" + uuid.uuid4().hex

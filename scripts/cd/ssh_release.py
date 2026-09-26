@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--user", default="tradepass-deploy")
     parser.add_argument("--port", type=int, default=22)
     parser.add_argument("--known-hosts", type=Path, required=True)
+    parser.add_argument("--identity-file", type=Path)
     parser.add_argument("--root", default="/opt/tradepass/staging")
     parser.add_argument("--bundle", type=Path, default=Path("dist/release"))
     parser.add_argument("--release-id")
@@ -26,7 +27,11 @@ def main():
     if not re.fullmatch(r"/[a-zA-Z0-9/_-]+", args.root) or args.root in ("/", "/opt"): parser.error("Use a dedicated deployment directory")
     if not args.known_hosts.is_file(): parser.error("Provide verified SSH known_hosts as a Jenkins file credential")
     if not 1 <= args.port <= 65535: parser.error("Invalid SSH port")
-    ssh = ["ssh", "-p", str(args.port), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+    identity_options = []
+    if args.identity_file is not None:
+        if not args.identity_file.is_file(): parser.error("SSH private key file does not exist")
+        identity_options = ["-i", str(args.identity_file.resolve()), "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none"]
+    ssh = ["ssh", "-p", str(args.port), *identity_options, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
            "-o", "UserKnownHostsFile=" + str(args.known_hosts.resolve()), args.user + "@" + args.host]
     def remote(command, **kwargs):
         subprocess.run(ssh + [command], check=True, **kwargs)

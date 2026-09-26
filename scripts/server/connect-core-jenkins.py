@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 
 PLUGINS = ["workflow-aggregator", "pipeline-model-definition", "git", "credentials-binding",
-           "ssh-agent", "ssh-slaves", "junit", "maven-plugin", "timestamper", "plain-credentials"]
+           "ssh-slaves", "junit", "maven-plugin", "timestamper", "plain-credentials"]
 MARKER = "Managed by TradePass core release setup"
 
 CONFIGURE = r'''
