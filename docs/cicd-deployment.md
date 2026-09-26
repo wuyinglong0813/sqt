@@ -1,5 +1,7 @@
 # 单服务器 CI/CD：GitHub、Jenkins、Docker，及后续 K8s
 
+当前三进程服务器使用 `scripts/server/connect-core-jenkins.py --install` 接入已有 Jenkins，发布入口为 `Jenkinsfile.core` 和 `scripts/jenkins/{identity,business,gateway,all}.sh`。下面的旧 `Jenkinsfile` 是六服务部署通道。
+
 ## 当前结论
 
 当前工程为 `TradePass-new/sqt-backend`，需要为它配置独立的 Git 远程仓库及 CI。Jenkins 的 `IMAGE_PREFIX` 发布参数留空，发布前填写本项目的 GHCR/ACR/Harbor 前缀；GitHub Actions 使用实际仓库名称生成 GHCR 前缀。本次没有创建远程仓库、镜像包或执行服务器部署。

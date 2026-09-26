@@ -1,0 +1,106 @@
+// Current three-process deployment. The older Jenkinsfile is for six services.
+def jobService = (env.JOB_BASE_NAME ?: '').replace('tradepass-publish-', '')
+def serviceChoices = ['business', 'identity', 'gateway', 'all']
+if (jobService in serviceChoices) {
+    serviceChoices = [jobService] + serviceChoices.findAll { it != jobService }
+}
+pipeline {
+    agent { label 'tradepass-ci' }
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+        timestamps()
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '5'))
+    }
+    tools {
+        jdk 'tradepass-jdk17'
+        maven 'tradepass-maven'
+    }
+    environment {
+        MAVEN_OPTS = '-Xmx768m -XX:ActiveProcessorCount=2'
+        JAVA_TOOL_OPTIONS = '-Xmx512m -XX:ActiveProcessorCount=2'
+    }
+    parameters {
+        choice(name: 'ACTION', choices: ['status', 'deploy', 'build', 'restart', 'rollback', 'recover'], description: '状态 / 构建并发布 / 只构建 / 重启 / 回退镜像 / 恢复中断发布')
+        choice(name: 'SERVICE', choices: serviceChoices, description: 'business 包含合同、交易、结算、文件；all 为三个应用')
+        choice(name: 'IMAGE_DELIVERY', choices: ['local', 'archive'], description: 'local：构建节点与应用共用本机 Docker；archive：通过 SSH 传输镜像包。均无需镜像仓库')
+        string(name: 'DEPLOY_HOST', defaultValue: '127.0.0.1', description: '同机宿主构建节点使用回环地址；独立构建机请填写业务服务器 IP')
+        string(name: 'DEPLOY_USER', defaultValue: 'root', description: '拥有 Docker 权限的服务器 SSH 账号')
+        string(name: 'DEPLOY_PORT', defaultValue: '22', description: '服务器 SSH 端口')
+        string(name: 'CORE_COMPOSE', defaultValue: '', description: '通常留空：从现有容器保存运行参数；仅特殊部署填写已展开的 Compose 绝对路径')
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                deleteDir()
+                checkout scm
+                script {
+                    if (env.CHANGE_ID) {
+                        error('发布任务不能构建 Pull Request')
+                    }
+                    def trusted = sh(script: 'git branch -r --points-at HEAD', returnStdout: true).readLines().collect { it.trim() }
+                    if (!(trusted.contains('origin/main') || trusted.contains('origin/master'))) {
+                        error('仅允许发布已拉取的 origin/main 或 origin/master 当前提交')
+                    }
+                    env.RELEASE_ID = sh(script: 'git rev-parse HEAD', returnStdout: true).trim() + '-' + env.BUILD_NUMBER
+                }
+            }
+        }
+        stage('Check server before building') {
+            when { expression { params.ACTION == 'deploy' } }
+            steps {
+                sshagent(credentials: ['tradepass-core-ssh']) {
+                    withCredentials([file(credentialsId: 'tradepass-core-known-hosts', variable: 'KNOWN_HOSTS_FILE')]) {
+                        sh 'python3 scripts/cd/core_ssh.py status --service "$SERVICE" --host "$DEPLOY_HOST" --user "$DEPLOY_USER" --port "$DEPLOY_PORT" --known-hosts "$KNOWN_HOSTS_FILE" --compose "$CORE_COMPOSE"'
+                    }
+                }
+            }
+        }
+        stage('Test and package selected applications') {
+            when { expression { params.ACTION in ['build', 'deploy'] } }
+            steps {
+                sh '''#!/usr/bin/env bash
+set -euo pipefail
+case "$SERVICE" in
+  identity) modules=tradepass-module-identity/tradepass-module-identity-server ;;
+  business) modules=tradepass-business ;;
+  gateway) modules=tradepass-gateway ;;
+  all) modules=tradepass-module-identity/tradepass-module-identity-server,tradepass-business,tradepass-gateway ;;
+  *) exit 2 ;;
+esac
+python3 -m unittest discover -s scripts/ci/tests -p test_core_release.py -v
+mvn -B -pl "$modules" -am clean package
+'''
+            }
+        }
+        stage('Build and export images') {
+            when { expression { params.ACTION in ['build', 'deploy'] } }
+            steps {
+                sh 'python3 scripts/ci/core_release.py --service "$SERVICE" --release "$RELEASE_ID" --delivery "$IMAGE_DELIVERY"'
+                archiveArtifacts(artifacts: 'dist/core-release/*', fingerprint: true)
+            }
+        }
+        stage('Server action') {
+            when { expression { params.ACTION != 'build' } }
+            steps {
+                sshagent(credentials: ['tradepass-core-ssh']) {
+                    withCredentials([file(credentialsId: 'tradepass-core-known-hosts', variable: 'KNOWN_HOSTS_FILE')]) {
+                        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set +x
+python3 scripts/cd/core_ssh.py "$ACTION" --service "$SERVICE" \
+  --host "$DEPLOY_HOST" --user "$DEPLOY_USER" --port "$DEPLOY_PORT" \
+  --known-hosts "$KNOWN_HOSTS_FILE" --compose "$CORE_COMPOSE"
+'''
+                    }
+                }
+            }
+        }
+    }
+    post {
+        always {
+            junit(testResults: '**/target/surefire-reports/TEST-*.xml', allowEmptyResults: true)
+        }
+    }
+}

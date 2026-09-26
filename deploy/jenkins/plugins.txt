@@ -8,3 +8,4 @@ ssh-slaves
 junit
 maven-plugin
 matrix-auth
+timestamper

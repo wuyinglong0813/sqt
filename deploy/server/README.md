@@ -1,5 +1,7 @@
 # 当前三进程部署
 
+现有 Jenkins 接入脚本：`scripts/server/connect-core-jenkins.py --install`，创建四个使用 `Jenkinsfile.core` 的发布任务。默认从运行中容器保留环境变量和挂载，兼容尚未迁移 bootstrap 文件的服务器。
+
 现有容器的单服务/全部启停与检查使用 `scripts/server/all.sh` 和各个 `服务名.sh`，例如 `./all.sh start`、`./business.sh restart`。命令示例和密码位置见 [日常运维说明](../../docs/server-operations.md)。
 
 gateway / identity / business 已改为从 Nacos 读取应用配置，不再使用 `.env.core` 运行应用。已有服务器先执行 `python3 scripts/server/configure-core-nacos.py --publish` 完成一次导入，之后使用 `docker compose -f .runtime/core.compose.yml up -d`。完整步骤见 [三进程 Nacos 部署手册](../../docs/server-core-cutover.md)。以下内容用于原部署通道。
