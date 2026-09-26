@@ -79,7 +79,7 @@ set -euo pipefail
 set +x
 args=("$ACTION" --host "$DEPLOY_HOST" --user "$DEPLOY_USER" --port "$DEPLOY_PORT" \
   --root "$DEPLOY_ROOT" --identity-file "$DEPLOY_SSH_KEY" --known-hosts "$KNOWN_HOSTS_FILE")
-if [[ -n "$ROLLBACK_RELEASE" ]]; then args+=(--release-id "$ROLLBACK_RELEASE"); fi
+if [[ -n "${ROLLBACK_RELEASE:-}" ]]; then args+=(--release-id "$ROLLBACK_RELEASE"); fi
 python3 scripts/cd/ssh_release.py "${args[@]}"
 '''
                 }

@@ -2,7 +2,11 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -23,6 +27,43 @@ legacy_ssh = module("ssh_release", "scripts/cd/ssh_release.py")
 setup = module("connect_core_jenkins", "scripts/server/connect-core-jenkins.py")
 OLD = "sha256:" + "a" * 64
 NEW = "sha256:" + "b" * 64
+
+
+class PipelineOptionalParameterTest(unittest.TestCase):
+    def execute_shell(self, script, optional):
+        with tempfile.TemporaryDirectory() as directory:
+            fake_python = Path(directory) / "python3"
+            fake_python.write_text("#!" + sys.executable + "\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+            fake_python.chmod(0o755)
+            env = {**os.environ, "PATH": directory + os.pathsep + os.defpath,
+                   "ACTION": "status", "SERVICE": "all", "DEPLOY_HOST": "127.0.0.1",
+                   "DEPLOY_USER": "root", "DEPLOY_PORT": "22", "DEPLOY_ROOT": "/opt/tradepass/staging",
+                   "DEPLOY_SSH_KEY": "/private/key", "KNOWN_HOSTS_FILE": "/private/known_hosts"}
+            env.pop("CORE_COMPOSE", None)
+            env.pop("ROLLBACK_RELEASE", None)
+            env.update(optional)
+            result = subprocess.run(["bash", "-eu", "-c", script], env=env, capture_output=True, text=True, check=True)
+            return json.loads(result.stdout)
+
+    def test_core_shell_accepts_unset_empty_and_explicit_compose_path(self):
+        pipeline = (ROOT / "Jenkinsfile.core").read_text()
+        server = re.search(r"sh '''(.*?)'''", pipeline.split("stage('Server action')", 1)[1], re.S).group(1)
+        preflight = re.search(r"sh '(python3 scripts/cd/core_ssh.py status[^']*)'", pipeline).group(1)
+        for script in (server, preflight):
+            for optional, expected in [({}, ""), ({"CORE_COMPOSE": ""}, ""),
+                                       ({"CORE_COMPOSE": "/private/path with $literal/compose.yml"},
+                                        "/private/path with $literal/compose.yml")]:
+                with self.subTest(optional=optional, preflight=script == preflight):
+                    args = self.execute_shell(script, optional)
+                    self.assertEqual(expected, args[args.index("--compose") + 1])
+
+    def test_legacy_rollback_uses_previous_release_when_parameter_is_missing(self):
+        pipeline = (ROOT / "Jenkinsfile").read_text()
+        script = re.search(r"sh '''(.*?)'''", pipeline.split("stage('Deploy or roll back staging')", 1)[1], re.S).group(1)
+        args = self.execute_shell(script, {"ACTION": "rollback"})
+        self.assertNotIn("--release-id", args)
+        args = self.execute_shell(script, {"ACTION": "rollback", "ROLLBACK_RELEASE": "previous-id"})
+        self.assertEqual("previous-id", args[args.index("--release-id") + 1])
 
 
 def manifest(roles=("business",), delivery="local"):

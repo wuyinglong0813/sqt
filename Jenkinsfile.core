@@ -54,7 +54,7 @@ pipeline {
                     sshUserPrivateKey(credentialsId: 'tradepass-core-ssh', keyFileVariable: 'DEPLOY_SSH_KEY'),
                     file(credentialsId: 'tradepass-core-known-hosts', variable: 'KNOWN_HOSTS_FILE')
                 ]) {
-                    sh 'python3 scripts/cd/core_ssh.py status --service "$SERVICE" --host "$DEPLOY_HOST" --user "$DEPLOY_USER" --port "$DEPLOY_PORT" --identity-file "$DEPLOY_SSH_KEY" --known-hosts "$KNOWN_HOSTS_FILE" --compose "$CORE_COMPOSE"'
+                    sh 'python3 scripts/cd/core_ssh.py status --service "$SERVICE" --host "$DEPLOY_HOST" --user "$DEPLOY_USER" --port "$DEPLOY_PORT" --identity-file "$DEPLOY_SSH_KEY" --known-hosts "$KNOWN_HOSTS_FILE" --compose "${CORE_COMPOSE:-}"'
                 }
             }
         }
@@ -94,7 +94,7 @@ set -euo pipefail
 set +x
 python3 scripts/cd/core_ssh.py "$ACTION" --service "$SERVICE" \
   --host "$DEPLOY_HOST" --user "$DEPLOY_USER" --port "$DEPLOY_PORT" \
-  --identity-file "$DEPLOY_SSH_KEY" --known-hosts "$KNOWN_HOSTS_FILE" --compose "$CORE_COMPOSE"
+  --identity-file "$DEPLOY_SSH_KEY" --known-hosts "$KNOWN_HOSTS_FILE" --compose "${CORE_COMPOSE:-}"
 '''
                 }
             }
