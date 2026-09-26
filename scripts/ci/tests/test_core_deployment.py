@@ -36,8 +36,16 @@ class CoreDeploymentTest(unittest.TestCase):
             before = [v for v in old["services"][role]["volumes"] if not v.startswith("./")]
             after = [v for v in core["services"][role]["volumes"] if not v.startswith("./")]
             self.assertEqual(before, after)
-        for service in core["services"].values():
-            self.assertTrue(all(port.startswith("127.0.0.1:") for port in service.get("ports", [])))
+        self.assertEqual(["0.0.0.0:${MYSQL_PORT:-3306}:3306"], core["services"]["mysql"]["ports"])
+        for role, service in core["services"].items():
+            if role != "mysql":
+                self.assertTrue(all(port.startswith("127.0.0.1:") for port in service.get("ports", [])))
+        # The running Redis container uses the legacy overlay, not the core file.
+        overlay = yaml.safe_load((ROOT / "deploy/server/infra.localhost.compose.yml").read_text())
+        self.assertEqual(["0.0.0.0:${REDIS_PUBLISH_PORT:-6379}:6379"], overlay["services"]["redis"]["ports"])
+        for role, service in overlay["services"].items():
+            if role != "redis":
+                self.assertTrue(all(port.startswith("127.0.0.1:") for port in service.get("ports", [])))
         self.assertIn("10909:10909", " ".join(core["services"]["rocketmq-broker"]["ports"]))
 
     def test_core_has_one_business_database_and_discovery_for_all_three_processes(self):

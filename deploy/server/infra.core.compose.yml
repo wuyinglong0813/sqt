@@ -36,7 +36,7 @@ services:
       retries: 18
       start_period: 90s
     ports:
-    - 127.0.0.1:${MYSQL_PORT:-3306}:3306
+    - 0.0.0.0:${MYSQL_PORT:-3306}:3306
   redis:
     restart: on-failure:2
     networks: *id001

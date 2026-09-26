@@ -1,9 +1,10 @@
-# 让宿主机网络里的业务进程访问中间件。端口只绑 127.0.0.1，不单独使用本文件。
+# 让宿主机网络里的业务进程访问中间件。不单独使用本文件。
+# Redis 同时开放公网连接；其余端口仍只绑定 127.0.0.1。
 services:
   mysql:
     ports: ["127.0.0.1:${MYSQL_PORT:-3306}:3306"]
   redis:
-    ports: ["127.0.0.1:${REDIS_PUBLISH_PORT:-6379}:6379"]
+    ports: ["0.0.0.0:${REDIS_PUBLISH_PORT:-6379}:6379"]
   seata:
     environment:
       SEATA_IP: 127.0.0.1
