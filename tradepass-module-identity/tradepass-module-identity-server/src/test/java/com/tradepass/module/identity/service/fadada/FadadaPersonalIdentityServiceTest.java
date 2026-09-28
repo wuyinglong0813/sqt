@@ -283,6 +283,113 @@ class FadadaPersonalIdentityServiceTest {
         org.mockito.Mockito.verify(gateway, org.mockito.Mockito.never()).getUser(any(), any());
     }
 
+    @Test
+    void signedCompleteAuthorizationCommitsSuccessWithoutAnyProviderQueryEvenDuringCooldown() {
+        var identity = identity("IN_PROGRESS");
+        identity.setLastSyncAt(LocalDateTime.now());
+        identity.setFailureReason(new FadadaUserQueryException("210022").getMessage());
+        when(identityMapper.selectOne(any(Wrapper.class))).thenAnswer(inv -> {
+            String sql = ((Wrapper<?>) inv.getArgument(0)).getSqlSegment();
+            if (sql.contains("client_user_id")) assertThat(sql).contains("FOR UPDATE");
+            return identity;
+        });
+        var result = service.syncCallback("tradepass-user-8", successCallback());
+        assertThat(result.status()).isEqualTo("VERIFIED");
+        assertThat(result.verifiedName()).isEqualTo("张三");
+        assertThat(result.failureReason()).isNull();
+        assertThat(identity.getOpenUserId()).isEqualTo("open-user-8");
+        assertThat(identity.getAuthScopes()).isEqualTo("[\"ident_info\"]");
+        assertThat(service.requireCurrentVerified().status()).isEqualTo("VERIFIED");
+        verifyNoInteractions(gateway);
+    }
+
+    @Test
+    void incompleteOrUntrustedSuccessStillRequiresProviderEvidence() {
+        for (String field : List.of("_verifiedEvent", "authResult", "identProcessStatus", "authScope",
+                "openUserId", "clientUserId", "availableStatus", "eventTime")) {
+            org.mockito.Mockito.reset(gateway);
+            var identity = identity("IN_PROGRESS");
+            when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
+            var callback = successCallback(); callback.remove(field);
+            when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                    "tradepass-user-8", "open-user-8", "unauthorized", "unidentified", List.of()));
+            assertThat(service.syncCallback("tradepass-user-8", callback).status()).isEqualTo("IN_PROGRESS");
+            verify(gateway).getUser(any(), any());
+        }
+    }
+
+    @Test
+    void noStartReviewDisabledAndUnrelatedEventsCannotGrantFromCallback() {
+        for (String[] change : new String[][] {{"identProcessStatus", "no_start"},
+                {"identProcessStatus", "checking"}, {"availableStatus", "disable"},
+                {"_verifiedEvent", "user-cancel-authorization"}, {"eventTime", "not-a-time"},
+                {"clientUserId", "another-user"}}) {
+            org.mockito.Mockito.reset(gateway);
+            var identity = identity("IN_PROGRESS");
+            when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
+            var callback = successCallback().put(change[0], change[1]);
+            when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                    "tradepass-user-8", "open-user-8", "unauthorized", "unidentified", List.of()));
+            assertThat(service.syncCallback("tradepass-user-8", callback).status()).isEqualTo("IN_PROGRESS");
+            verify(gateway).getUser(any(), any());
+        }
+    }
+
+    @Test
+    void callbackCannotReplaceAnExistingPersonalAccountBinding() {
+        var identity = identity("IN_PROGRESS"); identity.setOpenUserId("another-open-user");
+        when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
+        assertThatThrownBy(() -> service.syncCallback("tradepass-user-8", successCallback()))
+                .hasMessageContaining("用户标识与当前账号不一致");
+        verifyNoInteractions(gateway);
+        verify(identityMapper, org.mockito.Mockito.never()).updateById(any(FadadaUserIdentityDO.class));
+    }
+
+    @Test
+    void lateCallbacksReconcileWithCurrentProviderStateInsteadOfOverwritingIt() {
+        var identity = identity("VERIFIED"); identity.setOpenUserId("open-user-8");
+        identity.setIdentVerifiedAt(LocalDateTime.now().minusMinutes(2));
+        identity.setLastSyncAt(LocalDateTime.now());
+        when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
+        var callback = successCallback().put("eventTime", String.valueOf(System.currentTimeMillis() - 60000));
+        when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                "tradepass-user-8", "open-user-8", "authorized", "identified", List.of("ident_info")));
+        when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
+                "open-user-8", "identified", "张三", "mobile", null, null));
+        assertThat(service.syncCallback("tradepass-user-8", callback.deepCopy().put("authResult", "fail")).status())
+                .isEqualTo("VERIFIED");
+        org.mockito.Mockito.reset(gateway);
+        identity.setLocalStatus("IN_PROGRESS"); identity.setBindingStatus("unauthorized");
+        when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                "tradepass-user-8", "open-user-8", "unauthorized", "identified", List.of()));
+        when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
+                "open-user-8", "identified", "张三", "mobile", null, null));
+        assertThat(service.syncCallback("tradepass-user-8", callback).status()).isNotEqualTo("VERIFIED");
+        verify(gateway).getUser(any(), any());
+    }
+
+    @Test
+    void duplicateSuccessfulCallbackDoesNotQueryOrOverwriteLaterProfile() {
+        var identity = identity("IN_PROGRESS");
+        when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
+        var callback = successCallback();
+        assertThat(service.syncCallback("tradepass-user-8", callback).status()).isEqualTo("VERIFIED");
+        identity.setVerifiedName("后续资料");
+        assertThat(service.syncCallback("tradepass-user-8", callback).verifiedName()).isEqualTo("后续资料");
+        verifyNoInteractions(gateway);
+        verify(identityMapper).updateById(identity);
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode successCallback() {
+        var data = new ObjectMapper().createObjectNode().put("_verifiedEvent", "user-authorize")
+                .put("clientUserId", "tradepass-user-8").put("openUserId", "open-user-8")
+                .put("authResult", "success").put("identProcessStatus", "success")
+                .put("availableStatus", "enable").put("eventTime", String.valueOf(System.currentTimeMillis()))
+                .put("userName", "张三").put("identMethod", "mobile");
+        data.putArray("authScope").add("ident_info");
+        return data;
+    }
+
     private FadadaUserIdentityDO prepareAuth(String status) {
         SysUserDO user = new SysUserDO(); user.setId(8L); user.setPhone("13800000000");
         when(userMapper.selectById(8L)).thenReturn(user);

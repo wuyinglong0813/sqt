@@ -54,6 +54,11 @@ public class FadadaCallbackProcessor {
         event.setNextAttemptAt(null);
         try {
             JsonNode data = objectMapper.readTree(event.getRetryPayload());
+            // Only the event header verified at ingress can select the callback fast path.
+            // Override any payload value, including records written by older versions.
+            if (data instanceof com.fasterxml.jackson.databind.node.ObjectNode object) {
+                object.put("_verifiedEvent", event.getEventType());
+            }
             String clientUserId = text(data, "clientUserId");
             String clientCorpId = text(data, "clientCorpId");
             String openCorpId = text(data, "openCorpId");
@@ -68,18 +73,21 @@ public class FadadaCallbackProcessor {
             } else if (hasText(clientCorpId)) {
                 var payload = companyService.syncCallback(clientCorpId, openCorpId, data);
                 if (payload == null) throw new BusinessException("企业认证记录尚未就绪");
+                requireSettledAuthorization(event, data, payload.status());
                 event.setSubjectType("COMPANY");
                 event.setSubjectId(Long.valueOf(payload.companyId()));
                 event.setStatus("PROCESSED");
             } else if (hasText(openCorpId)) {
                 var payload = companyService.syncCallback(null, openCorpId, data);
                 if (payload == null) throw new BusinessException("企业认证记录尚未就绪");
+                requireSettledAuthorization(event, data, payload.status());
                 event.setSubjectType("COMPANY");
                 event.setSubjectId(Long.valueOf(payload.companyId()));
                 event.setStatus("PROCESSED");
             } else if (hasText(clientUserId)) {
                 var payload = personalService.syncCallback(clientUserId, data);
                 if (payload == null) throw new BusinessException("个人认证记录尚未就绪");
+                requireSettledAuthorization(event, data, payload.status());
                 event.setSubjectType("USER");
                 event.setStatus("PROCESSED");
             } else {
@@ -101,6 +109,12 @@ public class FadadaCallbackProcessor {
     private String text(JsonNode node, String name) {
         JsonNode value = node == null ? null : node.get(name);
         return value == null || value.isNull() ? null : value.asText();
+    }
+    private void requireSettledAuthorization(FadadaCallbackEventDO event, JsonNode data, String status) {
+        if (("user-authorize".equals(event.getEventType()) || "corp-authorize".equals(event.getEventType()))
+                && "success".equals(text(data, "authResult")) && "IN_PROGRESS".equals(status)) {
+            throw new BusinessException("授权成功通知已收到，认证资料待补齐，将在后台重试");
+        }
     }
     private boolean hasText(String value) { return value != null && !value.isBlank(); }
     private String shortMessage(Exception exception) {

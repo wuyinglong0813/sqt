@@ -63,6 +63,35 @@ class FadadaCallbackProcessorTest {
         verifyNoInteractions(people, signing);
     }
 
+    @Test void authenticatedEventHeaderOverridesPayloadAndPendingSuccessKeepsRetrying() {
+        event.setEventType("user-authorize");
+        event.setRetryPayload("{\"clientUserId\":\"user-1\",\"authResult\":\"success\",\"_verifiedEvent\":\"corp-authorize\"}");
+        var pending = mock(com.tradepass.module.identity.api.fadada.dto.PersonalIdentityRespDTO.class);
+        when(pending.status()).thenReturn("IN_PROGRESS");
+        when(people.syncCallback(eq("user-1"), any())).thenReturn(pending);
+        processor.process(12L);
+        assertThat(event.getStatus()).isEqualTo("FAILED");
+        assertThat(event.getNextAttemptAt()).isNotNull();
+        verify(people).syncCallback(eq("user-1"), argThat(data ->
+                "user-authorize".equals(data.path("_verifiedEvent").asText())));
+        when(pending.status()).thenReturn("VERIFIED");
+        processor.process(12L);
+        assertThat(event.getStatus()).isEqualTo("PROCESSED");
+        assertThat(event.getNextAttemptAt()).isNull();
+    }
+
+    @Test void companyCallbackWaitsForOperatorEvidenceInBackground() {
+        event.setEventType("corp-authorize");
+        event.setRetryPayload("{\"clientCorpId\":\"corp-1\",\"authResult\":\"success\"}");
+        var pending = mock(com.tradepass.module.identity.api.fadada.dto.FadadaCompanyIdentityRespDTO.class);
+        when(pending.companyId()).thenReturn("3"); when(pending.status()).thenReturn("IN_PROGRESS");
+        when(companies.syncCallback(eq("corp-1"), isNull(), any())).thenReturn(pending);
+        processor.process(12L);
+        assertThat(event.getStatus()).isEqualTo("FAILED");
+        assertThat(event.getNextAttemptAt()).isNotNull();
+        verifyNoInteractions(people);
+    }
+
     @Test void unsupportedCallbackIsAcknowledgedWithoutRetry() {
         event.setRetryPayload("{}");
         processor.process(12L);

@@ -116,6 +116,28 @@ class FadadaCallbackServiceTest {
         verify(processor, never()).processAsync(any());
     }
 
+    @Test
+    void retainsVerifiedAuthorizationEvidenceWithoutIdentityDocumentsOrPayloadEventOverride() throws Exception {
+        String body = """
+                {"clientUserId":"user-1","openUserId":"open-1","authResult":"success",
+                 "identProcessStatus":"success","availableStatus":"enable","eventTime":"1234",
+                 "authScope":["ident_info"],"userName":"张三","corpName":"企业","corpIdentNo":"credit",
+                 "_verifiedEvent":"corp-authorize","identNo":"sensitive-document"}
+                """;
+        var saved = new AtomicReference<FadadaCallbackEventDO>();
+        doAnswer(inv -> { FadadaCallbackEventDO event = inv.getArgument(0); event.setId(32L); saved.set(event); return 1; })
+                .when(eventMapper).insert(any(FadadaCallbackEventDO.class));
+        service.accept(signedHeaders(body, "user-authorize", "nonce-12"), body);
+        var data = new com.fasterxml.jackson.databind.ObjectMapper().readTree(saved.get().getRetryPayload());
+        assertThat(data.get("authScope").get(0).asText()).isEqualTo("ident_info");
+        assertThat(data.get("userName").asText()).isEqualTo("张三");
+        assertThat(data.get("availableStatus").asText()).isEqualTo("enable");
+        assertThat(data.get("eventTime").asText()).isEqualTo("1234");
+        assertThat(data.has("identNo")).isFalse();
+        assertThat(data.has("_verifiedEvent")).isFalse();
+        assertThat(saved.get().getEventType()).isEqualTo("user-authorize");
+    }
+
     private HttpHeaders signedHeaders(String body, String event, String nonce) throws Exception {
         String timestamp = String.valueOf(Instant.now().toEpochMilli());
         Map<String, String> parameters = new HashMap<>();

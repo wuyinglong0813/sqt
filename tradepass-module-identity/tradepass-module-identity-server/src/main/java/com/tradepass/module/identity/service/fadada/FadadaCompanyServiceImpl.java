@@ -20,6 +20,7 @@ import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpSealDO;
 import com.tradepass.framework.fadada.core.FadadaCompanyGateway;
 import com.tradepass.framework.fadada.core.FadadaCompanyQueryException;
+import com.tradepass.framework.fadada.core.FadadaAuthorizationCallback;
 import com.fasc.open.api.enums.corp.OperatorTypeEnum;
 import com.tradepass.module.identity.service.certification.CompanyCertificationService.CertifiedApplicantRole;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMapper;
@@ -195,6 +196,12 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             // authorization and operator checks below still apply before granting membership.
             account = gateway.getCompanyByCreditCode(company.getCreditCode());
         }
+        return applyAccount(company, identity, account);
+    }
+
+    private FadadaCompanyIdentityRespDTO applyAccount(CompanyDO company, FadadaCorpIdentityDO identity,
+                                                       FadadaCompanyGateway.CompanyAccount account) {
+        long companyId = company.getId();
         if (hasText(account.openCorpId())) identity.setOpenCorpId(account.openCorpId());
         if (hasText(account.bindingStatus())) identity.setBindingStatus(account.bindingStatus());
         if (hasText(account.identStatus())) identity.setIdentStatus(account.identStatus());
@@ -253,6 +260,29 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         CompanyDO company = requireCompany(companyId);
         identity = findForUpdate(companyId);
         if (identity == null) return null;
+        if (hasText(identity.getOpenCorpId()) && hasText(openCorpId)
+                && !identity.getOpenCorpId().equals(openCorpId)) {
+            throw new BusinessException("认证回调企业标识与当前企业不一致");
+        }
+        LocalDateTime eventTime = FadadaAuthorizationCallback.time(data);
+        if ("VERIFIED".equals(identity.getLocalStatus()) && "success".equals(callbackText(data, "authResult"))
+                && eventTime != null && identity.getVerifiedAt() != null
+                && !eventTime.isAfter(identity.getVerifiedAt())) {
+            return payload(companyId, identity);
+        }
+        boolean firstCompletion = "IN_PROGRESS".equals(identity.getLocalStatus()) && identity.getVerifiedAt() == null;
+        if (FadadaAuthorizationCallback.completed(data, "corp-authorize", "corpIdentProcessStatus", AUTH_SCOPES)
+                && identity.getClientCorpId().equals(callbackText(data, "clientCorpId"))
+                && (firstCompletion || identity.getLastSyncAt() == null || eventTime.isAfter(identity.getLastSyncAt()))
+                && hasText(openCorpId) && openCorpId.equals(callbackText(data, "openCorpId"))
+                && normalize(company.getCreditCode()).equals(normalize(callbackText(data, "corpIdentNo")))
+                && normalize(company.getName()).equals(normalize(callbackText(data, "corpName")))) {
+            // The signed callback already proves authorization. Query only identity details
+            // for company matching and the operator's role; do not repeat the account lookup.
+            return applyAccount(company, identity, new FadadaCompanyGateway.CompanyAccount(
+                    identity.getClientCorpId(), openCorpId, "authorized", "identified", "enable",
+                    FadadaAuthorizationCallback.scopes(data)));
+        }
         if (hasText(openCorpId)) identity.setOpenCorpId(openCorpId);
         String authResult = callbackText(data, "authResult");
         String process = callbackText(data, "corpIdentProcessStatus", "verifyStatus");

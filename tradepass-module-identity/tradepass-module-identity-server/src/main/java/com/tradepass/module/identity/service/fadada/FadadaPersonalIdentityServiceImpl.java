@@ -1,6 +1,7 @@
 package com.tradepass.module.identity.service.fadada;
 
 import com.tradepass.framework.fadada.core.FadadaUserQueryException;
+import com.tradepass.framework.fadada.core.FadadaAuthorizationCallback;
 import com.tradepass.module.identity.api.fadada.FadadaPersonalIdentityOperations;
 import com.tradepass.module.identity.api.fadada.FadadaPersonalIdentityOperations.*;
 
@@ -61,8 +62,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
     @Transactional
     public PersonalIdentityRespDTO syncCurrent() {
         requireReady();
-        FadadaUserIdentityDO identity = identityMapper.selectOne(new LambdaQueryWrapper<FadadaUserIdentityDO>()
-                .eq(FadadaUserIdentityDO::getUserId, AuthContext.userId()).last("LIMIT 1 FOR UPDATE"));
+        FadadaUserIdentityDO identity = findByUserIdForUpdate(AuthContext.userId());
         if (identity == null) return toPayload(null);
         if ("VERIFIED".equals(identity.getLocalStatus())) return toPayload(identity);
         if (identity.getLastSyncAt() != null
@@ -84,7 +84,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
     @Transactional
     public PersonalIdentityRespDTO requireCurrentVerified() {
         requireReady();
-        FadadaUserIdentityDO identity = findByUserId(AuthContext.userId());
+        FadadaUserIdentityDO identity = findByUserIdForUpdate(AuthContext.userId());
         if (identity != null && !"VERIFIED".equals(identity.getLocalStatus())) {
             identity = sync(identity);
         }
@@ -155,11 +155,47 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         String method = callbackText(data, "identMethod");
         String authResult = callbackText(data, "authResult");
         String failureReason = callbackText(data, "identFailedReason", "authFailedReason");
+        if (hasText(identity.getOpenUserId()) && hasText(openUserId)
+                && !identity.getOpenUserId().equals(openUserId)) {
+            throw new BusinessException("认证回调用户标识与当前账号不一致");
+        }
+        LocalDateTime eventTime = FadadaAuthorizationCallback.time(data);
+        // Repeated success must not query again. Other late events use current provider
+        // evidence: processing time is not the event order (a newer revocation may arrive late).
+        if ("VERIFIED".equals(identity.getLocalStatus()) && "success".equals(authResult)
+                && eventTime != null && identity.getIdentVerifiedAt() != null
+                && !eventTime.isAfter(identity.getIdentVerifiedAt())) {
+            return toPayload(identity);
+        }
+        boolean firstCompletion = "IN_PROGRESS".equals(identity.getLocalStatus())
+                && identity.getIdentVerifiedAt() == null;
+        if (FadadaAuthorizationCallback.completed(data, "user-authorize", "identProcessStatus", List.of(AUTH_SCOPE))
+                && clientUserId.equals(callbackText(data, "clientUserId"))
+                && (firstCompletion || identity.getLastSyncAt() == null || eventTime.isAfter(identity.getLastSyncAt()))
+                && hasText(openUserId) && hasText(callbackText(data, "openUserId"))) {
+            identity.setOpenUserId(openUserId);
+            identity.setBindingStatus("authorized");
+            identity.setIdentStatus("identified");
+            identity.setIdentProcessStatus("success");
+            identity.setAuthScopes(json(FadadaAuthorizationCallback.scopes(data)));
+            String name = callbackText(data, "userName");
+            if (hasText(name)) identity.setVerifiedName(name);
+            if (hasText(method)) identity.setIdentMethod(method);
+            identity.setIdentVerifiedAt(eventTime);
+            identity.setLocalStatus("VERIFIED");
+            identity.setFailureReason("");
+            identity.setLastSyncAt(beijingNow());
+            identityMapper.updateById(identity);
+            return toPayload(identity);
+        }
         if (hasText(openUserId)) identity.setOpenUserId(openUserId);
         if (hasText(process)) identity.setIdentProcessStatus(process);
         if (hasText(method)) identity.setIdentMethod(method);
         if ("fail".equalsIgnoreCase(authResult) || "failed".equalsIgnoreCase(authResult)
                 || "failed".equalsIgnoreCase(process)) {
+            if ("VERIFIED".equals(identity.getLocalStatus()) || "exist".equals(failureReason)) {
+                return toPayload(sync(identity));
+            }
             identity.setLocalStatus("FAILED");
             identity.setFailureReason(hasText(failureReason) ? failureReason : "个人认证未通过");
             identity.setLastSyncAt(LocalDateTime.now());
@@ -206,7 +242,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
     }
 
     private FadadaUserIdentityDO ensureIdentity(long userId) {
-        FadadaUserIdentityDO existing = findByUserId(userId);
+        FadadaUserIdentityDO existing = findByUserIdForUpdate(userId);
         if (existing != null) return existing;
         FadadaUserIdentityDO identity = new FadadaUserIdentityDO();
         identity.setUserId(userId);
@@ -225,9 +261,14 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
                 .eq(FadadaUserIdentityDO::getUserId, userId).last("LIMIT 1"));
     }
 
+    private FadadaUserIdentityDO findByUserIdForUpdate(long userId) {
+        return identityMapper.selectOne(new LambdaQueryWrapper<FadadaUserIdentityDO>()
+                .eq(FadadaUserIdentityDO::getUserId, userId).last("LIMIT 1 FOR UPDATE"));
+    }
+
     private FadadaUserIdentityDO findByClientUserId(String clientUserId) {
         return identityMapper.selectOne(new LambdaQueryWrapper<FadadaUserIdentityDO>()
-                .eq(FadadaUserIdentityDO::getClientUserId, clientUserId).last("LIMIT 1"));
+                .eq(FadadaUserIdentityDO::getClientUserId, clientUserId).last("LIMIT 1 FOR UPDATE"));
     }
 
     private PersonalIdentityRespDTO toPayload(FadadaUserIdentityDO identity) {

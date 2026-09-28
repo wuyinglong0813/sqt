@@ -5,6 +5,7 @@ import com.tradepass.module.contract.dal.dataobject.signing.FadadaCallbackEventD
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasc.open.api.utils.crypt.FddCryptUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.framework.fadada.config.FadadaProperties;
 import org.slf4j.Logger;
@@ -112,12 +113,24 @@ public class FadadaCallbackService {
             // never arbitrary provider fields such as full identity documents or face data.
             for (String field : java.util.List.of("clientUserId", "clientCorpId", "openCorpId", "signTaskId",
                     "openUserId", "existOpenUserId", "authResult", "verifyStatus", "corpIdentProcessStatus",
-                    "corpIdentFailedReason", "authFailedReason", "identProcessStatus", "identMethod", "identFailedReason")) {
+                    "corpIdentFailedReason", "authFailedReason", "identProcessStatus", "identMethod", "identFailedReason",
+                    "eventTime", "availableStatus", "userName", "corpName", "corpIdentNo")) {
                 var value = source.get(field);
                 if (value != null && value.isValueNode() && !value.isNull()) {
                     String text = value.asText();
                     if (text.length() > 512) text = text.substring(0, 512);
                     result.put(field, text);
+                }
+            }
+            // Keep the actual granted scopes; a requested scope is not proof of authorization.
+            JsonNode scopes = source.get("authScope");
+            if (scopes != null && scopes.isArray() && scopes.size() <= 32) {
+                var safeScopes = result.putArray("authScope");
+                for (JsonNode scope : scopes) {
+                    if (!scope.isTextual() || scope.asText().length() > 64) {
+                        throw new IllegalArgumentException("Invalid authorization scopes");
+                    }
+                    safeScopes.add(scope.asText());
                 }
             }
             return result.toString();

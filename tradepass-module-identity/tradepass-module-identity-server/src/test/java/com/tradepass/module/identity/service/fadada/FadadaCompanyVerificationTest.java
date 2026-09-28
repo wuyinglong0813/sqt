@@ -27,6 +27,66 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class FadadaCompanyVerificationTest {
+    @ParameterizedTest
+    @CsvSource({"legal_rep,LEGAL", "deputy_auth,ADMIN"})
+    void completeCompanyCallbackSkipsAccountLookupButProvesOperatorRole(String type, CertifiedApplicantRole role) {
+        var f = new Fixture(); f.detail(type, "open-user-7", "identified");
+        f.identity.setLastSyncAt(java.time.LocalDateTime.now());
+        f.identity.setFailureReason("尚未查询到当前企业的授权记录");
+        assertThat(f.service.syncCallback("local-3", "corp-3", companyCallback()).status()).isEqualTo("VERIFIED");
+        verify(f.gateway, never()).getCompany(any(), any());
+        verify(f.gateway, never()).getCompanyByCreditCode(any());
+        verify(f.gateway).getIdentity("corp-3");
+        verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(), eq(role));
+    }
+
+    @Test
+    void companySuccessCallbackCannotGrantAnotherOperatorsPermissions() {
+        var f = new Fixture(); f.detail("legal_rep", "another-user", "identified");
+        assertThat(f.service.syncCallback("local-3", "corp-3", companyCallback()).status()).isEqualTo("IN_PROGRESS");
+        verifyNoInteractions(f.certifications);
+        verify(f.gateway, never()).getCompany(any(), any());
+    }
+
+    @Test
+    void incompleteCompanyCallbackFallsBackToAuthoritativeQuery() {
+        for (String field : List.of("_verifiedEvent", "authResult", "corpIdentProcessStatus", "authScope",
+                "openCorpId", "clientCorpId", "availableStatus", "eventTime", "corpIdentNo", "corpName")) {
+            var f = new Fixture(); var callback = companyCallback(); callback.remove(field);
+            when(f.gateway.getCompany(any(), any())).thenThrow(new BusinessException("query unavailable"));
+            assertThatThrownBy(() -> f.service.syncCallback("local-3", "corp-3", callback)).hasMessage("query unavailable");
+            verifyNoInteractions(f.certifications);
+        }
+    }
+
+    @Test
+    void companyCallbackCannotReplaceExistingProviderBinding() {
+        var f = new Fixture(); f.identity.setOpenCorpId("another-corp");
+        assertThatThrownBy(() -> f.service.syncCallback("local-3", "corp-3", companyCallback()))
+                .hasMessageContaining("企业标识与当前企业不一致");
+        verifyNoInteractions(f.gateway, f.certifications);
+    }
+
+    @Test
+    void companyIdentityQueryFailureIsLeftForDurableCallbackRetry() {
+        var f = new Fixture();
+        when(f.gateway.getIdentity("corp-3")).thenThrow(new BusinessException("identity unavailable"));
+        assertThatThrownBy(() -> f.service.syncCallback("local-3", "corp-3", companyCallback()))
+                .hasMessage("identity unavailable");
+        verifyNoInteractions(f.certifications);
+        verify(f.gateway, never()).getCompany(any(), any());
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode companyCallback() {
+        var data = new ObjectMapper().createObjectNode().put("_verifiedEvent", "corp-authorize")
+                .put("clientCorpId", "local-3").put("openCorpId", "corp-3")
+                .put("authResult", "success").put("corpIdentProcessStatus", "success")
+                .put("availableStatus", "enable").put("eventTime", String.valueOf(System.currentTimeMillis()))
+                .put("corpName", "认证企业").put("corpIdentNo", "TEST-CREDIT");
+        var scopes = data.putArray("authScope"); SCOPES.forEach(scopes::add);
+        return data;
+    }
+
     private static final List<String> SCOPES = List.of("ident_info", "seal_info", "signtask_init", "signtask_info", "signtask_file");
 
     @Test
