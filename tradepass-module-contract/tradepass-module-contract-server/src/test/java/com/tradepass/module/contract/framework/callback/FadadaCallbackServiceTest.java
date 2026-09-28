@@ -58,6 +58,7 @@ class FadadaCallbackServiceTest {
 
         assertThat(saved.get().getEventId()).isEqualTo("sign-task-finished:nonce-8");
         assertThat(saved.get().getPayloadSha256()).hasSize(64);
+        assertThat(saved.get().getNextAttemptAt().getNano()).isZero();
         verify(processor, org.mockito.Mockito.times(2)).processAsync(28L);
         verify(eventMapper).insert(any(FadadaCallbackEventDO.class));
         assertThat(saved.get().getRetryPayload()).isEqualTo("{\"signTaskId\":\"task-8\"}");

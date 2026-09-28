@@ -67,7 +67,8 @@ public class FadadaCallbackService {
         event.setPayloadSha256(sha256(bizContent));
         event.setRetryPayload(retryPayload(bizContent));
         event.setAttemptCount(0);
-        event.setNextAttemptAt(LocalDateTime.now());
+        // DATETIME rounds fractional seconds up; an untruncated value can be later than the consumer's claim time.
+        event.setNextAttemptAt(LocalDateTime.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS));
         event.setStatus("RECEIVED");
         event.setReceivedAt(LocalDateTime.now());
         try {
