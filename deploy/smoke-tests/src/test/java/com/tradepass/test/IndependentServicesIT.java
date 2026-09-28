@@ -63,9 +63,29 @@ class IndependentServicesIT {
         }
         try {
             configureNacos();
+            if (CORE) prepareCallbackMessaging();
             for (String role : ROLES) launch(role, false);
             for (String role : ROLES) ready(role);
         } catch (Throwable error) { stop(); throw error; }
+    }
+
+    static void prepareCallbackMessaging() throws Exception {
+        // Readiness now requires provisioned resources; sending a first message must not bootstrap MQ.
+        String nameserver = System.getProperty("tradepass.test.rocketmq.server");
+        assertTrue(nameserver.matches("(127\\.0\\.0\\.1|localhost):[0-9]+"));
+        var producer = new org.apache.rocketmq.client.producer.DefaultMQProducer("core-provision-" + BASE);
+        producer.setNamesrvAddr(nameserver);
+        producer.start();
+        try {
+            var api = producer.getDefaultMQProducerImpl().getmQClientFactory().getMQClientAPIImpl();
+            var broker = api.getBrokerClusterInfo(3000).getBrokerAddrTable().get("isolated-test-broker");
+            assertNotNull(broker, "Only the isolated CI broker may be provisioned");
+            String address = broker.getBrokerAddrs().get(0L);
+            api.createTopic(address, "TBW102", new org.apache.rocketmq.common.TopicConfig("tradepass-core-" + BASE, 4, 4, 6), 3000);
+            var group = new org.apache.rocketmq.remoting.protocol.subscription.SubscriptionGroupConfig();
+            group.setGroupName("tradepass-core-" + BASE);
+            api.createSubscriptionGroup(address, group, 3000);
+        } finally { producer.shutdown(); }
     }
 
     static void prepareOwnedDatabases() throws Exception {

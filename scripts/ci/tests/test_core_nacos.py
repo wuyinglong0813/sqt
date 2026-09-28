@@ -45,7 +45,7 @@ class CoreNacosTest(unittest.TestCase):
             client.read.return_value = "tradepass: {configuration-version: 1}\n"
             client.publish.side_effect = [None, ValueError("Nacos 未确认配置发布")]
             with patch.object(mod, "SERVER", server), patch.object(mod, "read_source", return_value=settings()), \
-                    patch.object(mod, "Nacos", return_value=client), patch.object(mod, "compose_config", return_value={}), \
+                    patch.object(mod, "Nacos", return_value=client), patch.object(mod, "compose_config", return_value={"services": {"rocketmq-topic-init": {}}}), \
                     patch("sys.argv", ["configure-core-nacos.py", "--publish"]), patch("builtins.print"):
                 with self.assertRaises(ValueError):
                     mod.main()
@@ -57,11 +57,14 @@ class CoreNacosTest(unittest.TestCase):
             client = Mock()
             client.read.return_value = "tradepass: {configuration-version: 1}\n"
             with patch.object(mod, "SERVER", server), patch.object(mod, "read_source", return_value=settings()), \
-                    patch.object(mod, "Nacos", return_value=client), patch.object(mod, "compose_config", return_value={}), \
+                    patch.object(mod, "Nacos", return_value=client), patch.object(mod, "compose_config", return_value={"services": {"rocketmq-topic-init": {}}}), \
                     patch("sys.argv", ["configure-core-nacos.py", "--publish"]), patch("builtins.print"):
                 mod.main()
             files = sorted(str(path.relative_to(server)) for path in server.rglob("*") if path.is_file())
-            self.assertEqual([".runtime/core.compose.yml", ".runtime/edge.compose.yml", ".runtime/infra.compose.yml", ".runtime/nacos/bootstrap.yml"], files)
+            self.assertEqual([".runtime/core.compose.yml", ".runtime/edge.compose.yml", ".runtime/infra.compose.yml", ".runtime/nacos/bootstrap.yml", ".runtime/rocketmq/resources.json"], files)
+            plan = json.loads((server / ".runtime/rocketmq/resources.json").read_text())
+            self.assertEqual("tradepass-callback-events", plan["resources"][0]["topic"])
+            self.assertEqual(0o600, (server / ".runtime/rocketmq/resources.json").stat().st_mode & 0o777)
             self.assertEqual(4, client.publish.call_count)
             boot = (server / ".runtime/nacos/bootstrap.yml").read_text()
             self.assertNotIn("wx-secret", boot)

@@ -76,6 +76,9 @@ def manifest(roles=("business",), delivery="local"):
 
 class PublisherTest(unittest.TestCase):
     def setUp(self):
+        self.mq_patch = patch.object(apply, "ensure_mq_resources")
+        self.mq = self.mq_patch.start()
+        self.addCleanup(self.mq_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "core.compose.yml"
@@ -106,6 +109,14 @@ class PublisherTest(unittest.TestCase):
             self.fail_up -= 1
             raise RuntimeError("mock failed health")
         return ""
+
+    def test_missing_mq_resources_aborts_before_stop_or_journal(self):
+        self.mq.side_effect = RuntimeError("MQ unavailable")
+        with self.assertRaisesRegex(RuntimeError, "MQ unavailable"):
+            self.publisher.activate({"business": NEW}, "bad-mq")
+        self.assertFalse(any("stop" in command for command in self.calls))
+        self.assertFalse(self.publisher.journal.exists())
+        self.assertEqual(self.config, json.loads(self.path.read_text()))
 
     def test_single_service_publish_preserves_other_services_and_literal_secrets(self):
         self.publisher.activate({"business": NEW}, "release-1")

@@ -3,6 +3,7 @@
 import argparse
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,8 @@ COMMON = [
 ]
 BUSINESS = [
     ("ROCKETMQ_CALLBACK_TOPIC", "tradepass.messaging.rocketmq.callback-topic", "tradepass-callback-events"),
+    ("ROCKETMQ_CONSUMER_GROUP", "tradepass.messaging.rocketmq.consumer-group", "tradepass-contract-callback-consumer"),
+    ("ROCKETMQ_PRODUCER_GROUP", "tradepass.messaging.rocketmq.producer-group", "tradepass-contract-callback-producer"),
     ("ROCKETMQ_ACCESS_KEY", "tradepass.messaging.rocketmq.access-key", ""),
     ("ROCKETMQ_SECRET_KEY", "tradepass.messaging.rocketmq.secret-key", ""),
     ("TRADEPASS_STORAGE_PROVIDER", "tradepass.storage.provider", "cloudbase-cos"),
@@ -255,6 +258,14 @@ def compose_literal(value):
     return transform_strings(value, lambda item: item.replace("$", "$$"))
 
 
+def mq_resource_plan(configs):
+    spec = importlib.util.spec_from_file_location("mq_resources", Path(__file__).with_name("mq_resources.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    catalog = json.loads((ROOT / "deploy/server/rocketmq/resources.json").read_text())
+    return module.resolve_plan(catalog, configs["common"], configs["business"])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-env", type=Path, default=SERVER / ".env.core", help="仅用于一次性导入，不作为应用运行配置")
@@ -272,6 +283,7 @@ def main():
             raise ValueError("Nacos 配置必须是 YAML 对象")
         merged[role] = merge_missing(existing, defaults[role])
     validate_documents(merged)
+    mq_plan = mq_resource_plan(merged)
     # Validate and resolve all Docker definitions before publishing anything.
     runtime = {name: compose_config(args.source_env.absolute(), SERVER / source) for name, source in (
         ("core", "yudao.core.compose.yml"), ("infra", "infra.core.compose.yml"), ("edge", "edge.core.compose.yml"))}
@@ -284,11 +296,17 @@ def main():
             client.publish(role, content, previous[role])
         print("Nacos 就绪：tradepass-" + role + ".yaml")
     output = SERVER / ".runtime"
-    for path in (output, output / "nacos"):
+    for path in (output, output / "nacos", output / "rocketmq"):
         if path.is_symlink():
             raise ValueError("私有目录不能是符号链接")
         path.mkdir(mode=0o700, exist_ok=True)
         path.chmod(0o700)
+    private_write(output / "rocketmq/resources.json", json.dumps(mq_plan, indent=2) + "\n")
+    # Bind the resolved Nacos resource contract, including private ACL credentials if configured.
+    init = runtime["infra"]["services"]["rocketmq-topic-init"]
+    init["user"] = "0:0"
+    init.setdefault("volumes", []).append({"type": "bind", "source": str(output / "rocketmq/resources.json"),
+                                           "target": "/opt/tradepass-mq/resources.json", "read_only": True})
     private_write(output / "nacos/bootstrap.yml", yaml.safe_dump(boot, sort_keys=False))
     for name, config in runtime.items():
         private_write(output / (name + ".compose.yml"), yaml.safe_dump(compose_literal(config), sort_keys=False))

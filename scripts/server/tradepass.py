@@ -2,6 +2,7 @@
 """Manage the existing three-process TradePass deployment (Python standard library only)."""
 import argparse
 import json
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -105,6 +106,14 @@ def start(services, timeout):
             if result.returncode:
                 raise OperationError(service + " 启动失败；请检查 Docker 服务和容器日志")
         wait_ready(service, timeout)
+        if service == "rocketmq-broker":
+            mq_resources("ensure")
+
+
+def mq_resources(mode):
+    result = subprocess.run([sys.executable, str(Path(__file__).with_name("mq_resources.py")), mode], timeout=240)
+    if result.returncode:
+        raise OperationError("RocketMQ 资源检查失败；业务服务不能视为就绪")
 
 
 def stop(services, timeout):
@@ -125,6 +134,12 @@ def status(services, check):
             current = state(service)
             print("{:<20} {}".format(service, describe(current)))
             failed |= check and not ready(service, current)
+        except OperationError as error:
+            print(str(error))
+            failed = True
+    if check and any(service in services for service in ("rocketmq-broker", "business")):
+        try:
+            mq_resources("check")
         except OperationError as error:
             print(str(error))
             failed = True

@@ -47,6 +47,10 @@ def main():
         parser.error("CORE_COMPOSE 必须是绝对路径")
     staging = "/var/tmp/tradepass-core-release-" + uuid.uuid4().hex
     files = [(ROOT / "scripts/cd/core_apply.py", "core_apply.py")]
+    files += [(ROOT / ("scripts/server/" + name), name)
+              for name in ("mq_resources.py", "configure-core-nacos.py")]
+    files += [(ROOT / ("deploy/server/rocketmq/" + name), "rocketmq/" + name)
+              for name in ("resources.json", "resources.sh", "ResourceAdmin.java")]
     if args.action == "deploy":
         manifest = json.loads((args.bundle / "release.json").read_text())
         files.append((args.bundle / "release.json", "release.json"))

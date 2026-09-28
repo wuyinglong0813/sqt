@@ -19,6 +19,9 @@ def healthy():
 
 class ServerControlTest(unittest.TestCase):
     def setUp(self):
+        self.mq_patch = patch.object(mod, "mq_resources")
+        self.mq = self.mq_patch.start()
+        self.addCleanup(self.mq_patch.stop)
         self.output = contextlib.redirect_stdout(io.StringIO())
         self.output.__enter__()
         self.addCleanup(self.output.__exit__, None, None, None)
@@ -34,6 +37,16 @@ class ServerControlTest(unittest.TestCase):
             mod.start(selected, 360)
         self.assertEqual([event for s in selected for event in (
             ("start", mod.container(s)), ("wait", s))], events)
+
+    def test_mq_failure_prevents_business_start_and_is_reported_by_check(self):
+        self.mq.side_effect = mod.OperationError("missing resources")
+        with patch.object(mod, "state", return_value=healthy()), patch.object(mod, "docker") as docker:
+            with self.assertRaises(mod.OperationError):
+                mod.start(["rocketmq-broker", "business"], 360)
+            self.assertEqual(1, mod.status(["business"], check=True))
+        docker.assert_not_called()
+        self.assertEqual([(("ensure",), {}), (("check",), {})],
+                         [(call.args, call.kwargs) for call in self.mq.call_args_list])
 
     def test_all_stop_is_reverse_order_with_grace_period(self):
         with patch.object(mod, "docker", return_value=subprocess.CompletedProcess([], 0)) as docker, \

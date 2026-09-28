@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 
 import yaml
@@ -17,6 +18,15 @@ import yaml
 ROLES = ("identity", "business", "gateway")
 IMAGE_ID = r"sha256:[a-f0-9]{64}"
 DEFAULT_COMPOSE = Path("/docker/tradepass/jenkins/core.compose.yml")
+
+
+def ensure_mq_resources():
+    helper = Path(__file__).resolve().parents[1] / "server/mq_resources.py"
+    if not helper.is_file():
+        helper = Path(__file__).with_name("mq_resources.py")
+    result = subprocess.run([sys.executable, str(helper), "ensure"], timeout=240)
+    if result.returncode:
+        raise RuntimeError("RocketMQ 资源未就绪，已在停止应用之前中止发布")
 
 
 def run(*command, timeout=600):
@@ -251,6 +261,8 @@ class Publisher:
         for role in roles:
             after["services"][role]["image"] = images[role]
         self.preflight(after)
+        if "business" in roles:
+            ensure_mq_resources()
         history = read_json(self.history, {})
         atomic(self.journal, {"roles": roles, "before": before, "history": history})
         try:

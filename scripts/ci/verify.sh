@@ -38,6 +38,7 @@ export TRADEPASS_TEST_SERVICES_URL="jdbc:mysql://127.0.0.1:${MYSQL_PORT}/tradepa
 export TRADEPASS_TEST_MYSQL_USERNAME=root TRADEPASS_TEST_MYSQL_PASSWORD="$MYSQL_ROOT_PASSWORD"
 bash scripts/verify-backend.sh
 python3 -m unittest discover -s scripts/ci/tests -v
+python3 scripts/ci/test_mq_resources.py
 docker compose --env-file deploy/microservices/.env.example -f deploy/microservices/compose.yml config --quiet
 if [[ "${TRADEPASS_TEST_TOPOLOGY:-split}" == core ]]; then exit 0; fi
 docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,size=128m \

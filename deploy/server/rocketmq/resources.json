@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "cluster": "DefaultCluster",
+  "brokerName": "tradepass-broker-a",
+  "resources": [
+    {
+      "id": "contract-callback",
+      "owner": "business",
+      "adapter": "tradepass-module-contract/tradepass-module-contract-server/src/main/java/com/tradepass/module/contract/framework/config/CallbackMessagingConfiguration.java",
+      "topic": "tradepass-callback-events",
+      "topicProperty": "tradepass.messaging.rocketmq.callback-topic",
+      "consumerGroup": "tradepass-contract-callback-consumer",
+      "consumerGroupProperty": "tradepass.messaging.rocketmq.consumer-group",
+      "readQueues": 4,
+      "writeQueues": 4
+    }
+  ]
+}

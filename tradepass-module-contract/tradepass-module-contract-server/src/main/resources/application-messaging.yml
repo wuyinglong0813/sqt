@@ -8,3 +8,9 @@ tradepass:
       consumer-group: ${ROCKETMQ_CONSUMER_GROUP:tradepass-contract-callback-consumer}
       access-key: ${ROCKETMQ_ACCESS_KEY:}
       secret-key: ${ROCKETMQ_SECRET_KEY:}
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: readinessState,db,callbackMessaging

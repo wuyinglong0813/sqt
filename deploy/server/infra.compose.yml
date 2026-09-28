@@ -139,14 +139,15 @@ services:
     mem_limit: 160m
     depends_on:
       rocketmq-broker: {condition: service_healthy}
-    environment:
-      JAVA_OPT_EXT: -Xms48m -Xmx64m
+    volumes:
+      - ./rocketmq:/opt/tradepass-mq:ro,z
     command:
       - sh
-      - -ec
-      - |
-        sh mqadmin updateTopic -n rocketmq-namesrv:9876 -c DefaultCluster -t tradepass-callback-events -r 4 -w 4
-        sh mqadmin updateSubGroup -n rocketmq-namesrv:9876 -c DefaultCluster -g tradepass-contract-callback-consumer
+      - /opt/tradepass-mq/resources.sh
+      - ensure
+      - /opt/tradepass-mq/resources.json
+      - rocketmq-namesrv:9876
+      - rocketmq-broker:10911
 
   rocketmq-broker:
     <<: *infra

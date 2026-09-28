@@ -37,6 +37,14 @@ public class CallbackMessagingConfiguration {
         return producer;
     }
 
+    @Bean
+    CallbackMessagingHealthIndicator callbackMessagingHealthIndicator(DefaultMQProducer producer,
+            @Value("${tradepass.messaging.rocketmq.callback-topic:tradepass-callback-events}") String topic,
+            @Value("${tradepass.messaging.rocketmq.consumer-group:tradepass-contract-callback-consumer}") String group) {
+        return new CallbackMessagingHealthIndicator(producer.getDefaultMQProducerImpl().getmQClientFactory()
+                .getMQClientAPIImpl(), topic, group);
+    }
+
     @Bean CallbackDispatcher callbackDispatcher(DefaultMQProducer producer, MeterRegistry metrics,
             @Value("${tradepass.messaging.rocketmq.callback-topic:tradepass-callback-events}") String topic) {
         return id -> {

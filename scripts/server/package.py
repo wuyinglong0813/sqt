@@ -16,6 +16,8 @@ FILES = [
     "deploy/server/mysql/11-core-databases.sh", "scripts/server/init-core-nacos.py", "scripts/server/configure-core-integrations.py", "docs/server-core-cutover.md",
     "scripts/server/configure-core-nacos.py", "deploy/server/nacos/bootstrap.example.yml",
     "scripts/server/tradepass.py", "docs/server-operations.md",
+    "scripts/server/mq_resources.py", "docs/rocketmq-resources.md",
+    "deploy/server/rocketmq/resources.json", "deploy/server/rocketmq/resources.sh", "deploy/server/rocketmq/ResourceAdmin.java",
     "scripts/server/setup-core-jenkins.sh", "deploy/jenkins/compose.yml", "Jenkinsfile.core",
     "scripts/server/connect-core-jenkins.py", "scripts/server/build-jenkins-installer.py",
     "scripts/jenkins/release.sh", "scripts/jenkins/identity.sh", "scripts/jenkins/business.sh",
