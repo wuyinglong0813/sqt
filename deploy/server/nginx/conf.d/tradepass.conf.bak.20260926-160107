@@ -1,0 +1,53 @@
+server {
+    listen 80;
+    server_name _;
+    return 308 https://$host$request_uri;
+}
+
+
+server {
+    listen 443 ssl;
+
+    server_name api.sqt.org.cn;
+
+    server_tokens off;
+
+    ssl_certificate /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 12m;
+
+
+    location ^~ /internal {
+        return 404;
+    }
+
+
+    location ^~ /actuator {
+        return 404;
+    }
+
+
+    location / {
+
+        proxy_pass http://127.0.0.1:1110;
+
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+
+        proxy_set_header X-Real-IP $remote_addr;
+
+        proxy_set_header X-Forwarded-For $remote_addr;
+
+        proxy_set_header X-Forwarded-Proto https;
+
+        proxy_set_header X-TradePass-Internal-Key "";
+
+        proxy_set_header TX_XID "";
+
+        proxy_read_timeout 180s;
+    }
+}
