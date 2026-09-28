@@ -10,7 +10,7 @@
 - 遍历版本化清单，只创建缺失的 Topic/消费组，再回读 Broker 配置和 NameServer 路由。已有资源队列数至少达到清单要求，读写权限、消费开关和 Broker 身份必须正确；配置异常停止，不覆盖已有资源，不删除额外资源，不修改消息或消费位点。
 - `configure-core-nacos.py` 生成 `.runtime/rocketmq/resources.json`，按合并后的 Nacos 原生属性解析名称和 ACL，不使用过期 `.env` 的业务配置覆盖 Nacos。私有清单权限 600，只读挂入初始化容器。
 - core 发布/重启 business 前执行同一清单的 `ensure`，检查失败时不会停止运行中的应用。SSH 发布包同时携带检查程序与清单。
-- `scripts/server/all.sh start` 等启停脚本在 Broker 健康后执行 `ensure`；`all.sh check` / `business.sh check` / `infra.sh check` 会核对资源。`status` 仍只显示容器状态。启动流程需要现有业务容器的 Nacos 挂载；首次部署使用 Compose 初始化任务，或显式 `--bootstrap`。
+- `scripts/server/all.sh start` 等启停脚本在 Broker 健康后执行 `ensure`；`all.sh check` / `business.sh check` / `infra.sh check` 会核对资源。`status` 仍只显示容器状态。检查自动识别现有业务容器的环境变量或 Nacos bootstrap 挂载；首次部署使用 Compose 初始化任务，或显式 `--bootstrap`。
 - 新版 business 的 `/actuator/health/readiness` 包含 `callbackMessaging`，根据应用实际生效的 Topic/消费组，验证 NameServer 路由、上报地址能否连接、Broker Topic 可读写及消费组可用。端口通不再等同于业务就绪。`messaging` profile 要求启用 MQ。
 - CI 检查生产 MQ 适配器必须登记在清单中，并在关闭自动建 Topic/消费组的隔离 Broker 上验证：全量缺失检测、两个资源同时初始化、重复执行、错误 Broker 拒绝、额外资源保留、消费组禁用时拒绝覆盖。
 
@@ -22,7 +22,7 @@
 git pull --ff-only origin main
 
 # 只读盘点：全部 Broker Topic/消费组 + 项目清单逐项验收。
-# 读取业务容器挂载的 bootstrap，再只读获取 Nacos common/business 配置。
+# 自动识别现有容器配置；启用 Nacos 时只读获取 common/business 配置。
 python3 scripts/server/mq_resources.py audit
 
 # 正式初始化：遍历完整清单，补建缺项，回读验证；可重复执行。
@@ -33,6 +33,10 @@ bash scripts/server/all.sh check
 ```
 
 首次部署尚无业务容器时，可以传 `--bootstrap deploy/server/.runtime/nacos/bootstrap.yml`。检查程序限定 core 单机部署：NameServer `127.0.0.1:9876`、Broker `127.0.0.1:10911`；配置源、容器端口映射或 Broker 身份不一致会停止，不会转向默认集群继续补建。Nacos 无法读取也不会回退到默认名称。清单是待部署的 Nacos 配置；已运行应用的配置由它自身的 readiness 探针验证，Nacos 配置不会自动刷新到旧进程。
+
+现有服务器可能只有 `/root/logs` 挂载，并通过 `SPRING_PROFILES_ACTIVE=observability,filelog,nacos,core,messaging`、`NACOS_*` 和 `ROCKETMQ_*` 配置运行。这是支持的旧部署方式，无需为运行检查而创建 bootstrap 或重建容器。脚本从 `docker inspect` 读取该容器的配置和凭据，不读取操作员 shell 或旧 `.env`，不输出密码。没有启用 `nacos` profile 的环境变量部署不会访问 Nacos。
+
+直接的 Spring 环境变量覆盖原生属性；挂载 bootstrap 的方式按 Nacos 原生属性及容器占位符解析。旧 `nacos` profile 的远端配置优先级还受 profile 顺序和 Nacos preference 影响：若原生 MQ 属性与本地 messaging profile 的值冲突，脚本会报出属性名并停止，不猜测资源名称或输出配置值。自定义 JSON、配置位置或 JVM 参数中存在尚不支持的覆盖时也会停止。
 
 `audit/check` 不修改 MQ 配置，但会临时复制、编译检查程序，完成后清理自己的临时文件。`ALL_TOPICS` / `ALL_CONSUMER_GROUPS` 是全量列表，逐项结果全部为 true 且出现 `MQ_RESOURCES_OK` 才表示通过，失败返回非零。存在额外资源不视为错误；缺少预期资源或配置漂移会报错。
 

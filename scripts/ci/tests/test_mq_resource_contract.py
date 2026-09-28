@@ -110,5 +110,111 @@ class ResourceContractTest(unittest.TestCase):
             self.assertNotIn("mqadmin", str(init["command"]))
 
 
+class ExistingContainerConfigurationTest(unittest.TestCase):
+    def fixture(self, **overrides):
+        # This matches the server's reported layout: host network, only /root/logs mounted.
+        environment = {
+            "SPRING_PROFILES_ACTIVE": "observability,filelog,nacos,core,messaging",
+            "NACOS_SERVER_ADDR": "127.0.0.1:8848", "NACOS_GROUP": "TRADEPASS_CORE",
+            "NACOS_NAMESPACE": "", "NACOS_USERNAME": "nacos", "NACOS_PASSWORD": "private$nacos${literal}",
+            "ROCKETMQ_NAME_SERVER": "127.0.0.1:9876", "ROCKETMQ_CALLBACK_TOPIC": "tradepass-callback-events",
+            "ROCKETMQ_ACCESS_KEY": "", "ROCKETMQ_SECRET_KEY": "",
+            "SPRING_CLOUD_NACOS_DISCOVERY_IP": "127.0.0.1", "JAVA_OPTS": "-Xms64m -Xmx256m",
+        }
+        environment.update(overrides)
+        return {"HostConfig": {"NetworkMode": "host"},
+                "Config": {"Env": [key + "=" + value for key, value in environment.items()],
+                           "Entrypoint": ["sh", "/app/entrypoint.sh"], "Cmd": None},
+                "Mounts": [{"Type": "bind", "Destination": "/root/logs", "Source": "/docker/tradepass/logs"}]}
+
+    def test_reported_server_layout_reads_nacos_and_uses_container_mq_names(self):
+        with patch.object(mod, "run", return_value=json.dumps([self.fixture()])) as run, \
+                patch.object(mod, "read_nacos", return_value=({}, {"tradepass": {"configuration-version": 1}})) as read:
+            plan = mod.configured_plan()
+        self.assertEqual("tradepass-callback-events", plan["resources"][0]["topic"])
+        self.assertEqual("tradepass-contract-callback-consumer", plan["resources"][0]["consumerGroup"])
+        self.assertEqual("TRADEPASS_CORE", read.call_args.args[0]["group"])
+        self.assertEqual("private$nacos${literal}", read.call_args.args[0]["password"])
+        run.assert_called_once_with("docker", "inspect", "tradepass-core-business-1")
+
+    def test_legacy_custom_topic_group_and_acl_are_not_replaced_with_defaults(self):
+        fixture = self.fixture(ROCKETMQ_CALLBACK_TOPIC="custom-events", ROCKETMQ_CONSUMER_GROUP="custom-consumers",
+                               ROCKETMQ_ACCESS_KEY="mq-key", ROCKETMQ_SECRET_KEY="private-mq-secret")
+        with patch.object(mod, "run", return_value=json.dumps([fixture])), \
+                patch.object(mod, "read_nacos", return_value=({}, {})):
+            plan = mod.configured_plan()
+        self.assertEqual("custom-events", plan["resources"][0]["topic"])
+        self.assertEqual("custom-consumers", plan["resources"][0]["consumerGroup"])
+        self.assertEqual("private-mq-secret", plan["secretKey"])
+
+    def test_direct_spring_properties_override_remote_and_placeholder_aliases(self):
+        fixture = self.fixture(TRADEPASS_MESSAGING_ROCKETMQ_CALLBACK_TOPIC="direct-events")
+        with patch.object(mod, "run", return_value=json.dumps([fixture])), \
+                patch.object(mod, "read_nacos", return_value=({}, {mod.PREFIX + "callback-topic": "nacos-events"})):
+            plan = mod.configured_plan()
+        self.assertEqual("direct-events", plan["resources"][0]["topic"])
+
+    def test_legacy_conflicting_nacos_and_profile_values_are_rejected_without_values(self):
+        with patch.object(mod, "run", return_value=json.dumps([self.fixture()])), \
+                patch.object(mod, "read_nacos", return_value=({}, {mod.PREFIX + "callback-topic": "other-remote-events"})):
+            with self.assertRaisesRegex(ValueError, "配置冲突") as failure:
+                mod.configured_plan()
+        self.assertNotIn("other-remote-events", str(failure.exception))
+
+    def test_legacy_agreeing_remote_values_and_placeholders_are_supported(self):
+        remote = {mod.PREFIX + "enabled": True, mod.PREFIX + "name-server": "${ROCKETMQ_NAME_SERVER}",
+                  mod.PREFIX + "callback-topic": "${ROCKETMQ_CALLBACK_TOPIC:default-topic}"}
+        with patch.object(mod, "run", return_value=json.dumps([self.fixture()])), \
+                patch.object(mod, "read_nacos", return_value=({}, remote)):
+            self.assertEqual("tradepass-callback-events", mod.configured_plan()["resources"][0]["topic"])
+
+    def test_native_bootstrap_still_uses_remote_properties(self):
+        fixture = self.fixture(SPRING_PROFILES_ACTIVE="observability,filelog,core,messaging",
+                               SPRING_CONFIG_ADDITIONAL_LOCATION="file:/app/nacos-bootstrap.yml")
+        fixture["Mounts"].append({"Type": "bind", "Destination": "/app/nacos-bootstrap.yml", "Source": "/private/bootstrap.yml"})
+        options = {"enabled": True, "server-addr": "127.0.0.1:8848", "group": "TRADEPASS_CORE"}
+        with patch.object(mod, "run", return_value=json.dumps([fixture])), \
+                patch.object(mod, "nacos_options", return_value=options) as connection, \
+                patch.object(mod, "read_nacos", return_value=({}, {mod.PREFIX + "callback-topic": "native-events"})):
+            self.assertEqual("native-events", mod.configured_plan()["resources"][0]["topic"])
+        self.assertEqual(Path("/private/bootstrap.yml"), connection.call_args.args[0])
+
+    def test_no_nacos_profile_does_not_read_nacos_or_operator_shell(self):
+        fixture = self.fixture(SPRING_PROFILES_ACTIVE="observability,filelog,core,messaging")
+        with patch.object(mod, "run", return_value=json.dumps([fixture])), patch.object(mod, "read_nacos") as read, \
+                patch.dict("os.environ", {"ROCKETMQ_CALLBACK_TOPIC": "wrong-shell-topic"}):
+            self.assertEqual("tradepass-callback-events", mod.configured_plan()["resources"][0]["topic"])
+        read.assert_not_called()
+
+    def test_config_overrides_missing_mount_and_unconfirmed_profiles_stop_before_reading(self):
+        for overrides in ({"SPRING_APPLICATION_JSON": "private-json"}, {"JAVA_OPTS": "-Dtradepass.messaging.rocketmq.callback-topic=private"},
+                          {"SPRING_CONFIG_IMPORT": "file:/custom.yml"}, {"SPRING_PROFILES_ACTIVE": "unknown"},
+                          {"SPRING_CONFIG_ADDITIONAL_LOCATION": "file:/app/nacos-bootstrap.yml"}):
+            with self.subTest(overrides=list(overrides)), \
+                    patch.object(mod, "run", return_value=json.dumps([self.fixture(**overrides)])), \
+                    patch.object(mod, "read_nacos") as read:
+                with self.assertRaises(ValueError) as failure:
+                    mod.configured_plan()
+                self.assertNotIn("private", str(failure.exception))
+                read.assert_not_called()
+
+    def test_nacos_group_and_server_overrides_cannot_silently_point_elsewhere(self):
+        for overrides in ({"NACOS_SERVER_ADDR": "remote:8848"},
+                          {"SPRING_CLOUD_NACOS_CONFIG_GROUP": "OTHER_GROUP"},
+                          {"SPRING_CLOUD_NACOS_CONFIG_ENABLED": "false"}):
+            with self.subTest(overrides=list(overrides)), \
+                    patch.object(mod, "run", return_value=json.dumps([self.fixture(**overrides)])), \
+                    patch.object(mod, "read_nacos") as read:
+                with self.assertRaises(ValueError):
+                    mod.configured_plan()
+                read.assert_not_called()
+
+    def test_legacy_nacos_read_failure_never_falls_back_to_container_defaults(self):
+        with patch.object(mod, "run", return_value=json.dumps([self.fixture()])), \
+                patch.object(mod, "read_nacos", side_effect=ValueError("读取 Nacos 失败")):
+            with self.assertRaisesRegex(ValueError, "读取 Nacos 失败"):
+                mod.configured_plan()
+
+
 if __name__ == "__main__":
     unittest.main()

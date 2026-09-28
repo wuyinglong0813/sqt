@@ -37,25 +37,85 @@ def get_path(document, path, default=None):
     return found[0] if found else default
 
 
-def resolve_plan(catalog, common, business):
-    """Resolve the native Nacos keys used by core, never from an old .env file."""
-    def value(key, fallback=None):
-        return get_path(business, key, get_path(common, key, fallback))
-    if value(PREFIX + "enabled", True) is not True:
+def environment_value(environment, property_name, default=None):
+    # Direct Spring properties override YAML; ROCKETMQ_* are only YAML placeholders.
+    names = {property_name, property_name.upper().replace(".", "_").replace("-", "_"),
+             property_name.upper().replace(".", "_").replace("-", "")}
+    found = [environment[name] for name in names if name in environment]
+    if len(set(found)) > 1:
+        raise ValueError("容器中存在冲突的属性覆盖：" + property_name)
+    return found[0] if found else default
+
+
+def resolve_plan(catalog, common, business, environment=None, legacy_profile=False):
+    """Resolve supported config sources; reject ambiguous legacy profile/Nacos overlaps."""
+    environment = environment or {}
+    missing = object()
+
+    def remote_value(key):
+        return get_path(business, key, get_path(common, key, missing))
+
+    def expand(value):
+        # Resolve Nacos YAML placeholders from this container, never the operator's shell/.env.
+        if not isinstance(value, str):
+            return value
+        pattern = re.compile(r"\$\{([^:{}]+)(?::([^{}]*))?}")
+        for _ in range(10):
+            if "${" not in value:
+                return value
+            def replace(match):
+                key, fallback = match.groups()
+                replacement = environment_value(environment, key, remote_value(key))
+                if replacement is missing:
+                    if fallback is None:
+                        raise ValueError("Nacos MQ 配置含无法解析的占位符")
+                    replacement = fallback
+                return str(replacement)
+            updated = pattern.sub(replace, value)
+            if updated == value:
+                break
+            value = updated
+        raise ValueError("Nacos MQ 配置含循环或不支持的占位符")
+
+    def value(key, fallback=None, alias=None):
+        direct = environment_value(environment, key, missing)
+        if direct is not missing:
+            return direct
+        remote = remote_value(key)
+        local = environment.get(alias, fallback) if alias else fallback
+        if remote is not missing:
+            resolved = expand(remote)
+            # The old nacos profile imports remote data alongside application-messaging.yml.
+            # Nacos config.preference and profile ordering can affect which wins. Do not guess
+            # when the two sources disagree; direct Spring environment overrides are unambiguous.
+            if legacy_profile:
+                left, right = str(resolved), str(local)
+                if key.endswith(".enabled"):
+                    left, right = left.lower(), right.lower()
+                if left != right:
+                    raise ValueError("旧部署的 Nacos 与 messaging profile 配置冲突：" + key
+                                     + "；无法确认生效值，未初始化资源（未输出配置值）")
+            return resolved
+        return local
+
+    if str(value(PREFIX + "enabled", True)).lower() != "true":
         raise ValueError("Core 业务必须启用 RocketMQ，配置为关闭时不能通过检查")
-    if value(PREFIX + "name-server") != "127.0.0.1:9876":
+    if value(PREFIX + "name-server", alias="ROCKETMQ_NAME_SERVER") != "127.0.0.1:9876":
         raise ValueError("此检查适用于 core 本机 NameServer 127.0.0.1:9876；拒绝检查错误集群")
     plan = copy.deepcopy(catalog)
     plan["advertisedAddress"] = "127.0.0.1:10911"
     for resource in plan["resources"]:
         for name in ("topic", "consumerGroup"):
-            resource[name] = value(resource[name + "Property"], resource[name])
+            prop = resource[name + "Property"]
+            # Backward compatible catalog entries derive the application-messaging aliases.
+            alias = resource.get(name + "Env") or "ROCKETMQ_" + (prop[len(PREFIX):] if prop.startswith(PREFIX) else prop).upper().replace("-", "_")
+            resource[name] = value(prop, resource[name], alias)
             if not isinstance(resource[name], str) or not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_%-]{0,126}", resource[name]):
                 raise ValueError(resource["id"] + " 的 Topic/消费组配置无效或包含未解析占位符")
-    plan["accessKey"] = value(PREFIX + "access-key", "")
-    plan["secretKey"] = value(PREFIX + "secret-key", "")
-    if any(not isinstance(plan[key], str) or "${" in plan[key] for key in ("accessKey", "secretKey")):
-        raise ValueError("RocketMQ ACL 配置包含未解析占位符")
+    plan["accessKey"] = value(PREFIX + "access-key", "", "ROCKETMQ_ACCESS_KEY")
+    plan["secretKey"] = value(PREFIX + "secret-key", "", "ROCKETMQ_SECRET_KEY")
+    if any(not isinstance(plan[key], str) for key in ("accessKey", "secretKey")):
+        raise ValueError("RocketMQ ACL 配置必须为字符串")
     if bool(plan["accessKey"]) != bool(plan["secretKey"]):
         raise ValueError("RocketMQ ACL 必须同时配置 access-key 和 secret-key")
     return plan
@@ -71,37 +131,69 @@ def run(*command, input=None):
     return result.stdout.strip()
 
 
-def configured_plan(bootstrap=None):
-    if bootstrap is None:
-        info = json.loads(run("docker", "inspect", "tradepass-core-business-1"))[0]
-        if info["HostConfig"].get("NetworkMode") != "host":
-            raise ValueError("仅支持 core host 网络部署")
-        mounts = [item["Source"] for item in info["Mounts"] if item["Destination"] == "/app/nacos-bootstrap.yml"]
-        if len(mounts) != 1:
-            raise ValueError("未找到业务容器的 Nacos bootstrap；请使用 --bootstrap 明确指定启动文件")
-        bootstrap = Path(mounts[0])
-        # Native Nacos is authoritative in this deployment. Refuse ambiguous overrides.
-        config = info["Config"]
-        for entry in config.get("Env", []):
-            key, _, value = entry.partition("=")
-            if (key.startswith(("ROCKETMQ_", "TRADEPASS_MESSAGING_"))
-                    or key == "SPRING_APPLICATION_JSON" or key.startswith("SPRING_CLOUD_NACOS_")
-                    or key in ("SPRING_CONFIG_IMPORT", "SPRING_CONFIG_LOCATION")
-                    or (key == "SPRING_CONFIG_ADDITIONAL_LOCATION" and value != "file:/app/nacos-bootstrap.yml")
-                    or (key == "SPRING_APPLICATION_NAME" and value != "tradepass-business")
-                    or any(prop in value for prop in ("tradepass.messaging", "spring.cloud.nacos", "spring.config.import", "spring.config.location"))):
-                raise ValueError("业务容器存在额外 MQ 配置覆盖，请先统一为 Nacos 原生配置")
-        if any(prop in json.dumps([config.get("Cmd"), config.get("Entrypoint")]) for prop in (
-                "tradepass.messaging", "spring.cloud.nacos", "spring.config.import", "spring.config.location", "spring.application.name")):
-            raise ValueError("业务启动参数覆盖 MQ 配置，请先统一为 Nacos 原生配置")
-    boot = yaml.safe_load(bootstrap.read_text())
-    options = get_path(boot, "spring.cloud.nacos.config")
-    if not isinstance(options, dict) or options.get("enabled") is not True or not re.fullmatch(r"(?:127\.0\.0\.1|localhost):[0-9]+", options.get("server-addr", "")):
-        raise ValueError("无效的本机 Nacos bootstrap")
+def runtime_source(info):
+    """Identify supported running-container layouts without requiring a migration/restart."""
+    if info["HostConfig"].get("NetworkMode") != "host":
+        raise ValueError("仅支持 core host 网络部署")
+    config = info["Config"]
+    environment = dict(entry.split("=", 1) for entry in config.get("Env", []))
+    for key in ("SPRING_APPLICATION_JSON", "SPRING_CONFIG_IMPORT", "SPRING_CONFIG_LOCATION", "SPRING_PROFILES_INCLUDE"):
+        if environment.get(key):
+            raise ValueError("容器使用尚不支持的配置覆盖：" + key + "；已停止，未按默认值初始化")
+    name = environment.get("SPRING_APPLICATION_NAME", "tradepass-business")
+    if name != "tradepass-business":
+        raise ValueError("业务容器 application name 与预期不一致")
+    # Shell/JVM overrides need an explicit parser; never silently initialize the wrong resources.
+    arguments = json.dumps([config.get("Cmd"), config.get("Entrypoint"),
+                            *[environment.get(key, "") for key in ("JAVA_OPTS", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")]])
+    if any(prop in arguments.lower() for prop in ("tradepass.messaging", "spring.cloud.nacos", "spring.config.",
+                                                 "spring.application.name", "spring.profiles.", "nacos_", "rocketmq_")):
+        raise ValueError("启动参数包含未解析的 MQ/Nacos 配置覆盖；已停止，未按默认值初始化")
+    mounts = [item for item in info.get("Mounts", []) if item["Destination"] == "/app/nacos-bootstrap.yml"]
+    location = environment.get("SPRING_CONFIG_ADDITIONAL_LOCATION", "")
+    if location:
+        if location != "file:/app/nacos-bootstrap.yml" or len(mounts) != 1 or mounts[0].get("Type") != "bind":
+            raise ValueError("无法定位 SPRING_CONFIG_ADDITIONAL_LOCATION 对应的 bootstrap 挂载")
+        return Path(mounts[0]["Source"]), environment, True
+    if mounts:
+        raise ValueError("存在 bootstrap 挂载但未启用其配置位置；无法确认实际配置源")
+    profiles = {profile.strip() for profile in environment.get("SPRING_PROFILES_ACTIVE", "").split(",")}
+    if not {"core", "messaging"} <= profiles:
+        raise ValueError("未确认业务容器启用 core、messaging profile；已停止，未按默认值初始化")
+    return None, environment, "nacos" in profiles
+
+
+def nacos_options(bootstrap, environment):
+    if bootstrap is not None:
+        boot = yaml.safe_load(bootstrap.read_text())
+        options = get_path(boot, "spring.cloud.nacos.config")
+        if not isinstance(options, dict):
+            raise ValueError("bootstrap 缺少 Nacos config 配置")
+        # A direct Spring environment override also overrides the mounted YAML.
+        options = {key: environment_value(environment, "spring.cloud.nacos.config." + key, value)
+                   for key, value in options.items()}
+        imports = get_path(boot, "spring.config.import")
+    else:
+        defaults = {"server-addr": "127.0.0.1:8848", "namespace": "", "group": "TRADEPASS", "username": "", "password": ""}
+        aliases = {"server-addr": "NACOS_SERVER_ADDR", "namespace": "NACOS_NAMESPACE", "group": "NACOS_GROUP",
+                   "username": "NACOS_USERNAME", "password": "NACOS_PASSWORD"}
+        options = {key: environment_value(environment, "spring.cloud.nacos.config." + key,
+                                          environment.get(aliases[key], value)) for key, value in defaults.items()}
+        options["enabled"] = environment_value(environment, "spring.cloud.nacos.config.enabled", True)
+        # The packaged application's import query uses NACOS_GROUP, independently of config.group.
+        group = environment.get("NACOS_GROUP", "TRADEPASS")
+        imports = ["nacos:" + name + ".yaml?group=" + group + "&refreshEnabled=false"
+                   for name in ("tradepass-common", "${spring.application.name}")]
+    if str(options.get("enabled")).lower() != "true" or not re.fullmatch(r"(?:127\.0\.0\.1|localhost):[0-9]+", options.get("server-addr", "")):
+        raise ValueError("无效的本机 Nacos 配置")
     expected_imports = ["nacos:" + name + ".yaml?group=" + options.get("group", "") + "&refreshEnabled=false"
                         for name in ("tradepass-common", "${spring.application.name}")]
-    if get_path(boot, "spring.config.import") != expected_imports:
-        raise ValueError("Nacos import 列表与 core 配置不一致；拒绝按错误的配置源初始化")
+    if imports != expected_imports:
+        raise ValueError("Nacos import 列表或分组与 core 配置不一致；拒绝按错误的配置源初始化")
+    return options
+
+
+def read_nacos(options):
     spec = importlib.util.spec_from_file_location("mq_nacos_reader", CONFIGURATOR)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -115,7 +207,21 @@ def configured_plan(bootstrap=None):
         raise ValueError("读取 Nacos 失败；未按默认值继续，未输出凭据") from None
     if not all(isinstance(config, dict) for config in configs):
         raise ValueError("Nacos common/business 配置缺失")
-    return resolve_plan(json.loads((ASSETS / "resources.json").read_text()), *configs)
+    return configs
+
+
+def configured_plan(bootstrap=None):
+    environment = {}
+    uses_nacos = True
+    if bootstrap is None:
+        info = json.loads(run("docker", "inspect", "tradepass-core-business-1"))[0]
+        bootstrap, environment, uses_nacos = runtime_source(info)
+    configs = read_nacos(nacos_options(bootstrap, environment)) if uses_nacos else ({}, {})
+    plan = resolve_plan(json.loads((ASSETS / "resources.json").read_text()), *configs, environment,
+                        legacy_profile=uses_nacos and bootstrap is None)
+    source = "挂载 bootstrap + Nacos" if bootstrap else "容器环境变量 + Nacos" if uses_nacos else "容器环境变量"
+    print("配置来源：" + source, flush=True)
+    return plan
 
 
 def verify_mapping(broker):
@@ -157,7 +263,7 @@ def execute(mode, plan, broker):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("audit", "check", "ensure"), nargs="?", default="audit")
-    parser.add_argument("--bootstrap", type=Path, help="首次部署时的 Nacos bootstrap；通常自动从业务容器挂载定位")
+    parser.add_argument("--bootstrap", type=Path, help="首次部署时的 Nacos bootstrap；现有部署自动识别容器环境变量或挂载配置")
     parser.add_argument("--broker", default="tradepass-infra-static-rocketmq-broker-1")
     args = parser.parse_args(argv)
     plan = configured_plan(args.bootstrap)
