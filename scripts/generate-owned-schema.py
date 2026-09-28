@@ -89,7 +89,10 @@ def local_constraints(sql, tables):
     return sql
 
 def generate():
-    ordered = sorted(MIGRATIONS.glob('V*.sql'), key=lambda p: int(p.name.split('__')[0][1:]))
+    # V1 is already deployed: never fold later policy migrations into its checksum.
+    # V37 / owned V2 remove all FKs after the frozen baseline is applied.
+    ordered = sorted((p for p in MIGRATIONS.glob('V*.sql') if int(p.name.split('__')[0][1:]) <= 36),
+                     key=lambda p: int(p.name.split('__')[0][1:]))
     if int(ordered[-1].name.split('__')[0][1:]) != 36:
         raise ValueError('Review ownership and baseline version before incorporating new migrations')
     all_sql = [(path.name, sql) for path in ordered for sql in statements(path.read_text())]

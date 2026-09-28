@@ -142,6 +142,10 @@ class MysqlWorkflowConcurrencyTest {
         }
         flyway.migrate();
         flyway.validate();
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.table_constraints
+                WHERE constraint_schema = DATABASE() AND constraint_type = 'FOREIGN KEY'
+                """, Long.class)).as("All physical foreign keys must be removed after migration").isZero();
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(BusinessDocumentMapper.class);

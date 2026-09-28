@@ -46,8 +46,10 @@ public final class MergeBusinessMigration {
                 if (!tables(source).equals(expected)) throw new IllegalStateException("Unreviewed source table inventory: " + role);
                 try (var statement = source.createStatement(); var rows = statement.executeQuery(
                         "SELECT COUNT(*), MAX(CAST(version AS UNSIGNED)), SUM(success = 0) FROM flyway_schema_history WHERE version IS NOT NULL")) {
-                    if (!rows.next() || rows.getInt(1) != 1 || rows.getInt(2) != 1 || rows.getInt(3) != 0) {
-                        throw new IllegalStateException("Source must match the reviewed owned V1 baseline: " + role);
+                    if (!rows.next() || rows.getInt(3) != 0
+                            || !((rows.getInt(1) == 1 && rows.getInt(2) == 1)
+                            || (rows.getInt(1) == 2 && rows.getInt(2) == 2))) {
+                        throw new IllegalStateException("Source must match owned V1, optionally with FK-removal V2: " + role);
                     }
                 }
                 if (count(source, "undo_log") != 0) throw new IllegalStateException("Pending Seata undo records: " + role);
@@ -59,7 +61,6 @@ public final class MergeBusinessMigration {
                     .baselineOnMigrate(false).load().migrate();
             target.setAutoCommit(false);
             try {
-                execute(target, "SET FOREIGN_KEY_CHECKS=0");
                 long auditRows = 0;
                 for (String role : ROLES) {
                     Connection source = sources.get(role);
@@ -71,8 +72,7 @@ public final class MergeBusinessMigration {
                     auditRows += copyVerified(source, target, "audit_log");
                 }
                 if (count(target, "audit_log") != auditRows) throw new IllegalStateException("Audit count mismatch");
-                verifyForeignKeys(target);
-                execute(target, "SET FOREIGN_KEY_CHECKS=1");
+                verifyRelationships(target);
                 target.commit();
                 System.out.println("Business copy committed after exact row verification. Original databases unchanged.");
             } catch (Exception failure) {
@@ -124,23 +124,19 @@ public final class MergeBusinessMigration {
         return count;
     }
 
-    private static void verifyForeignKeys(Connection target) throws SQLException {
-        // Re-enabling FOREIGN_KEY_CHECKS does not validate rows copied while it was disabled.
-        for (String table : tables(target)) {
-            var constraints = new LinkedHashMap<String, List<String[]>>();
-            try (var rows = target.getMetaData().getImportedKeys(target.getCatalog(), null, table)) {
-                while (rows.next()) constraints.computeIfAbsent(rows.getString("FK_NAME"), ignored -> new ArrayList<>())
-                        .add(new String[]{rows.getString("FKCOLUMN_NAME"), rows.getString("PKTABLE_NAME"), rows.getString("PKCOLUMN_NAME")});
-            }
-            for (var parts : constraints.values()) {
-                String present = String.join(" AND ", parts.stream().map(p -> "c." + id(p[0]) + " IS NOT NULL").toList());
-                String match = String.join(" AND ", parts.stream().map(p -> "p." + id(p[2]) + "=c." + id(p[0])).toList());
-                String sql = "SELECT COUNT(*) FROM " + id(table) + " c WHERE " + present
-                        + " AND NOT EXISTS (SELECT 1 FROM " + id(parts.get(0)[1]) + " p WHERE " + match + ")";
-                try (var statement = target.createStatement(); var rows = statement.executeQuery(sql)) {
-                    rows.next();
-                    if (rows.getLong(1) != 0) throw new IllegalStateException("Orphaned foreign keys: " + table);
-                }
+    private static void verifyRelationships(Connection target) throws SQLException {
+        // Preserve the offline copy's consistency checks without database constraints.
+        for (String[] relation : List.of(
+                new String[]{"project_contract_assignment", "project_id", "project_ledger"},
+                new String[]{"project_contract_assignment", "contract_id", "trade_contract"},
+                new String[]{"fadada_contract_sign_task", "contract_id", "trade_contract"},
+                new String[]{"project_contract_prompt_preference", "contract_id", "trade_contract"})) {
+            String sql = "SELECT COUNT(*) FROM " + id(relation[0]) + " c WHERE c." + id(relation[1])
+                    + " IS NOT NULL AND NOT EXISTS (SELECT 1 FROM " + id(relation[2])
+                    + " p WHERE p.id=c." + id(relation[1]) + ")";
+            try (var statement = target.createStatement(); var rows = statement.executeQuery(sql)) {
+                rows.next();
+                if (rows.getLong(1) != 0) throw new IllegalStateException("Orphaned business reference: " + relation[0]);
             }
         }
     }
@@ -156,9 +152,6 @@ public final class MergeBusinessMigration {
         try (var statement = connection.createStatement(); var rows = statement.executeQuery("SELECT COUNT(*) FROM " + id(table))) {
             rows.next(); return rows.getLong(1);
         }
-    }
-    private static void execute(Connection connection, String sql) throws SQLException {
-        try (var statement = connection.createStatement()) { statement.execute(sql); }
     }
     private static String id(String name) {
         if (!name.matches("[a-zA-Z_][a-zA-Z0-9_]*")) throw new IllegalArgumentException("Invalid SQL identifier");

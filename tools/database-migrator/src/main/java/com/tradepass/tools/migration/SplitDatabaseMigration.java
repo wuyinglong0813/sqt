@@ -72,7 +72,6 @@ public final class SplitDatabaseMigration {
                 Flyway.configure().dataSource(target.url(), target.user(), target.password())
                         .locations("classpath:db/owned/" + target.role()).baselineOnMigrate(false).load().migrate();
                 target.connection().setAutoCommit(false);
-                execute(target.connection(), "SET FOREIGN_KEY_CHECKS=0");
                 // The baseline creates only system permission seed data. Replace it with the source's exact definitions.
                 if (target.role().equals("identity")) execute(target.connection(), "DELETE FROM perm_def");
             }
@@ -82,7 +81,6 @@ public final class SplitDatabaseMigration {
             }
             // Nothing is committed until every table has passed its row count and content hash comparison.
             for (Target target : targets) {
-                execute(target.connection(), "SET FOREIGN_KEY_CHECKS=1");
                 target.connection().commit();
                 System.out.println("Committed " + target.role());
             }
@@ -153,7 +151,9 @@ public final class SplitDatabaseMigration {
     private static void requireSourceVersion(Connection source) throws SQLException {
         try (var statement = source.createStatement(); var rows = statement.executeQuery(
                 "SELECT MAX(CAST(version AS UNSIGNED)), SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) FROM flyway_schema_history")) {
-            if (!rows.next() || rows.getInt(1) != 36 || rows.getInt(2) != 0) throw new IllegalStateException("Source must have successfully completed V36");
+            if (!rows.next() || (rows.getInt(1) != 36 && rows.getInt(1) != 37) || rows.getInt(2) != 0) {
+                throw new IllegalStateException("Source must have completed V36, optionally with FK-removal V37");
+            }
         }
     }
     private static void requireEmpty(Connection target) throws SQLException {
