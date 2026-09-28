@@ -77,6 +77,56 @@ class FadadaCompanyVerificationTest {
         verify(f.gateway, never()).getCompany(any(), any());
     }
 
+    @ParameterizedTest
+    @CsvSource({"legal_rep,LEGAL", "deputy_auth,ADMIN"})
+    void callbackOperatorAccountAndCertificationMethodProveTheRoleWhenQueryOmitsOperator(
+            String method, CertifiedApplicantRole role) {
+        var f = new Fixture(); f.detailWithoutOperator(method);
+        assertThat(f.service.syncCallback("local-3", "corp-3", operatorCallback(method, "tradepass-user-7")).status())
+                .isEqualTo("VERIFIED");
+        verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(), eq(role));
+        assertThat(f.identity.getOperatorType()).isEqualTo(method);
+        assertThat(f.identity.getOperatorId()).isEqualTo("tradepass-user-7");
+        assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
+    }
+
+    @Test
+    void callbackForAnotherOperatorAccountDoesNotActivateTheApplicant() {
+        var f = new Fixture(); f.detailWithoutOperator("legal_rep");
+        var result = f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-9"));
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.failureReason()).contains("标识不一致");
+        verifyNoInteractions(f.certifications);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"payment,payment", "offline,offline", "legal_rep,deputy_auth"})
+    void callbackOperatorWithoutADocumentedRoleStaysPending(String queried, String notified) {
+        var f = new Fixture(); f.detailWithoutOperator(queried);
+        var result = f.service.syncCallback("local-3", "corp-3", operatorCallback(notified, "tradepass-user-7"));
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.failureReason()).isNotBlank();
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void storedCallbackOperatorDoesNotLetAnotherMemberClaimTheLegalRole() {
+        var f = new Fixture(); f.detailWithoutOperator("legal_rep");
+        f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-7"));
+        when(f.personal.verifiedOpenUserId(9L)).thenReturn("open-user-9");
+        AuthContext.set(9L, 3L);
+        try {
+            assertThat(f.service.syncLegalRepresentative(3L).status()).isEqualTo("IN_PROGRESS");
+            verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
+        } finally { AuthContext.clear(); }
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode operatorCallback(String method, String operator) {
+        var data = companyCallback().put("corpIdentMethod", method);
+        data.putArray("clientUserIds").add(operator);
+        return data;
+    }
+
     private com.fasterxml.jackson.databind.node.ObjectNode companyCallback() {
         var data = new ObjectMapper().createObjectNode().put("_verifiedEvent", "corp-authorize")
                 .put("clientCorpId", "local-3").put("openCorpId", "corp-3")
@@ -383,6 +433,10 @@ class FadadaCompanyVerificationTest {
         void detail(String type, String operatorId, String status) {
             when(gateway.getIdentity("corp-3")).thenReturn(new FadadaCompanyGateway.CompanyIdentity(
                     "corp-3", status, "认证企业", "TEST-CREDIT", "张三", "letter", null, null, type, operatorId));
+        }
+        void detailWithoutOperator(String identMethod) {
+            when(gateway.getIdentity("corp-3")).thenReturn(new FadadaCompanyGateway.CompanyIdentity(
+                    "corp-3", "identified", "认证企业", "TEST-CREDIT", "张三", identMethod, null, null, null, null));
         }
     }
 

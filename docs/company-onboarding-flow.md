@@ -73,7 +73,7 @@ flowchart TD
 
 ## 经办人身份与权限修正
 
-- 经办人类型来自法大大 SDK 的 `CorpIdentityInfoRes.operatorType`：`legal_rep` 表示企业法定代表人，`deputy_auth` 表示授权代理人。不得用填写的法人姓名、姓名相同、某一种认证方式或企业认证通过来推断申请人是法人。
+- 经办人类型来自法大大 SDK 的 `CorpIdentityInfoRes.operatorType`：`legal_rep` 表示企业法定代表人，`deputy_auth` 表示授权代理人。不得用填写的法人姓名、姓名相同或企业认证通过来推断申请人是法人。实名详情不返回经办人时，按下文「2026-09-28：按官方文档取得经办人证据」以授权回调的经办人帐号加 `corpIdentMethod` 判定。
 - 企业与认证详情须对应同一企业，认证状态须已通过，平台授权须完成且包含所需范围；认证返回的经办人标识须与申请账号已实名的法大大用户标识一致。信息缺失或不一致时保留待核验状态，不自动授予权限。真机验收需核对实际返回的经办人标识与本地实名账号标识，不能为让流程通过而放宽为姓名匹配。
 - 法人本人使用 `LEGAL`，`is_legal_person=true`；授权代理人使用 `ADMIN`，`is_legal_person=false`、`is_administrator=true`。授予角色时同步重置角色集合并清除候选身份上的额外权限。管理员使用现有管理员权限，不获得 `all`，不获得仅法人可执行的操作权限。
 - 管理员可通过企业管理权限查看和同步认证，通过印章管理权限进入印章管理；法人专属权限校验保持有效。签署等业务仍需对应的业务权限和服务商授权。
@@ -92,6 +92,14 @@ flowchart TD
 - 经办人标识缺失与不一致分别提示，均不自动授予企业权限。异常提示在第三方完成回跳或用户主动查询结果后展示；认证填写期间不因查询提示跳离页面（见 2026-09-28 修正）。
 - 官方企业身份接口示例的 `operatorId`、`operatorType` 是空串，参数表未说明这两个字段的标识域。SDK 有字段不代表每次一定返回，也不能由此断言 `operatorId` 必定等于 `openUserId`。当前仍保留既有严格校验；体验版“上海哦哦啊”的实际失败原因及正确映射，需取得服务商真实响应并核对，不能靠姓名匹配、直接改库或跳过权限校验解决。
 - 本轮只修改本地源码；需同时发布 identity 后端和小程序，并做真机验收。自动化测试使用接口替身，不代表体验版认证已恢复。
+
+## 2026-09-28：按官方文档取得经办人证据
+
+- 体验版实测：企业以 `legal_rep` 方式认证通过后，`/corp/get-identity-info` 响应中不存在 `operatorId`、`operatorType`、`operatorIdentMethod`（请求号 `877f886c28124bc2b3cc3426b0da781a`）。官方 v5.1 参数表同样未列出这三个字段。
+- 官方「企业用户授权事件」文档的 `corp-authorize` 带 `clientUserIds`（本次授权经办人帐号建立免登关系的 clientUserId）、`memberId` 和 `corpIdentMethod`；`corpIdentMethod` 的 `legal_rep` 定义为经办人是法定代表人，`deputy_auth` 定义为经办人是代理人。回调入口保存这三个字段，此前的白名单会丢弃它们。
+- 经办人判定顺序：实名详情返回 `operatorId` 时仍按原规则与申请人 `openUserId` 比对；未返回时，已验签且完成的 `corp-authorize` 须包含申请人的 clientUserId，认证方式取实名详情的 `corpIdentMethod`（回调同时携带时两者须一致），`legal_rep` 开通法人、`deputy_auth` 开通管理员，`payment`、`offline` 等未说明经办人身份的方式保持待核验。仍不使用姓名匹配。
+- 判定成功后在 `operator_type`/`operator_id` 保存认证方式和经办人 clientUserId。之后的主动同步没有回调时，只在实名详情认证方式未变、且保存的经办人是当前申请人时沿用；法人补位不能借用他人保存的证据。
+- 本次修复前已入库的 `corp-authorize` 没有保存 `clientUserIds`，无法事后补齐，需要重新发起企业授权或由法大大重推回调。需同时发布 business（回调入口）和 identity（经办人判定）。
 
 官方依据（2026-09-26 查询）：
 

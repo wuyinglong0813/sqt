@@ -115,7 +115,7 @@ public class FadadaCallbackService {
             for (String field : java.util.List.of("clientUserId", "clientCorpId", "openCorpId", "signTaskId",
                     "openUserId", "existOpenUserId", "authResult", "verifyStatus", "corpIdentProcessStatus",
                     "corpIdentFailedReason", "authFailedReason", "identProcessStatus", "identMethod", "identFailedReason",
-                    "eventTime", "availableStatus", "userName", "corpName", "corpIdentNo")) {
+                    "eventTime", "availableStatus", "userName", "corpName", "corpIdentNo", "corpIdentMethod", "memberId")) {
                 var value = source.get(field);
                 if (value != null && value.isValueNode() && !value.isNull()) {
                     String text = value.asText();
@@ -132,6 +132,17 @@ public class FadadaCallbackService {
                         throw new IllegalArgumentException("Invalid authorization scopes");
                     }
                     safeScopes.add(scope.asText());
+                }
+            }
+            // corp-authorize names the operator accounts that completed this authorization.
+            JsonNode operators = source.get("clientUserIds");
+            if (operators != null && operators.isArray() && operators.size() <= 32) {
+                var safeOperators = result.putArray("clientUserIds");
+                for (JsonNode operator : operators) {
+                    if (!operator.isTextual() || operator.asText().length() > 64) {
+                        throw new IllegalArgumentException("Invalid operator identifiers");
+                    }
+                    safeOperators.add(operator.asText());
                 }
             }
             return result.toString();

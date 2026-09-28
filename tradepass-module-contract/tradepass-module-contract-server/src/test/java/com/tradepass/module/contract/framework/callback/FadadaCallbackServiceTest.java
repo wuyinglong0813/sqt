@@ -65,6 +65,20 @@ class FadadaCallbackServiceTest {
     }
 
     @Test
+    void keepsDocumentedCorpAuthorizeOperatorEvidence() throws Exception {
+        String body = "{\"clientCorpId\":\"c-1\",\"clientUserIds\":[\"tradepass-user-7\"],\"memberId\":\"m-1\","
+                + "\"corpIdentMethod\":\"legal_rep\",\"legalRepIdentNo\":\"secret\"}";
+        AtomicReference<FadadaCallbackEventDO> saved = new AtomicReference<>();
+        doAnswer(invocation -> { FadadaCallbackEventDO event = invocation.getArgument(0); event.setId(40L); saved.set(event); return 1; })
+                .when(eventMapper).insert(any(FadadaCallbackEventDO.class));
+
+        service.accept(signedHeaders(body, "corp-authorize", "nonce-40"), body);
+
+        assertThat(saved.get().getRetryPayload()).isEqualTo("{\"clientCorpId\":\"c-1\",\"corpIdentMethod\":\"legal_rep\","
+                + "\"memberId\":\"m-1\",\"clientUserIds\":[\"tradepass-user-7\"]}");
+    }
+
+    @Test
     void failedLegacyEventCanRecoverFromProviderRedelivery() throws Exception {
         String body = "{\"signTaskId\":\"task-9\"}";
         FadadaCallbackEventDO event = new FadadaCallbackEventDO(); event.setId(29L); event.setStatus("FAILED");

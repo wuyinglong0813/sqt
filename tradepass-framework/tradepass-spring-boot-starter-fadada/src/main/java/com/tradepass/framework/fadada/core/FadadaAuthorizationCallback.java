@@ -25,7 +25,16 @@ public final class FadadaAuthorizationCallback {
     }
 
     public static List<String> scopes(JsonNode data) {
-        JsonNode values = data == null ? null : data.get("authScope");
+        return strings(data, "authScope");
+    }
+
+    /** Operator accounts that established login mapping during this corp-authorize. */
+    public static List<String> clientUserIds(JsonNode data) {
+        return strings(data, "clientUserIds");
+    }
+
+    private static List<String> strings(JsonNode data, String field) {
+        JsonNode values = data == null ? null : data.get(field);
         if (values == null || !values.isArray()) return List.of();
         List<String> result = new ArrayList<>();
         for (JsonNode value : values) {
