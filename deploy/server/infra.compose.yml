@@ -15,6 +15,7 @@ services:
     mem_limit: 768m
     stop_grace_period: 90s
     environment:
+      TZ: Asia/Shanghai
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Fill MYSQL_ROOT_PASSWORD in .env}
       IDENTITY_DB_PASSWORD: ${IDENTITY_DB_PASSWORD:?Generate an independent 64-character hex password}
       CONTRACT_DB_PASSWORD: ${CONTRACT_DB_PASSWORD:?Generate an independent 64-character hex password}
@@ -27,6 +28,7 @@ services:
       - --collation-server=utf8mb4_0900_ai_ci
       - --innodb-buffer-pool-size=64M
       - --max-connections=60
+      - --default-time-zone=+08:00
     volumes:
       - mysql-data:/var/lib/mysql
       - ./mysql/10-owned-databases.sh:/docker-entrypoint-initdb.d/10-owned-databases.sh:ro
