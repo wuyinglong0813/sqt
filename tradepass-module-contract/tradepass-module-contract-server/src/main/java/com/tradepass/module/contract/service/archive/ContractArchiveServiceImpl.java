@@ -12,6 +12,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
 import java.util.List;
 
 @Service
@@ -47,9 +48,7 @@ public class ContractArchiveServiceImpl implements ContractArchiveService {
         int versionNo = contract.versionNo() == null ? 1 : contract.versionNo();
         if (find(contractId, versionNo) != null) return;
         String sha256 = FileTypeInspector.sha256(pdf);
-        long companyId = parseId(contract.companyId());
-        String objectKey = keyPrefix() + "/contract/" + companyId + "/" + contractId
-                + "/v" + versionNo + "/signed-" + sha256 + ".pdf";
+        String objectKey = objectKey(contract, versionNo, "signed.pdf");
         ObjectStorageService.StoredObject stored = objectStorageService.putImmutable(
                 objectKey, pdf, PDF_CONTENT_TYPE, sha256);
         try {
@@ -97,9 +96,7 @@ public class ContractArchiveServiceImpl implements ContractArchiveService {
 
         byte[] pdf = pdfService.generate(contract);
         String sha256 = FileTypeInspector.sha256(pdf);
-        long companyId = parseId(contract.companyId());
-        String objectKey = keyPrefix() + "/contract/" + companyId + "/" + contractId
-                + "/v" + versionNo + "/" + sha256 + ".pdf";
+        String objectKey = objectKey(contract, versionNo, "contract.pdf");
         ObjectStorageService.StoredObject stored = objectStorageService.putImmutable(
                 objectKey, pdf, PDF_CONTENT_TYPE, sha256);
         try {
@@ -150,6 +147,41 @@ public class ContractArchiveServiceImpl implements ContractArchiveService {
         } catch (Exception exception) {
             throw new BusinessException("合同标识不正确");
         }
+    }
+
+    private String objectKey(ContractRespDTO contract, int versionNo, String fileName) {
+        String contractNo = pathSegment(contract.contractNo(), contract.id());
+        String supplier = pathSegment(contract.supplierCompanyName(), "供方");
+        String buyer = pathSegment(contract.buyerCompanyName(), "需方");
+        return keyPrefix() + "/contract/" + yearMonth(contract) + "/" + contractNo
+                + "/" + supplier + "_" + buyer + "/v" + versionNo + "/" + fileName;
+    }
+
+    private String yearMonth(ContractRespDTO contract) {
+        String created = contract.createdAt();
+        if (created != null && created.length() >= 7 && created.charAt(4) == '-'
+                && digits(created.substring(0, 4)) && digits(created.substring(5, 7))) {
+            return created.substring(0, 4) + "/" + created.substring(5, 7);
+        }
+        LocalDate today = LocalDate.now();
+        return today.getYear() + "/" + String.format("%02d", today.getMonthValue());
+    }
+
+    private boolean digits(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            if (!Character.isDigit(value.charAt(i))) return false;
+        }
+        return !value.isEmpty();
+    }
+
+    private String pathSegment(String value, String fallback) {
+        String text = value == null ? "" : value.trim().replaceAll("[\\\\/]+", "_").replaceAll("\\s+", "");
+        while (text.contains("..")) text = text.replace("..", "_");
+        text = text.replaceAll("[\\u0000-\\u001F]+", "");
+        if (text.isBlank() || ".".equals(text)) text = fallback == null ? "" : fallback;
+        while (text.contains("..")) text = text.replace("..", "_");
+        if (text.isBlank() || ".".equals(text)) text = "未命名";
+        return text.length() > 80 ? text.substring(0, 80) : text;
     }
 
     private String keyPrefix() {
