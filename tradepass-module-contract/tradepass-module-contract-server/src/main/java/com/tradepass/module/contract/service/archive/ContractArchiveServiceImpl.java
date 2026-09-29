@@ -153,8 +153,8 @@ public class ContractArchiveServiceImpl implements ContractArchiveService {
         String contractNo = pathSegment(contract.contractNo(), contract.id());
         String supplier = pathSegment(contract.supplierCompanyName(), "供方");
         String buyer = pathSegment(contract.buyerCompanyName(), "需方");
-        return keyPrefix() + "/contract/" + yearMonth(contract) + "/" + contractNo
-                + "/" + supplier + "_" + buyer + "/v" + versionNo + "/" + fileName;
+        return keyPrefix() + "/contract/" + yearMonth(contract) + "/" + supplier + "_" + buyer
+                + "/" + contractNo + "/v" + versionNo + "/" + fileName;
     }
 
     private String yearMonth(ContractRespDTO contract) {

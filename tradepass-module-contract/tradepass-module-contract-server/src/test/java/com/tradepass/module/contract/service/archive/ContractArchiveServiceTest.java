@@ -33,7 +33,7 @@ class ContractArchiveServiceTest {
         ContractRespDTO contract = contract("ACTIVE");
         byte[] pdf = "%PDF-frozen".getBytes();
         String sha256 = FileTypeInspector.sha256(pdf);
-        String objectKey = "tradepass/contract/2026/07/HT-8/甲方_乙方/v1/contract.pdf";
+        String objectKey = "tradepass/contract/2026/07/甲方_乙方/HT-8/v1/contract.pdf";
         ContractArchiveService.ArchiveRecord record = new ContractArchiveService.ArchiveRecord(
                 5L, 8L, 1, "bucket", objectKey,
                 "version-1", "合同.pdf", "application/pdf", (long) pdf.length, sha256);
@@ -88,7 +88,7 @@ class ContractArchiveServiceTest {
         service.archiveSignedPdf(contract, pdf, "sign-task", 7L);
 
         verify(storage).putImmutable(eq(
-                "sqt-1461413991/prod/contract/2026/09/HT-2026_09-2947E4515D/河北满满贸易有限公司_上海与与_企业/v1/signed.pdf"),
+                "sqt-1461413991/prod/contract/2026/09/河北满满贸易有限公司_上海与与_企业/HT-2026_09-2947E4515D/v1/signed.pdf"),
                 any(byte[].class), eq("application/pdf"), eq(sha256));
     }
 
