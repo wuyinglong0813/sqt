@@ -44,6 +44,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -78,6 +79,9 @@ class HttpApiContractTest {
     void cloudPlatformProbeReturnsOk() throws Exception {
         mvc.perform(get("/tcb_probe"))
                 .andExpect(status().isOk());
+        mvc.perform(get("/CqVT3HIuWt.txt"))
+                .andExpect(status().isOk())
+                .andExpect(content().string("2abd5ec6ebdeca15502051ee9e3b888b"));
     }
 
     @Test

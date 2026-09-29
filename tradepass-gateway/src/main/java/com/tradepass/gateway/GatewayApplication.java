@@ -24,7 +24,7 @@ public class GatewayApplication {
         route(routes, env, "file", 1115, "/api/files/**");
         route(routes, env, "identity", 1111, "/api/auth/**", "/api/me", "/api/me/**", "/api/companies", "/api/companies/**",
                 "/api/company-certifications/**", "/api/counterparties", "/api/roles", "/api/roles/**", "/api/permissions",
-                "/api/authorizations", "/api/authorizations/**", "/api/verifications/**", "/api/seals", "/api/ca/**", "/api/dev/**", "/api/fadada/**", "/tcb_probe");
+                "/api/authorizations", "/api/authorizations/**", "/api/verifications/**", "/api/seals", "/api/ca/**", "/api/dev/**", "/api/fadada/**", "/tcb_probe", "/CqVT3HIuWt.txt");
         return routes.build();
     }
 

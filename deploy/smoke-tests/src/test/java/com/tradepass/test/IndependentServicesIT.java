@@ -299,7 +299,7 @@ class IndependentServicesIT {
                         if (!mapping.path("details").path("handlerMethod").path("className").asText().startsWith("com.tradepass.")) continue;
                         String predicate = mapping.path("predicate").asText();
                         if (predicate.contains("/internal/")) continue;
-                        if (predicate.contains("/tcb_probe") && !role.equals("identity")) continue;
+                        if ((predicate.contains("/tcb_probe") || predicate.contains("/CqVT3HIuWt.txt")) && !role.equals("identity")) continue;
                         assertTrue(actual.add(predicate), "Duplicate API owner: " + predicate);
                         count++;
                     }
@@ -319,7 +319,9 @@ class IndependentServicesIT {
         for (String line : Files.readAllLines(root.resolve("deploy/smoke-tests/src/test/resources/architecture/http-api-baseline.txt"))) {
             if (!line.startsWith("{")) continue;
             String path = line.substring(line.indexOf('[') + 1, line.indexOf(']')).replaceAll("\\{[^}]+}", "123");
-            if (path.equals("/tcb_probe") || path.startsWith("/api/dev/") || path.equals("/api/auth/wechat-login")
+            if (path.equals("/tcb_probe") || path.equals("/CqVT3HIuWt.txt")
+                    || path.equals("/api/contracts/desktop-sign-frame")
+                    || path.startsWith("/api/dev/") || path.equals("/api/auth/wechat-login")
                     || path.equals("/api/company-certifications/provider-callback") || path.equals("/api/fadada/callback")) continue;
             String method = line.substring(1, line.indexOf(' '));
             String type = line.contains("consumes [multipart/form-data]") ? "multipart/form-data; boundary=smoke" : "application/json";

@@ -67,7 +67,7 @@ public class RuntimeWebConfiguration implements WebMvcConfigurer, WebMvcRegistra
         };
         registry.addInterceptor(authentication).addPathPatterns("/api/**")
                 .excludePathPatterns("/api/auth/wechat-login", "/api/company-certifications/provider-callback",
-                        "/api/fadada/callback", "/api/dev/**");
+                        "/api/fadada/callback", "/api/contracts/desktop-sign-frame", "/api/dev/**");
     }
 
     @Override public void addCorsMappings(CorsRegistry registry) {
