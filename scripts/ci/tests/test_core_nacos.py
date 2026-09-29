@@ -101,7 +101,7 @@ class CoreNacosTest(unittest.TestCase):
         self.assertNotIn("datasource", text)
         imports = boot["spring"]["config"]["import"]
         self.assertEqual(2, len(imports))
-        self.assertTrue(all(i.startswith("nacos:") and "refreshEnabled=false" in i for i in imports))
+        self.assertTrue(all(i.startswith("nacos:") and "refreshEnabled=true" in i for i in imports))
         self.assertTrue(boot["spring"]["cloud"]["nacos"]["config"]["enabled"])
 
     def test_invalid_or_remote_bootstrap_is_rejected(self):

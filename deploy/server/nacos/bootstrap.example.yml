@@ -3,8 +3,8 @@
 spring:
   config:
     import:
-      - nacos:tradepass-common.yaml?group=TRADEPASS_CORE&refreshEnabled=false
-      - nacos:${spring.application.name}.yaml?group=TRADEPASS_CORE&refreshEnabled=false
+      - nacos:tradepass-common.yaml?group=TRADEPASS_CORE&refreshEnabled=true
+      - nacos:${spring.application.name}.yaml?group=TRADEPASS_CORE&refreshEnabled=true
   cloud:
     nacos:
       discovery:

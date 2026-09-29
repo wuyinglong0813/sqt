@@ -198,7 +198,7 @@ def bootstrap(values):
         raise ValueError("请先为 Nacos 设置私有密码")
     options = {"enabled": True, "server-addr": address, "namespace": values["NACOS_NAMESPACE"],
                "group": group, "username": values["NACOS_USERNAME"], "password": values["NACOS_PASSWORD"]}
-    imports = ["nacos:" + data_id + ".yaml?group=" + group + "&refreshEnabled=false"
+    imports = ["nacos:" + data_id + ".yaml?group=" + group + "&refreshEnabled=true"
                for data_id in ("tradepass-common", "${spring.application.name}")]
     return {"spring": {"config": {"import": imports}, "cloud": {"nacos": {
         "config": options, "discovery": {**options, "ip": "127.0.0.1"}}}}}

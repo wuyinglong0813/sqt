@@ -182,11 +182,11 @@ def nacos_options(bootstrap, environment):
         options["enabled"] = environment_value(environment, "spring.cloud.nacos.config.enabled", True)
         # The packaged application's import query uses NACOS_GROUP, independently of config.group.
         group = environment.get("NACOS_GROUP", "TRADEPASS")
-        imports = ["nacos:" + name + ".yaml?group=" + group + "&refreshEnabled=false"
+        imports = ["nacos:" + name + ".yaml?group=" + group + "&refreshEnabled=true"
                    for name in ("tradepass-common", "${spring.application.name}")]
     if str(options.get("enabled")).lower() != "true" or not re.fullmatch(r"(?:127\.0\.0\.1|localhost):[0-9]+", options.get("server-addr", "")):
         raise ValueError("无效的本机 Nacos 配置")
-    expected_imports = ["nacos:" + name + ".yaml?group=" + options.get("group", "") + "&refreshEnabled=false"
+    expected_imports = ["nacos:" + name + ".yaml?group=" + options.get("group", "") + "&refreshEnabled=true"
                         for name in ("tradepass-common", "${spring.application.name}")]
     if imports != expected_imports:
         raise ValueError("Nacos import 列表或分组与 core 配置不一致；拒绝按错误的配置源初始化")

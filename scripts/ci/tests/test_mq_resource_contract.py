@@ -47,7 +47,7 @@ class ResourceContractTest(unittest.TestCase):
         reader = Mock(Nacos=Mock(return_value=client))
         boot = {"spring": {"cloud": {"nacos": {"config": {"enabled": True, "server-addr": "127.0.0.1:8848",
                 "group": "TRADEPASS_CORE", "username": "test", "password": "private-password"}}},
-                "config": {"import": ["nacos:" + name + ".yaml?group=TRADEPASS_CORE&refreshEnabled=false"
+                "config": {"import": ["nacos:" + name + ".yaml?group=TRADEPASS_CORE&refreshEnabled=true"
                                       for name in ("tradepass-common", "${spring.application.name}")]}}}
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bootstrap.yml"
