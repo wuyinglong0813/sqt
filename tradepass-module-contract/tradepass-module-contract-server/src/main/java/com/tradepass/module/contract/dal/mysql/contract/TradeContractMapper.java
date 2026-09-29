@@ -23,6 +23,9 @@ public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
     @Select("SELECT * FROM trade_contract WHERE id = #{id} FOR UPDATE")
     TradeContractDO selectByIdForUpdate(@Param("id") Long id);
 
+    @Select("SELECT COUNT(1) FROM trade_contract WHERE id = #{id} AND " + ContractSigningTodoSql.COUNTERPARTY_RELEASED)
+    long countReleasedToCounterparty(@Param("id") Long id);
+
     @Select("""
         SELECT COUNT(*) AS total,
                COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END), 0) AS pending,
@@ -31,7 +34,9 @@ public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
         FROM trade_contract
         WHERE ((company_id = #{companyId} AND COALESCE(initiator_hidden, 0) = 0)
                OR (counterparty_company_id = #{companyId}
-                   AND status NOT IN ('REJECTED', 'CANCELLED', 'DELETED')))
+                   AND status NOT IN ('REJECTED', 'CANCELLED', 'DELETED')
+                   AND """ + ContractSigningTodoSql.COUNTERPARTY_RELEASED + """
+               ))
         """)
     Map<String, Object> selectContractSummary(@Param("companyId") Long companyId);
 
@@ -41,7 +46,9 @@ public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
         JOIN company initiator ON initiator.id = t.company_id
         WHERE ((t.company_id = #{companyId} AND COALESCE(t.initiator_hidden, 0) = 0)
                OR (t.counterparty_company_id = #{companyId}
-                   AND t.status NOT IN ('REJECTED', 'CANCELLED', 'DELETED')))
+                   AND t.status NOT IN ('REJECTED', 'CANCELLED', 'DELETED')
+                   AND """ + ContractSigningTodoSql.COUNTERPARTY_RELEASED_T + """
+               ))
           AND (#{counterpartyName} IS NULL OR #{counterpartyName} = '' OR
                (t.company_id = #{companyId} AND t.counterparty_name = #{counterpartyName}) OR
                (t.counterparty_company_id = #{companyId} AND initiator.name = #{counterpartyName}))
@@ -61,7 +68,9 @@ public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
         JOIN company initiator ON initiator.id = t.company_id
         WHERE ((t.company_id = #{companyId} AND COALESCE(t.initiator_hidden, 0) = 0)
                OR (t.counterparty_company_id = #{companyId}
-                   AND t.status NOT IN ('REJECTED', 'CANCELLED', 'DELETED')))
+                   AND t.status NOT IN ('REJECTED', 'CANCELLED', 'DELETED')
+                   AND """ + ContractSigningTodoSql.COUNTERPARTY_RELEASED_T + """
+               ))
           AND (#{counterpartyName} IS NULL OR #{counterpartyName} = '' OR
                (t.company_id = #{companyId} AND t.counterparty_name = #{counterpartyName}) OR
                (t.counterparty_company_id = #{companyId} AND initiator.name = #{counterpartyName}))

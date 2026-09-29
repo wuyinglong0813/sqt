@@ -498,6 +498,26 @@ class TradeServiceTest {
     }
 
     @Test
+    void counterpartyCannotOpenPendingContractUntilInitiatorSigns() {
+        TradeContractDO incoming = new TradeContractDO();
+        incoming.setId(60L);
+        incoming.setCompanyId(9L);
+        incoming.setCounterpartyCompanyId(3L);
+        incoming.setName("待签合同");
+        incoming.setStatus("PENDING");
+        incoming.setVersionNo(1);
+        when(contractMapper.selectById(60L)).thenReturn(incoming);
+        when(contractMapper.countReleasedToCounterparty(60L)).thenReturn(0L);
+
+        assertThatThrownBy(() -> service.getContract(60L))
+                .isInstanceOf(BusinessException.class).hasMessage("合同不存在");
+
+        when(contractMapper.countReleasedToCounterparty(60L)).thenReturn(1L);
+        assertThat(service.getContract(60L).status()).isEqualTo("PENDING");
+        assertThat(service.getContract(60L).perspective()).isEqualTo("INCOMING");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void pendingContractsStayScopedToCurrentCompany() {
         AuthContext.set(7L, null);

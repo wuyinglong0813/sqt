@@ -830,7 +830,13 @@ public class TradeServiceImpl implements TradeService {
             return !Boolean.TRUE.equals(contract.getInitiatorHidden())
                     && !"DELETED".equals(contract.getStatus());
         }
-        return !List.of("REJECTED", "CANCELLED", "DELETED").contains(contract.getStatus());
+        if (List.of("REJECTED", "CANCELLED", "DELETED").contains(contract.getStatus())) {
+            return false;
+        }
+        if (!"PENDING".equals(contract.getStatus())) {
+            return true;
+        }
+        return tradeContractMapper.countReleasedToCounterparty(contract.getId()) > 0;
     }
 
     private void validateDirection(String direction, boolean required) {

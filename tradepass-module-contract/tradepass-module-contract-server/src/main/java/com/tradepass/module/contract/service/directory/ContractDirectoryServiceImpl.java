@@ -6,6 +6,7 @@ import com.tradepass.module.contract.api.directory.ContractDirectoryOperations;
 import com.tradepass.module.contract.api.directory.ContractDirectoryOperations.*;
 import com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO;
 import com.tradepass.module.contract.dal.mysql.contract.TradeContractMapper;
+import com.tradepass.module.contract.dal.mysql.signing.ContractSigningTodoSql;
 import com.tradepass.module.identity.api.directory.IdentityDirectoryOperations;
 import com.tradepass.module.identity.api.directory.IdentityDirectoryOperations.*;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -55,7 +56,8 @@ public class ContractDirectoryServiceImpl implements ContractDirectoryService {
         query.and(q -> q.and(a -> a.eq(TradeContractDO::getCompanyId, companyId)
                         .and(h -> h.eq(TradeContractDO::getInitiatorHidden, false).or().isNull(TradeContractDO::getInitiatorHidden)))
                 .or(a -> a.eq(TradeContractDO::getCounterpartyCompanyId, companyId)
-                        .notIn(TradeContractDO::getStatus, "REJECTED", "CANCELLED", "DELETED")));
+                        .notIn(TradeContractDO::getStatus, "REJECTED", "CANCELLED", "DELETED")
+                        .apply(ContractSigningTodoSql.COUNTERPARTY_RELEASED)));
         if (name != null && !name.isEmpty()) {
             var matchingIds = identity.companyIdsNamed(name);
             query.and(q -> q.and(a -> a.eq(TradeContractDO::getCompanyId, companyId).eq(TradeContractDO::getCounterpartyName, name))

@@ -27,4 +27,35 @@ public final class ContractSigningTodoSql {
     public static String jdbcCount() {
         return "SELECT COUNT(1) " + FROM_AND_WHERE.replace("#{companyId}", "?");
     }
+
+    /** Counterparty sees a non-pending contract, or a pending one after the initiator signs the current version. */
+    public static final String COUNTERPARTY_RELEASED = """
+            (
+              status <> 'PENDING'
+              OR EXISTS (
+                SELECT 1 FROM fadada_contract_sign_task task
+                WHERE task.contract_id = trade_contract.id
+                  AND task.version_no = COALESCE(trade_contract.version_no, 1)
+                  AND LOWER(COALESCE(task.initiator_sign_status, '')) IN ('signed', 'sign_completed', 'completed')
+                  AND LOWER(COALESCE(task.provider_status, '')) NOT LIKE '%terminated%'
+                  AND LOWER(COALESCE(task.provider_status, '')) NOT LIKE '%expired%'
+                  AND LOWER(COALESCE(task.provider_status, '')) NOT IN ('task_finished', 'revoked')
+              )
+            )
+            """;
+
+    public static final String COUNTERPARTY_RELEASED_T = """
+            (
+              t.status <> 'PENDING'
+              OR EXISTS (
+                SELECT 1 FROM fadada_contract_sign_task task
+                WHERE task.contract_id = t.id
+                  AND task.version_no = COALESCE(t.version_no, 1)
+                  AND LOWER(COALESCE(task.initiator_sign_status, '')) IN ('signed', 'sign_completed', 'completed')
+                  AND LOWER(COALESCE(task.provider_status, '')) NOT LIKE '%terminated%'
+                  AND LOWER(COALESCE(task.provider_status, '')) NOT LIKE '%expired%'
+                  AND LOWER(COALESCE(task.provider_status, '')) NOT IN ('task_finished', 'revoked')
+              )
+            )
+            """;
 }
