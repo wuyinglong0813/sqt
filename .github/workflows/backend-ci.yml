@@ -107,7 +107,7 @@ jobs:
             docker build -f "$(dockerfile_for "$service")" \
               --tag "tradepass-$service:${{ github.sha }}" .
           done
-             - name: Validate service deployment configuration
+      - name: Validate service deployment configuration
         run: docker compose --env-file deploy/microservices/.env.example -f deploy/microservices/compose.yml config --quiet
       - name: Verify fresh server initialization and the real scheduled recovery job
         if: matrix.transport == 'direct'
