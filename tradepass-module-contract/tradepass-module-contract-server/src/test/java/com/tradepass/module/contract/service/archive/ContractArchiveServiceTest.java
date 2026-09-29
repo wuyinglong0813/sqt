@@ -33,7 +33,7 @@ class ContractArchiveServiceTest {
         ContractRespDTO contract = contract("ACTIVE");
         byte[] pdf = "%PDF-frozen".getBytes();
         String sha256 = FileTypeInspector.sha256(pdf);
-        String objectKey = "tradepass/contract/2026/07/甲方_乙方/HT-8/v1/contract.pdf";
+        String objectKey = "tradepass/contract/2026/07/3_4/HT-8/v1/contract.pdf";
         ContractArchiveService.ArchiveRecord record = new ContractArchiveService.ArchiveRecord(
                 5L, 8L, 1, "bucket", objectKey,
                 "version-1", "合同.pdf", "application/pdf", (long) pdf.length, sha256);
@@ -61,7 +61,7 @@ class ContractArchiveServiceTest {
     }
 
     @Test
-    void storesSignedPdfByContractMonthNumberAndPartyRoles() {
+    void storesSignedPdfWithAsciiPartyIdsWhenCompanyNamesAreChinese() {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         ContractPdfService pdfService = mock(ContractPdfService.class);
         ObjectStorageService storage = mock(ObjectStorageService.class);
@@ -87,9 +87,10 @@ class ContractArchiveServiceTest {
 
         service.archiveSignedPdf(contract, pdf, "sign-task", 7L);
 
-        verify(storage).putImmutable(eq(
-                "sqt-1461413991/prod/contract/2026/09/河北满满贸易有限公司_上海与与_企业/HT-2026_09-2947E4515D/v1/signed.pdf"),
+        String objectKey = "sqt-1461413991/prod/contract/2026/09/9_2104741333007863810/HT-2026_09-2947E4515D/v1/signed.pdf";
+        verify(storage).putImmutable(eq(objectKey),
                 any(byte[].class), eq("application/pdf"), eq(sha256));
+        assertThat(objectKey).matches("\\A\\p{ASCII}+\\z");
     }
 
     @Test

@@ -150,11 +150,14 @@ public class ContractArchiveServiceImpl implements ContractArchiveService {
     }
 
     private String objectKey(ContractRespDTO contract, int versionNo, String fileName) {
+        // object_key is an ASCII storage locator. Display names stay in original_name.
+        boolean initiatorIsSupplier = "SALE".equalsIgnoreCase(contract.direction());
+        String supplierId = initiatorIsSupplier ? contract.companyId() : contract.counterpartyCompanyId();
+        String buyerId = initiatorIsSupplier ? contract.counterpartyCompanyId() : contract.companyId();
         String contractNo = pathSegment(contract.contractNo(), contract.id());
-        String supplier = pathSegment(contract.supplierCompanyName(), "供方");
-        String buyer = pathSegment(contract.buyerCompanyName(), "需方");
-        return keyPrefix() + "/contract/" + yearMonth(contract) + "/" + supplier + "_" + buyer
-                + "/" + contractNo + "/v" + versionNo + "/" + fileName;
+        return keyPrefix() + "/contract/" + yearMonth(contract) + "/"
+                + pathSegment(supplierId, "supplier") + "_" + pathSegment(buyerId, "buyer")
+                + "/" + contractNo + "/v" + versionNo + "/" + pathSegment(fileName, "file");
     }
 
     private String yearMonth(ContractRespDTO contract) {
@@ -175,13 +178,28 @@ public class ContractArchiveServiceImpl implements ContractArchiveService {
     }
 
     private String pathSegment(String value, String fallback) {
-        String text = value == null ? "" : value.trim().replaceAll("[\\\\/]+", "_").replaceAll("\\s+", "");
-        while (text.contains("..")) text = text.replace("..", "_");
-        text = text.replaceAll("[\\u0000-\\u001F]+", "");
-        if (text.isBlank() || ".".equals(text)) text = fallback == null ? "" : fallback;
-        while (text.contains("..")) text = text.replace("..", "_");
-        if (text.isBlank() || ".".equals(text)) text = "未命名";
+        String text = asciiSegment(value);
+        if (text.isBlank()) text = asciiSegment(fallback);
+        if (text.isBlank()) text = "unknown";
         return text.length() > 80 ? text.substring(0, 80) : text;
+    }
+
+    private String asciiSegment(String value) {
+        if (value == null) return "";
+        String text = value.trim().replaceAll("[\\\\/]+", "_").replaceAll("\\s+", "");
+        StringBuilder kept = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                    || c == '-' || c == '_' || c == '.') {
+                kept.append(c);
+            }
+        }
+        text = kept.toString();
+        while (text.contains("..")) text = text.replace("..", "_");
+        while (text.startsWith(".")) text = text.substring(1);
+        while (text.endsWith(".")) text = text.substring(0, text.length() - 1);
+        return text;
     }
 
     private String keyPrefix() {
