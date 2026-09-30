@@ -411,8 +411,8 @@ class MysqlWorkflowConcurrencyTest {
         jdbc.update("UPDATE trade_contract SET status='PENDING',version_no=1 WHERE id=?", contractId);
         assertThat(contracts.selectContractsAwaitingSignature(3L)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).contains(contractId);
         assertThat(contracts.selectContractsAwaitingSignature(4L)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).doesNotContain(contractId);
-        assertThat(contracts.selectPartyContracts(3L, null, "PENDING", 20, 0)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).contains(contractId);
-        assertThat(contracts.selectPartyContracts(4L, null, null, 20, 0)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).doesNotContain(contractId);
+        assertThat(contracts.selectPartyContracts(3L, null, "PENDING", null, 20, 0)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).contains(contractId);
+        assertThat(contracts.selectPartyContracts(4L, null, null, null, 20, 0)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).doesNotContain(contractId);
         long taskId = IDS.incrementAndGet();
         jdbc.update("""
                 INSERT INTO fadada_contract_sign_task(id,contract_id,version_no,sign_task_id,
@@ -421,8 +421,8 @@ class MysqlWorkflowConcurrencyTest {
                 """, taskId, contractId, "todo-" + taskId);
         assertThat(contracts.selectContractsAwaitingSignature(3L)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).doesNotContain(contractId);
         assertThat(contracts.selectContractsAwaitingSignature(4L)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).contains(contractId);
-        assertThat(contracts.selectPartyContracts(3L, null, "PENDING", 20, 0)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).contains(contractId);
-        assertThat(contracts.selectPartyContracts(4L, null, "PENDING", 20, 0)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).contains(contractId);
+        assertThat(contracts.selectPartyContracts(3L, null, "PENDING", null, 20, 0)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).contains(contractId);
+        assertThat(contracts.selectPartyContracts(4L, null, "PENDING", null, 20, 0)).extracting(com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO::getId).contains(contractId);
         for (long companyId : List.of(3L, 4L)) {
             assertThat(contracts.countContractsAwaitingSignature(companyId)).isEqualTo(contracts.selectContractsAwaitingSignature(companyId).size());
             assertThat(jdbc.queryForObject(ContractSigningTodoSql.jdbcCount(), Long.class, companyId))

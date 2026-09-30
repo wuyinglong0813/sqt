@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.tradepass.module.contract.api.directory.ContractDirectoryOperations;
 import com.tradepass.module.contract.api.directory.ContractDirectoryOperations.*;
 import com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO;
+import com.tradepass.module.contract.dal.mysql.contract.ContractViewerDirectionSql;
 import com.tradepass.module.contract.dal.mysql.contract.TradeContractMapper;
 import com.tradepass.module.contract.dal.mysql.signing.ContractSigningTodoSql;
 import com.tradepass.module.identity.api.directory.IdentityDirectoryOperations;
@@ -39,15 +40,21 @@ public class ContractDirectoryServiceImpl implements ContractDirectoryService {
                 && (Long.valueOf(companyId).equals(value.getCompanyId()) || Long.valueOf(companyId).equals(value.getCounterpartyCompanyId())) ? contractId : null;
     }
     public List<TradeContractDO> partyContracts(long companyId, String name, String status, int limit, long offset) {
+        return partyContracts(companyId, name, status, null, limit, offset);
+    }
+    public List<TradeContractDO> partyContracts(long companyId, String name, String status, String viewerDirection, int limit, long offset) {
         if (limit < 1 || limit > 1000 || offset < 0) throw new IllegalArgumentException("Invalid contract page");
-        return contracts.selectList(partyQuery(companyId, name, status)
+        return contracts.selectList(partyQuery(companyId, name, status, viewerDirection)
                 .orderByDesc(TradeContractDO::getCreatedAt).orderByDesc(TradeContractDO::getId)
                 .last("LIMIT " + limit + " OFFSET " + offset));
     }
     public long partyContractCount(long companyId, String name, String status) {
-        return contracts.selectCount(partyQuery(companyId, name, status));
+        return partyContractCount(companyId, name, status, null);
     }
-    private LambdaQueryWrapper<TradeContractDO> partyQuery(long companyId, String name, String status) {
+    public long partyContractCount(long companyId, String name, String status, String viewerDirection) {
+        return contracts.selectCount(partyQuery(companyId, name, status, viewerDirection));
+    }
+    private LambdaQueryWrapper<TradeContractDO> partyQuery(long companyId, String name, String status, String viewerDirection) {
         // Preserve the original INNER JOIN, including removal of rows with missing initiators.
         var initiators = jdbc.queryForList("SELECT DISTINCT company_id FROM trade_contract WHERE company_id = ? OR counterparty_company_id = ?", Long.class, companyId, companyId);
         var existingIds = identity.companyNames(initiators).keySet();
@@ -65,6 +72,9 @@ public class ContractDirectoryServiceImpl implements ContractDirectoryService {
                             .in(TradeContractDO::getCompanyId, matchingIds.isEmpty() ? List.of(-1L) : matchingIds)));
         }
         if (status != null && !status.isEmpty()) query.eq(TradeContractDO::getStatus, status);
+        if (viewerDirection != null && !viewerDirection.isEmpty()) {
+            query.apply(ContractViewerDirectionSql.WRAPPER_FILTER, viewerDirection, companyId);
+        }
         return query;
     }
 }

@@ -366,35 +366,45 @@ public class TradeServiceImpl implements TradeService {
                 "ELECTRONIC_ABOLISH_FINISH", "双方电子签署作废完成 " + contract.getContractNo());
     }
 
-    private List<TradeContractDO> partyContracts(Long companyId, String name, String status, int limit, long offset) {
-        return contractDirectory != null ? contractDirectory.partyContracts(companyId, name, status, limit, offset)
-                : tradeContractMapper.selectPartyContracts(companyId, name, status, limit, offset);
+    private List<TradeContractDO> partyContracts(Long companyId, String name, String status, String viewerDirection, int limit, long offset) {
+        return contractDirectory != null ? contractDirectory.partyContracts(companyId, name, status, viewerDirection, limit, offset)
+                : tradeContractMapper.selectPartyContracts(companyId, name, status, viewerDirection, limit, offset);
     }
-    private long partyContractCount(Long companyId, String name, String status) {
-        return contractDirectory != null ? contractDirectory.partyContractCount(companyId, name, status)
-                : tradeContractMapper.countPartyContracts(companyId, name, status);
+    private long partyContractCount(Long companyId, String name, String status, String viewerDirection) {
+        return contractDirectory != null ? contractDirectory.partyContractCount(companyId, name, status, viewerDirection)
+                : tradeContractMapper.countPartyContracts(companyId, name, status, viewerDirection);
     }
 
     public List<ContractRespDTO> listContracts(String counterpartyName) {
         long companyId = AuthContext.requireCompanyId();
         requireContractReadPermission(companyId);
-        return partyContracts(companyId, trim(counterpartyName), null, 1000, 0)
+        return partyContracts(companyId, trim(counterpartyName), null, null, 1000, 0)
                 .stream().map(contract -> toReadContractPayload(contract, companyId)).toList();
     }
 
-    public PagePayload<ContractRespDTO> pageContracts(String counterpartyName, String status, int page, int size) {
+    public PagePayload<ContractRespDTO> pageContracts(String counterpartyName, String status, String viewerDirection, int page, int size) {
         int normalizedPage = normalizePage(page);
         int normalizedSize = normalizeSize(size);
         long companyId = AuthContext.requireCompanyId();
         requireContractReadPermission(companyId);
         String cleanName = trim(counterpartyName);
         String cleanStatus = trim(status);
-        long total = partyContractCount(companyId, cleanName, cleanStatus);
+        String cleanDirection = normalizeViewerDirection(viewerDirection);
+        long total = partyContractCount(companyId, cleanName, cleanStatus, cleanDirection);
         long offset = (long) (normalizedPage - 1) * normalizedSize;
         List<ContractRespDTO> items = partyContracts(
-                        companyId, cleanName, cleanStatus, normalizedSize, offset)
+                        companyId, cleanName, cleanStatus, cleanDirection, normalizedSize, offset)
                 .stream().map(contract -> toReadContractPayload(contract, companyId)).toList();
         return PagePayload.of(items, total, normalizedPage, normalizedSize);
+    }
+
+    private String normalizeViewerDirection(String viewerDirection) {
+        if (viewerDirection == null || viewerDirection.isBlank()) return null;
+        String value = viewerDirection.trim().toUpperCase();
+        if (!"SALE".equals(value) && !"PURCHASE".equals(value)) {
+            throw new BusinessException("合同方向不正确");
+        }
+        return value;
     }
 
     public Map<String, Object> contractSummary() {

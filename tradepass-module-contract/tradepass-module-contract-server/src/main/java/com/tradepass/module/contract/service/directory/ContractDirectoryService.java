@@ -17,5 +17,7 @@ public interface ContractDirectoryService {
     List<TradeContractDO> activePartyContracts(long companyId);
     Long activePartyContractId(long companyId, Long contractId);
     List<TradeContractDO> partyContracts(long companyId, String name, String status, int limit, long offset);
+    List<TradeContractDO> partyContracts(long companyId, String name, String status, String viewerDirection, int limit, long offset);
     long partyContractCount(long companyId, String name, String status);
+    long partyContractCount(long companyId, String name, String status, String viewerDirection);
 }

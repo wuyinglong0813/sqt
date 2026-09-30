@@ -53,12 +53,14 @@ public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
                (t.company_id = #{companyId} AND t.counterparty_name = #{counterpartyName}) OR
                (t.counterparty_company_id = #{companyId} AND initiator.name = #{counterpartyName}))
           AND (#{status} IS NULL OR #{status} = '' OR t.status = #{status})
+        """ + ContractViewerDirectionSql.FILTER + """
         ORDER BY t.created_at DESC, t.id DESC
         LIMIT #{limit} OFFSET #{offset}
         """)
     List<TradeContractDO> selectPartyContracts(@Param("companyId") Long companyId,
                                              @Param("counterpartyName") String counterpartyName,
                                              @Param("status") String status,
+                                             @Param("viewerDirection") String viewerDirection,
                                              @Param("limit") int limit,
                                              @Param("offset") long offset);
 
@@ -75,8 +77,10 @@ public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
                (t.company_id = #{companyId} AND t.counterparty_name = #{counterpartyName}) OR
                (t.counterparty_company_id = #{companyId} AND initiator.name = #{counterpartyName}))
           AND (#{status} IS NULL OR #{status} = '' OR t.status = #{status})
+        """ + ContractViewerDirectionSql.FILTER + """
         """)
     long countPartyContracts(@Param("companyId") Long companyId,
                              @Param("counterpartyName") String counterpartyName,
-                             @Param("status") String status);
+                             @Param("status") String status,
+                             @Param("viewerDirection") String viewerDirection);
 }

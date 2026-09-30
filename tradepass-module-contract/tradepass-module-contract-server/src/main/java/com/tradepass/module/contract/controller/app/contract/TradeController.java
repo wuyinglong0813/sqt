@@ -164,9 +164,10 @@ public class TradeController {
     @GetMapping("/contracts")
     public ApiResponse<PagePayload<ContractRespDTO>> listContracts(@RequestParam(required = false) String counterpartyName,
                                                                     @RequestParam(required = false) String status,
+                                                                    @RequestParam(required = false) String viewerDirection,
                                                                     @RequestParam(defaultValue = "1") int page,
                                                                     @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(tradeService.pageContracts(counterpartyName, status, page, size));
+        return ApiResponse.ok(tradeService.pageContracts(counterpartyName, status, viewerDirection, page, size));
     }
 
     @PostMapping("/contracts")

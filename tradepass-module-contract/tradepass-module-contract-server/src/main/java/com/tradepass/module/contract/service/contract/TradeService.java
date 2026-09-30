@@ -63,7 +63,7 @@ public interface TradeService {
     void activateAfterElectronicSignature(Long id, int expectedVersion, long completedBy);
     void voidAfterElectronicAbolish(Long id, int expectedVersion, long completedBy);
     List<ContractRespDTO> listContracts(String counterpartyName);
-    PagePayload<ContractRespDTO> pageContracts(String counterpartyName, String status, int page, int size);
+    PagePayload<ContractRespDTO> pageContracts(String counterpartyName, String status, String viewerDirection, int page, int size);
     Map<String, Object> contractSummary();
     ContractRespDTO createContract(CreateContractReqVO request);
     String approveContract(Long id);

@@ -252,9 +252,9 @@ class TradeServiceTest {
         contract.setAmount(BigDecimal.TEN);
         contract.setStatus("PENDING");
         contract.setInitiatedBy(7L);
-        when(contractMapper.countPartyContracts(3L, null, "PENDING")).thenReturn(1L);
-        when(contractMapper.selectPartyContracts(3L, null, "PENDING", 20, 0L)).thenReturn(List.of(contract));
-        assertThat(service.pageContracts(null, "PENDING", 1, 20).items())
+        when(contractMapper.countPartyContracts(3L, null, "PENDING", null)).thenReturn(1L);
+        when(contractMapper.selectPartyContracts(3L, null, "PENDING", null, 20, 0L)).thenReturn(List.of(contract));
+        assertThat(service.pageContracts(null, "PENDING", null, 1, 20).items())
                 .extracting(ContractRespDTO::id).containsExactly("20");
 
         when(templateMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
@@ -556,14 +556,26 @@ class TradeServiceTest {
         initiator.setId(9L);
         initiator.setName("供应商");
         when(companyMapper.selectById(9L)).thenReturn(initiator);
-        when(contractMapper.countPartyContracts(3L, null, null)).thenReturn(1L);
-        when(contractMapper.selectPartyContracts(3L, null, null, 20, 0L)).thenReturn(List.of(incoming));
+        when(contractMapper.countPartyContracts(3L, null, null, null)).thenReturn(1L);
+        when(contractMapper.selectPartyContracts(3L, null, null, null, 20, 0L)).thenReturn(List.of(incoming));
 
-        ContractRespDTO view = service.pageContracts(null, null, 1, 20).items().get(0);
+        ContractRespDTO view = service.pageContracts(null, null, null, 1, 20).items().get(0);
 
         assertThat(view.viewerCounterpartyCompanyId()).isEqualTo("9");
         assertThat(view.viewerCounterpartyName()).isEqualTo("供应商");
         assertThat(view.viewerDirection()).isEqualTo("PURCHASE");
         assertThat(view.perspective()).isEqualTo("INCOMING");
+    }
+
+    @Test
+    void contractPageFollowsTheViewerTradeDirection() {
+        when(contractMapper.countPartyContracts(3L, "供应企业", null, "SALE")).thenReturn(0L);
+        when(contractMapper.selectPartyContracts(3L, "供应企业", null, "SALE", 20, 0L)).thenReturn(List.of());
+
+        assertThat(service.pageContracts(" 供应企业 ", null, " sale ", 1, 20).total()).isZero();
+        verify(contractMapper).selectPartyContracts(3L, "供应企业", null, "SALE", 20, 0L);
+        assertThatThrownBy(() -> service.pageContracts("供应企业", null, "customer", 1, 20))
+                .isInstanceOf(BusinessException.class)
+                .hasMessage("合同方向不正确");
     }
 }
