@@ -60,6 +60,15 @@ class FadadaCompanyVerificationTest {
     }
 
     @Test
+    void cancelledCompanyCertificationIgnoresALaterSuccessCallback() {
+        var f = new Fixture();
+        f.company.setCertificationStatus("CANCELLED");
+        f.identity.setLocalStatus("CANCELLED");
+        assertThat(f.service.syncCallback("local-3", "corp-3", companyCallback()).status()).isEqualTo("CANCELLED");
+        verifyNoInteractions(f.certifications, f.gateway);
+    }
+
+    @Test
     void companyCallbackCannotReplaceExistingProviderBinding() {
         var f = new Fixture(); f.identity.setOpenCorpId("another-corp");
         assertThatThrownBy(() -> f.service.syncCallback("local-3", "corp-3", companyCallback()))

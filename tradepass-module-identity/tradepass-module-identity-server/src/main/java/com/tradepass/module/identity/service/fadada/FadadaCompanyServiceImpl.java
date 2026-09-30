@@ -88,6 +88,16 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         CompanyDO company = requireCompany(companyId);
         requireCompanyFields(company);
         FadadaCorpIdentityDO identity = ensure(companyId, AuthContext.userId());
+        if ("CANCELLED".equals(identity.getLocalStatus())) {
+            identity.setLocalStatus("NOT_STARTED");
+            identity.setFailureReason("");
+            identityMapper.updateById(identity);
+        }
+        if ("CANCELLED".equals(company.getCertificationStatus())) {
+            companyMapper.update(new LambdaUpdateWrapper<CompanyDO>().eq(CompanyDO::getId, companyId)
+                    .set(CompanyDO::getCertificationStatus, "PENDING"));
+            company.setCertificationStatus("PENDING");
+        }
         // Native completion redirect plus client polling; the return page verifies server state.
         if ("VERIFIED".equals(identity.getLocalStatus())) {
             var result = syncCurrent(companyId);
@@ -196,6 +206,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         CompanyDO company = requireCompany(companyId);
         FadadaCorpIdentityDO identity = findForUpdate(companyId);
         if (identity == null) return payload(companyId, null);
+        if (abandoned(company, identity)) return payload(companyId, identity);
         FadadaCompanyGateway.CompanyAccount account;
         try {
             account = gateway.getCompany(identity.getClientCorpId(), identity.getOpenCorpId());
@@ -276,6 +287,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         CompanyDO company = requireCompany(companyId);
         identity = findForUpdate(companyId);
         if (identity == null) return null;
+        if (abandoned(company, identity)) return payload(companyId, identity);
         if (hasText(identity.getOpenCorpId()) && hasText(openCorpId)
                 && !identity.getOpenCorpId().equals(openCorpId)) {
             throw new BusinessException("认证回调企业标识与当前企业不一致");
@@ -543,6 +555,11 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         }
     }
 
+    private boolean abandoned(CompanyDO company, FadadaCorpIdentityDO identity) {
+        return "CANCELLED".equals(company.getCertificationStatus())
+                || "CANCELLED".equals(identity.getLocalStatus());
+    }
+
     private CompanyDO requireCompany(long companyId) {
         CompanyDO company = companyMapper.selectByIdForUpdate(companyId);
         if (company == null) throw new BusinessException("企业不存在");
@@ -579,6 +596,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             case "IN_PROGRESS" -> "认证中";
             case "VERIFIED" -> "已认证";
             case "FAILED" -> "认证未通过";
+            case "CANCELLED" -> "已取消";
             default -> "待认证";
         };
     }

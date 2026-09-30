@@ -28,12 +28,16 @@ import com.tradepass.module.identity.controller.app.company.vo.SealReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.VerificationReqVO;
 import com.tradepass.module.identity.api.company.dto.InviteResult;
 import com.tradepass.module.identity.api.company.dto.JoinResult;
+import com.tradepass.module.identity.dal.dataobject.certification.CompanyCertificationApplicationDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
+import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyInviteDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
 import com.tradepass.module.identity.dal.dataobject.counterparty.CounterpartyRelationEntityDO;
 import com.tradepass.module.identity.dal.dataobject.permission.RoleDefDO;
+import com.tradepass.module.identity.dal.mysql.certification.CompanyCertificationApplicationMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyInviteMapper;
+import com.tradepass.module.identity.dal.mysql.fadada.FadadaCorpIdentityMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import com.tradepass.module.identity.dal.mysql.counterparty.CounterpartyRelationMapper;
@@ -72,11 +76,14 @@ class CompanyServiceTest {
     private CompanySearchRateLimiter searchRateLimiter;
     private AuditLogService auditLogService;
     private MemberRemovalNoticeService removalNoticeService;
+    private FadadaCorpIdentityMapper corpIdentityMapper;
+    private CompanyCertificationApplicationMapper applicationMapper;
     private CompanyService service;
 
     @BeforeEach
     void setUp() {
-        MybatisTestSupport.initialize(CompanyDO.class, CompanyMemberDO.class, RoleDefDO.class, CompanyInviteDO.class);
+        MybatisTestSupport.initialize(CompanyDO.class, CompanyMemberDO.class, RoleDefDO.class, CompanyInviteDO.class,
+                FadadaCorpIdentityDO.class, CompanyCertificationApplicationDO.class);
         companyMapper = mock(CompanyMapper.class);
         memberMapper = mock(CompanyMemberMapper.class);
         inviteMapper = mock(CompanyInviteMapper.class);
@@ -87,9 +94,11 @@ class CompanyServiceTest {
         searchRateLimiter = mock(CompanySearchRateLimiter.class);
         auditLogService = mock(AuditLogService.class);
         removalNoticeService = mock(MemberRemovalNoticeService.class);
+        corpIdentityMapper = mock(FadadaCorpIdentityMapper.class);
+        applicationMapper = mock(CompanyCertificationApplicationMapper.class);
         service = new CompanyServiceImpl(companyMapper, memberMapper, inviteMapper, relationMapper,
                 roleMapper, permMapper, accessControl, searchRateLimiter, new RolePermissionServiceImpl(),
-                auditLogService, removalNoticeService, true);
+                auditLogService, removalNoticeService, corpIdentityMapper, applicationMapper, true);
         when(accessControl.requireCompanyProfileAccess(anyLong()))
                 .thenReturn(AccessControlOperations.CompanyProfileAccess.SENSITIVE_OWNER);
         when(accessControl.hasPermission(anyLong(), any())).thenReturn(true);
@@ -154,6 +163,51 @@ class CompanyServiceTest {
 
         assertThat(service.myOnboardingCompanies()).extracting(CompanyProfile::id).containsExactly("9");
         org.mockito.Mockito.verifyNoInteractions(memberMapper, accessControl);
+    }
+
+    @Test
+    void creatorCanCancelUnfinishedOnboardingAndLaterReopenIt() {
+        CompanyDO pending = company(9L, "待认证企业");
+        pending.setCertificationStatus("PENDING_REVIEW");
+        pending.setCreatedBy(7L);
+        pending.setCreditCode("CREDIT-9");
+        when(companyMapper.selectByIdForUpdate(9L)).thenReturn(pending);
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(companyMapper.update(any(Wrapper.class))).thenReturn(1);
+        FadadaCorpIdentityDO identity = new FadadaCorpIdentityDO();
+        identity.setId(4L);
+        identity.setCompanyId(9L);
+        identity.setLocalStatus("IN_PROGRESS");
+        when(corpIdentityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
+
+        service.cancelOnboarding("9");
+
+        ArgumentCaptor<Wrapper<CompanyDO>> companyUpdate = ArgumentCaptor.forClass(Wrapper.class);
+        verify(companyMapper).update(companyUpdate.capture());
+        var update = (com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<CompanyDO>) companyUpdate.getValue();
+        assertThat(update.getSqlSet()).contains("certification_status");
+        assertThat(update.getSqlSegment()).contains("certification_status");
+        assertThat(update.getParamNameValuePairs().values())
+                .contains("CANCELLED", "PENDING", "PENDING_REVIEW", "REJECTED");
+        verify(memberMapper).delete(any(Wrapper.class));
+        verify(corpIdentityMapper).update(any(Wrapper.class));
+        verify(applicationMapper).update(any(Wrapper.class));
+        verify(auditLogService).log(9L, "COMPANY_CERTIFICATION", 9L, "CANCEL", "申请人取消未完成的企业认证");
+
+        pending.setCertificationStatus("VERIFIED");
+        assertThatThrownBy(() -> service.cancelOnboarding("9")).hasMessage("企业认证已完成，不能取消");
+        pending.setCertificationStatus("PENDING");
+        pending.setCreatedBy(8L);
+        assertThatThrownBy(() -> service.cancelOnboarding("9")).hasMessage("只能取消自己创建且尚未完成的企业认证");
+        pending.setCreatedBy(7L);
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        assertThatThrownBy(() -> service.cancelOnboarding("9")).hasMessage("该企业已有成员，不能取消认证");
+
+        pending.setCertificationStatus("CANCELLED");
+        when(companyMapper.selectOne(any(Wrapper.class))).thenReturn(pending);
+        when(companyMapper.selectById(9L)).thenReturn(pending);
+        CompanyProfile reopened = service.submitCompany(new CompanySubmitReqVO("9", "待认证企业", "CREDIT-9", "法人"));
+        assertThat(reopened.certificationStatus()).isEqualTo("PENDING");
     }
 
     @Test
@@ -361,7 +415,7 @@ class CompanyServiceTest {
     void refusesSimulatedVerificationWhenProviderIsDisabled() {
         CompanyService productionService = new CompanyServiceImpl(companyMapper, memberMapper, inviteMapper, relationMapper,
                 roleMapper, permMapper, accessControl, searchRateLimiter, new RolePermissionServiceImpl(),
-                auditLogService, removalNoticeService, false);
+                auditLogService, removalNoticeService, corpIdentityMapper, applicationMapper, false);
 
         assertThatThrownBy(() -> productionService.verifyRealName(new VerificationReqVO("3")))
                 .isInstanceOf(BusinessException.class)

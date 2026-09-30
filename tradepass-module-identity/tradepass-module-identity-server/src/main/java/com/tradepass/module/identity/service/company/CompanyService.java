@@ -56,6 +56,7 @@ public interface CompanyService {
     List<CompanySearchSummary> searchCompanies(String keyword);
     CompanyProfile getCompany(String id);
     List<CompanyProfile> myOnboardingCompanies();
+    void cancelOnboarding(String id);
     CompanyProfile submitCompany(CompanySubmitReqVO request);
     CompanyProfile submitCertification(String id);
     CompanyProfile verifyRealName(VerificationReqVO req);

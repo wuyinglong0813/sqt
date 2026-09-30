@@ -33,13 +33,17 @@ import com.tradepass.module.identity.api.company.dto.InviteResult;
 import com.tradepass.module.identity.api.company.dto.JoinResult;
 import com.tradepass.framework.common.pojo.PagePayload;
 import com.tradepass.module.identity.api.permission.dto.RoleRespDTO;
+import com.tradepass.module.identity.dal.dataobject.certification.CompanyCertificationApplicationDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
+import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyInviteDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
 import com.tradepass.module.identity.api.fadada.dto.PersonalIdentityRespDTO;
 import com.tradepass.module.identity.dal.dataobject.counterparty.CounterpartyRelationEntityDO;
 import com.tradepass.module.identity.dal.dataobject.permission.RoleDefDO;
+import com.tradepass.module.identity.dal.mysql.certification.CompanyCertificationApplicationMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyInviteMapper;
+import com.tradepass.module.identity.dal.mysql.fadada.FadadaCorpIdentityMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import com.tradepass.module.identity.dal.mysql.counterparty.CounterpartyRelationMapper;
@@ -70,6 +74,8 @@ public class CompanyServiceImpl implements CompanyService {
     private final RolePermissionService rolePermissionService;
     private final AuditLogService auditLogService;
     private final MemberRemovalNoticeService memberRemovalNoticeService;
+    private final FadadaCorpIdentityMapper corpIdentityMapper;
+    private final CompanyCertificationApplicationMapper certificationApplicationMapper;
     private final boolean caMockEnabled;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private FadadaPersonalIdentityService personalIdentityService;
@@ -85,6 +91,8 @@ public class CompanyServiceImpl implements CompanyService {
                           RolePermissionService rolePermissionService,
                           AuditLogService auditLogService,
                           MemberRemovalNoticeService memberRemovalNoticeService,
+                          FadadaCorpIdentityMapper corpIdentityMapper,
+                          CompanyCertificationApplicationMapper certificationApplicationMapper,
                           @Value("${tradepass.ca.mock-enabled:false}") boolean caMockEnabled) {
         this.companyMapper = companyMapper;
         this.companyMemberMapper = companyMemberMapper;
@@ -97,6 +105,8 @@ public class CompanyServiceImpl implements CompanyService {
         this.rolePermissionService = rolePermissionService;
         this.auditLogService = auditLogService;
         this.memberRemovalNoticeService = memberRemovalNoticeService;
+        this.corpIdentityMapper = corpIdentityMapper;
+        this.certificationApplicationMapper = certificationApplicationMapper;
         this.caMockEnabled = caMockEnabled;
     }
 
@@ -146,6 +156,56 @@ public class CompanyServiceImpl implements CompanyService {
     }
 
     @Transactional
+    public void cancelOnboarding(String id) {
+        long companyId = parseId(id);
+        CompanyDO company = companyId > 0 ? companyMapper.selectByIdForUpdate(companyId) : null;
+        if (company == null) throw new BusinessException("企业不存在");
+        long userId = AuthContext.userId();
+        if (company.getCreatedBy() == null || company.getCreatedBy() != userId) {
+            throw new BusinessException("只能取消自己创建且尚未完成的企业认证");
+        }
+        if ("VERIFIED".equals(company.getCertificationStatus())) {
+            throw new BusinessException("企业认证已完成，不能取消");
+        }
+        if (!List.of("PENDING", "PENDING_REVIEW", "REJECTED").contains(company.getCertificationStatus())) {
+            throw new BusinessException("只能取消自己创建且尚未完成的企业认证");
+        }
+        FadadaCorpIdentityDO identity = corpIdentityMapper.selectOne(new LambdaQueryWrapper<FadadaCorpIdentityDO>()
+                .eq(FadadaCorpIdentityDO::getCompanyId, companyId).last("LIMIT 1 FOR UPDATE"));
+        if (identity != null && "VERIFIED".equals(identity.getLocalStatus())) {
+            throw new BusinessException("企业认证已完成，不能取消");
+        }
+        long activeMembers = companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
+                .eq(CompanyMemberDO::getCompanyId, companyId)
+                .eq(CompanyMemberDO::getStatus, "ACTIVE"));
+        if (activeMembers > 0) throw new BusinessException("该企业已有成员，不能取消认证");
+        int updated = companyMapper.update(new LambdaUpdateWrapper<CompanyDO>()
+                .eq(CompanyDO::getId, companyId)
+                .in(CompanyDO::getCertificationStatus, List.of("PENDING", "PENDING_REVIEW", "REJECTED"))
+                .set(CompanyDO::getCertificationStatus, "CANCELLED"));
+        if (updated != 1) throw new BusinessException("企业认证状态已变化，请刷新后重试");
+        companyMemberMapper.delete(new LambdaQueryWrapper<CompanyMemberDO>()
+                .eq(CompanyMemberDO::getCompanyId, companyId)
+                .eq(CompanyMemberDO::getUserId, userId)
+                .ne(CompanyMemberDO::getStatus, "ACTIVE"));
+        if (identity != null) {
+            corpIdentityMapper.update(new LambdaUpdateWrapper<FadadaCorpIdentityDO>()
+                    .eq(FadadaCorpIdentityDO::getId, identity.getId())
+                    .ne(FadadaCorpIdentityDO::getLocalStatus, "VERIFIED")
+                    .set(FadadaCorpIdentityDO::getLocalStatus, "CANCELLED")
+                    .set(FadadaCorpIdentityDO::getFailureReason, "申请人已取消企业认证"));
+        }
+        certificationApplicationMapper.update(new LambdaUpdateWrapper<CompanyCertificationApplicationDO>()
+                .eq(CompanyCertificationApplicationDO::getCompanyId, companyId)
+                .eq(CompanyCertificationApplicationDO::getApplicantUserId, userId)
+                .eq(CompanyCertificationApplicationDO::getStatus, "SUBMITTED")
+                .set(CompanyCertificationApplicationDO::getStatus, "CANCELLED")
+                .set(CompanyCertificationApplicationDO::getReviewReason, "申请人已取消企业认证")
+                .set(CompanyCertificationApplicationDO::getReviewedAt, LocalDateTime.now()));
+        auditLogService.log(companyId, "COMPANY_CERTIFICATION", companyId, "CANCEL", "申请人取消未完成的企业认证");
+    }
+
+    @Transactional
     public CompanyProfile submitCompany(CompanySubmitReqVO request) {
         CompanyDO company = companyMapper.selectOne(new LambdaQueryWrapper<CompanyDO>().eq(CompanyDO::getCreditCode, request.creditCode()).last("LIMIT 1 FOR UPDATE"));
         if (company == null) {
@@ -178,6 +238,11 @@ public class CompanyServiceImpl implements CompanyService {
         if (!identityLocked) {
             company.setName(request.name());
             company.setLegalPersonName(request.legalPersonName());
+        }
+        if ("CANCELLED".equals(company.getCertificationStatus())
+                && company.getCreatedBy() != null
+                && company.getCreatedBy() == AuthContext.userId()) {
+            company.setCertificationStatus("PENDING");
         }
         company.setRegisteredAddress(trim(request.registeredAddress()));
         company.setContactPhone(trim(request.contactPhone()));

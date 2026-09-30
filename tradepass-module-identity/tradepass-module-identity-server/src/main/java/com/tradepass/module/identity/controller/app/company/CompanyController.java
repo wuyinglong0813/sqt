@@ -62,6 +62,12 @@ public class CompanyController {
         return ApiResponse.ok(companyService.myOnboardingCompanies());
     }
 
+    @DeleteMapping("/me/company-onboarding/{id}")
+    public ApiResponse<Void> cancelOnboarding(@PathVariable String id) {
+        companyService.cancelOnboarding(id);
+        return ApiResponse.ok(null);
+    }
+
     @GetMapping("/companies/{id}")
     public ApiResponse<CompanyProfile> getCompany(@PathVariable String id) {
         return ApiResponse.ok(companyService.getCompany(id));
