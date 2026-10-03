@@ -28,6 +28,13 @@ public interface ReconciliationAccountOperations {
 
     public WorkbookRespDTO workbook(Long counterpartyCompanyId);
 
+    public List<ProjectLedgerEntry> projectLedgerEntries(List<Long> contractIds);
+
+    public record ProjectLedgerEntry(Long id, Long contractId, String sourceType,
+                                     LocalDate businessDate, String documentNo,
+                                     BigDecimal amount, LocalDateTime approvedAt) {
+    }
+
     public void recordSalesOrder(BusinessDocumentRespDTO document, BigDecimal amount,
                                  LocalDate businessDate, long approvedBy,
                                  LocalDateTime approvedAt);

@@ -54,6 +54,8 @@
 {GET [/api/permissions]}
 {GET [/api/project-ledgers/contracts/{contractId:\d+}/assignment]}
 {GET [/api/project-ledgers/{id:\d+}/available-contracts]}
+{GET [/api/project-ledgers/{id:\d+}/ledger/workbook-data]}
+{GET [/api/project-ledgers/{id:\d+}/ledger]}
 {GET [/api/project-ledgers/{id:\d+}]}
 {GET [/api/project-ledgers]}
 {GET [/api/rankings/purchase]}

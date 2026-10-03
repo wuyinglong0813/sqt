@@ -54,6 +54,7 @@ public interface ReconciliationAccountService {
     Map<String, Object> account(Long counterpartyCompanyId);
     Map<String, Object> account(Long counterpartyCompanyId, String role);
     WorkbookRespDTO workbook(Long counterpartyCompanyId);
+    List<ProjectLedgerEntry> projectLedgerEntries(List<Long> contractIds);
     void recordSalesOrder(BusinessDocumentRespDTO document, BigDecimal amount, LocalDate businessDate, long approvedBy, LocalDateTime approvedAt);
     void recordReturnOrder(BusinessDocumentRespDTO document, BigDecimal amount, LocalDate businessDate, long approvedBy, LocalDateTime approvedAt);
     void recordAttachment(TradeContractRespDTO contract, String sourceType, long sourceId, LocalDate businessDate, String documentNo, BigDecimal amount, long issuerCompanyId, long approvedBy, LocalDateTime approvedAt);

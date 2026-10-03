@@ -30,6 +30,8 @@ import java.util.UUID;
 public interface ProjectLedgerService {
     List<Map<String, Object>> listProjects();
     Map<String, Object> project(Long projectId);
+    Map<String, Object> ledgerDetail(Long projectId);
+    byte[] ledgerWorkbook(Long projectId);
     Map<String, Object> contractAssignment(Long contractId);
     Map<String, Object> dismissContractPrompt(Long contractId);
     Map<String, Object> createProject(String projectNo, String name, String description);

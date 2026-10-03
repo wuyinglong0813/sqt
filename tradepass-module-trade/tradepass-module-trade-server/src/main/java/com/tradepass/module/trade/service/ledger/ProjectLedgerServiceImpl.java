@@ -33,6 +33,8 @@ import java.util.UUID;
 
 @Service
 public class ProjectLedgerServiceImpl implements ProjectLedgerService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.tradepass.module.settlement.api.reconciliation.ReconciliationAccountOperations reconciliationAccounts;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.tradepass.module.contract.api.directory.ContractDirectoryOperations contractDirectory;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -59,6 +61,64 @@ public class ProjectLedgerServiceImpl implements ProjectLedgerService {
         Map<String, Object> project = requireProject(companyId, projectId);
         project.put("contracts", assignedContracts(companyId, projectId));
         return project;
+    }
+
+    public Map<String, Object> ledgerDetail(Long projectId) {
+        long companyId = requireManager();
+        Map<String, Object> project = requireProject(companyId, projectId);
+        List<Long> ids = jdbc.queryForList("""
+                SELECT contract_id FROM project_contract_assignment
+                WHERE company_id = ? AND project_id = ? ORDER BY created_at, id
+                """, Long.class, companyId, projectId);
+        if (ids.isEmpty()) return ProjectLedgerDetail.build(project, companyId, List.of(), Map.of(), List.of());
+        var assignedIds = new java.util.HashSet<>(ids);
+        List<TradeContractRespDTO> contracts = new ArrayList<>();
+        for (int offset = 0; offset < ids.size(); offset += 500) {
+            List<Long> batch = ids.subList(offset, Math.min(ids.size(), offset + 500));
+            if (contractDirectory != null) contracts.addAll(contractDirectory.contractsByIds(batch));
+            else contracts.addAll(jdbc.query("SELECT * FROM trade_contract WHERE id IN ("
+                            + String.join(",", java.util.Collections.nCopies(batch.size(), "?")) + ")",
+                    (rs, row) -> {
+                        TradeContractRespDTO contract = new TradeContractRespDTO();
+                        contract.setId(rs.getLong("id"));
+                        contract.setCompanyId(rs.getLong("company_id"));
+                        contract.setCounterpartyCompanyId(rs.getObject("counterparty_company_id", Long.class));
+                        contract.setCounterpartyName(rs.getString("counterparty_name"));
+                        contract.setContractNo(rs.getString("contract_no"));
+                        contract.setDirection(rs.getString("direction"));
+                        contract.setStatus(rs.getString("status"));
+                        contract.setAmount(rs.getBigDecimal("amount"));
+                        contract.setStartDate(rs.getObject("start_date", LocalDate.class));
+                        contract.setApprovedAt(rs.getObject("approved_at", java.time.LocalDateTime.class));
+                        contract.setCreatedAt(rs.getObject("created_at", java.time.LocalDateTime.class));
+                        return contract;
+                    }, batch.toArray()));
+        }
+        // Restrict remote data to this company's assigned, active contracts before reading entries.
+        contracts = contracts.stream().filter(contract -> assignedIds.contains(contract.getId())).toList();
+        var activeIds = contracts.stream()
+                .filter(contract -> "ACTIVE".equals(contract.getStatus()))
+                .filter(contract -> Long.valueOf(companyId).equals(contract.getCompanyId())
+                        || Long.valueOf(companyId).equals(contract.getCounterpartyCompanyId()))
+                .map(TradeContractRespDTO::getId).distinct().toList();
+        var entries = new ArrayList<com.tradepass.module.settlement.api.reconciliation.ReconciliationAccountOperations.ProjectLedgerEntry>();
+        for (int offset = 0; offset < activeIds.size(); offset += 500) {
+            entries.addAll(reconciliationAccounts.projectLedgerEntries(activeIds.subList(offset, Math.min(activeIds.size(), offset + 500))));
+        }
+        Map<Long, String> names;
+        var initiatorIds = contracts.stream().map(TradeContractRespDTO::getCompanyId).distinct().toList();
+        if (identityDirectory != null) names = identityDirectory.companyNames(initiatorIds);
+        else {
+            names = new LinkedHashMap<>();
+            for (Long id : initiatorIds) names.put(id, jdbc.queryForObject("SELECT name FROM company WHERE id = ?", String.class, id));
+        }
+        Map<String, Object> detail = ProjectLedgerDetail.build(project, companyId, contracts, names, entries);
+        detail.put("excludedContractCount", ids.size() - ((Number) detail.get("contractCount")).intValue());
+        return detail;
+    }
+
+    public byte[] ledgerWorkbook(Long projectId) {
+        return ProjectLedgerWorkbook.generate(ledgerDetail(projectId));
     }
 
     public Map<String, Object> contractAssignment(Long contractId) {

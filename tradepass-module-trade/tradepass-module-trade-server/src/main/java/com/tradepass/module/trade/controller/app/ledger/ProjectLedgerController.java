@@ -48,6 +48,18 @@ public class ProjectLedgerController {
         return ApiResponse.ok(projectLedgerService.project(id));
     }
 
+    @GetMapping("/{id:\\d+}/ledger")
+    public ApiResponse<Map<String, Object>> ledger(@PathVariable Long id) {
+        return ApiResponse.ok(projectLedgerService.ledgerDetail(id));
+    }
+
+    @GetMapping("/{id:\\d+}/ledger/workbook-data")
+    public ApiResponse<Map<String, Object>> ledgerWorkbook(@PathVariable Long id) {
+        return ApiResponse.ok(Map.of("fileName", "项目账套台账明细-" + id + ".xlsx",
+                "contentType", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "contentBase64", java.util.Base64.getEncoder().encodeToString(projectLedgerService.ledgerWorkbook(id))));
+    }
+
     @GetMapping("/{id:\\d+}/available-contracts")
     public ApiResponse<List<Map<String, Object>>> availableContracts(@PathVariable Long id) {
         return ApiResponse.ok(projectLedgerService.availableContracts(id));

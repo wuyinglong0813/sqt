@@ -76,6 +76,19 @@ public class ReconciliationAccountServiceImpl implements ReconciliationAccountSe
 
     public List<Map<String, Object>> listAccounts() { return listAccounts(null); }
 
+    public List<ProjectLedgerEntry> projectLedgerEntries(List<Long> contractIds) {
+        long companyId = AuthContext.requireCompanyId();
+        accessControlService.requireManager(companyId);
+        if (contractIds == null || contractIds.isEmpty()) return List.of();
+        List<Long> ids = contractIds.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) return List.of();
+        if (ids.size() > 500) throw new BusinessException("每次最多查询 500 份合同台账");
+        return entryMapper.selectProjectLedgerEntries(companyId, ids).stream()
+                .map(entry -> new ProjectLedgerEntry(entry.getId(), entry.getContractId(),
+                        entry.getSourceType(), entry.getBusinessDate(), entry.getDocumentNo(),
+                        entry.getAmount(), entry.getApprovedAt())).toList();
+    }
+
     public List<Map<String, Object>> listAccounts(String role) {
         long companyId = AuthContext.requireCompanyId();
         accessControlService.requirePermission(companyId, "reconciliation");

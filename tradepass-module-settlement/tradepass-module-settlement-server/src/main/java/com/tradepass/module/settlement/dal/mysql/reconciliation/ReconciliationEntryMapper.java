@@ -14,6 +14,21 @@ import java.util.List;
 
 @Mapper
 public interface ReconciliationEntryMapper extends BaseMapper<ReconciliationEntryDO> {
+    @Select("""
+            <script>
+            SELECT id, contract_id, source_type, business_date, document_no, amount, approved_at
+            FROM reconciliation_entry
+            WHERE (company_a_id = #{companyId} OR company_b_id = #{companyId})
+              AND contract_id IN
+              <foreach collection="contractIds" item="contractId" open="(" separator="," close=")">
+                #{contractId}
+              </foreach>
+            ORDER BY business_date, approved_at, id
+            </script>
+            """)
+    List<ReconciliationEntryDO> selectProjectLedgerEntries(@Param("companyId") long companyId,
+                                                          @Param("contractIds") List<Long> contractIds);
+
     @Insert("""
             INSERT INTO reconciliation_entry
             (id, company_a_id, company_b_id, contract_id, source_type, source_id,

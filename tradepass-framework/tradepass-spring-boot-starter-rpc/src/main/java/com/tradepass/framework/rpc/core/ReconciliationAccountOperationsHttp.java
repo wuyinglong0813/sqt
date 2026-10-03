@@ -25,6 +25,7 @@ public class ReconciliationAccountOperationsHttp {
     public record Account1Request(Long counterpartyCompanyId) {}
     public record Account2Request(Long counterpartyCompanyId, String role) {}
     public record Workbook1Request(Long counterpartyCompanyId) {}
+    public record ProjectLedgerEntries1Request(List<Long> contractIds) {}
     public record RecordSalesOrder5Request(BusinessDocumentRespDTO document, BigDecimal amount, LocalDate businessDate, long approvedBy, LocalDateTime approvedAt) {}
     public record RecordReturnOrder5Request(BusinessDocumentRespDTO document, BigDecimal amount, LocalDate businessDate, long approvedBy, LocalDateTime approvedAt) {}
     public record RecordAttachment9Request(TradeContractRespDTO contract, String sourceType, long sourceId, LocalDate businessDate, String documentNo, BigDecimal amount, long issuerCompanyId, long approvedBy, LocalDateTime approvedAt) {}
@@ -43,6 +44,8 @@ public class ReconciliationAccountOperationsHttp {
         Map<String, Object> account2(@RequestBody Account2Request request);
         @PostMapping("/internal/domain/ReconciliationAccountOperations/workbook1")
         WorkbookRespDTO workbook1(@RequestBody Workbook1Request request);
+        @PostMapping("/internal/domain/ReconciliationAccountOperations/projectLedgerEntries1")
+        List<ProjectLedgerEntry> projectLedgerEntries1(@RequestBody ProjectLedgerEntries1Request request);
         @PostMapping("/internal/domain/ReconciliationAccountOperations/recordSalesOrder5")
         void recordSalesOrder5(@RequestBody RecordSalesOrder5Request request);
         @PostMapping("/internal/domain/ReconciliationAccountOperations/recordReturnOrder5")
@@ -62,6 +65,7 @@ public class ReconciliationAccountOperationsHttp {
             @Override public Map<String, Object> account(Long counterpartyCompanyId) { return client.account1(new Account1Request(counterpartyCompanyId)); }
             @Override public Map<String, Object> account(Long counterpartyCompanyId, String role) { return client.account2(new Account2Request(counterpartyCompanyId, role)); }
             @Override public WorkbookRespDTO workbook(Long counterpartyCompanyId) { return client.workbook1(new Workbook1Request(counterpartyCompanyId)); }
+            @Override public List<ProjectLedgerEntry> projectLedgerEntries(List<Long> contractIds) { return client.projectLedgerEntries1(new ProjectLedgerEntries1Request(contractIds)); }
             @Override public void recordSalesOrder(BusinessDocumentRespDTO document, BigDecimal amount, LocalDate businessDate, long approvedBy, LocalDateTime approvedAt) { client.recordSalesOrder5(new RecordSalesOrder5Request(document, amount, businessDate, approvedBy, approvedAt)); }
             @Override public void recordReturnOrder(BusinessDocumentRespDTO document, BigDecimal amount, LocalDate businessDate, long approvedBy, LocalDateTime approvedAt) { client.recordReturnOrder5(new RecordReturnOrder5Request(document, amount, businessDate, approvedBy, approvedAt)); }
             @Override public void recordAttachment(TradeContractRespDTO contract, String sourceType, long sourceId, LocalDate businessDate, String documentNo, BigDecimal amount, long issuerCompanyId, long approvedBy, LocalDateTime approvedAt) { client.recordAttachment9(new RecordAttachment9Request(contract, sourceType, sourceId, businessDate, documentNo, amount, issuerCompanyId, approvedBy, approvedAt)); }
@@ -84,6 +88,8 @@ public class ReconciliationAccountOperationsHttp {
         public Map<String, Object> account2(@RequestBody Account2Request request) { return operations.account(request.counterpartyCompanyId(), request.role()); }
         @PostMapping("/internal/domain/ReconciliationAccountOperations/workbook1")
         public WorkbookRespDTO workbook1(@RequestBody Workbook1Request request) { return operations.workbook(request.counterpartyCompanyId()); }
+        @PostMapping("/internal/domain/ReconciliationAccountOperations/projectLedgerEntries1")
+        public List<ProjectLedgerEntry> projectLedgerEntries1(@RequestBody ProjectLedgerEntries1Request request) { return operations.projectLedgerEntries(request.contractIds()); }
         @PostMapping("/internal/domain/ReconciliationAccountOperations/recordSalesOrder5")
         public void recordSalesOrder5(@RequestBody RecordSalesOrder5Request request) { operations.recordSalesOrder(request.document(), request.amount(), request.businessDate(), request.approvedBy(), request.approvedAt()); }
         @PostMapping("/internal/domain/ReconciliationAccountOperations/recordReturnOrder5")

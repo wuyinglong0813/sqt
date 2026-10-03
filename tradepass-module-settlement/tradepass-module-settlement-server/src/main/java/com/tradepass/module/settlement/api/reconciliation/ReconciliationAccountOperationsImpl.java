@@ -20,6 +20,7 @@ public class ReconciliationAccountOperationsImpl implements ReconciliationAccoun
     @Override public Map<String, Object> account(Long counterpartyCompanyId) { return delegate.account(counterpartyCompanyId); }
     @Override public Map<String, Object> account(Long counterpartyCompanyId, String role) { return delegate.account(counterpartyCompanyId, role); }
     @Override public WorkbookRespDTO workbook(Long counterpartyCompanyId) { return delegate.workbook(counterpartyCompanyId); }
+    @Override public List<ProjectLedgerEntry> projectLedgerEntries(List<Long> contractIds) { return delegate.projectLedgerEntries(contractIds); }
     @Override public void recordSalesOrder(BusinessDocumentRespDTO document, BigDecimal amount,
                                  LocalDate businessDate, long approvedBy,
                                  LocalDateTime approvedAt) { delegate.recordSalesOrder(document, amount, businessDate, approvedBy, approvedAt); }
