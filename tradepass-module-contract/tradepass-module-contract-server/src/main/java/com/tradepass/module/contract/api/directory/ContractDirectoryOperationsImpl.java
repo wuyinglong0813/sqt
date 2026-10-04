@@ -1,6 +1,8 @@
 package com.tradepass.module.contract.api.directory;
 
 import com.tradepass.module.contract.api.contract.dto.TradeContractRespDTO;
+import com.tradepass.framework.common.pojo.TradePassDtos.RankingItem;
+import com.tradepass.framework.common.pojo.TradePassDtos.CounterpartyContractCount;
 import java.util.List;
 import com.tradepass.module.contract.service.directory.ContractDirectoryService;
 import com.tradepass.module.contract.convert.contract.TradeContractConvert;
@@ -15,4 +17,6 @@ public class ContractDirectoryOperationsImpl implements ContractDirectoryOperati
     @Override public Long activePartyContractId(long companyId, Long contractId) { return delegate.activePartyContractId(companyId, contractId); }
     @Override public List<TradeContractRespDTO> partyContracts(long companyId, String counterpartyName, String status, int limit, long offset) { return delegate.partyContracts(companyId, counterpartyName, status, limit, offset) .stream().map(TradeContractConvert.INSTANCE::toDTO).toList(); }
     @Override public long partyContractCount(long companyId, String counterpartyName, String status) { return delegate.partyContractCount(companyId, counterpartyName, status); }
+    @Override public List<RankingItem> signedTradeRanking(long companyId, String viewerDirection, String period) { return delegate.signedTradeRanking(companyId, viewerDirection, period); }
+    @Override public List<CounterpartyContractCount> signedTradeContractCounts(long companyId, String viewerDirection) { return delegate.signedTradeContractCounts(companyId, viewerDirection); }
 }

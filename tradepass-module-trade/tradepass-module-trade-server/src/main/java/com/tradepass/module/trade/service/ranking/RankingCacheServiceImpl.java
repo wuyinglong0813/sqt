@@ -43,6 +43,6 @@ public class RankingCacheServiceImpl implements RankingCacheService {
     }
 
     private String key(long companyId, String direction, String period) {
-        return "ranking:" + companyId + ":" + direction.toLowerCase() + ":" + period;
+        return "ranking:standalone-orders:v2:" + companyId + ":" + direction.toLowerCase() + ":" + period;
     }
 }

@@ -11,11 +11,13 @@ import java.util.Map;
 
 @Mapper
 public interface TradeOrderMapper extends BaseMapper<TradeOrderDO> {
+    // Contract-linked orders are represented once by the signed contract aggregate.
     @Select("""
         SELECT counterparty_name AS counterpartyName, SUM(amount) AS totalAmount, COUNT(1) AS orderCount
         FROM trade_order
         WHERE company_id = #{companyId}
           AND direction = #{direction}
+          AND contract_id IS NULL
           AND (#{period} = 'total'
             OR (#{period} = 'year' AND YEAR(order_date) = YEAR(CURDATE()))
             OR (#{period} = 'month' AND YEAR(order_date) = YEAR(CURDATE()) AND MONTH(order_date) = MONTH(CURDATE()))

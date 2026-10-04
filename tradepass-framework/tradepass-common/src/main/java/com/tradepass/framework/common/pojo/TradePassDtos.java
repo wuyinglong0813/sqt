@@ -58,7 +58,10 @@ public final class TradePassDtos {
     public record RankingItem(int rank, String counterpartyName, BigDecimal amount, int orderCount, String trend) {
     }
 
-    public record HomePayload(String companyId, String companyName, String role, String roleText, List<String> periods, List<RankingItem> ranking) {
+    public record CounterpartyContractCount(String counterpartyCompanyId, int contractCount) {
+    }
+
+    public record HomePayload(String companyId, String companyName, String role, String roleText, List<String> periods, List<RankingItem> ranking, List<CounterpartyContractCount> partnerContractCounts) {
     }
 
     public record SealRecord(String id, String companyId, String fileUrl, String usage, String status) {

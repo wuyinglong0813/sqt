@@ -13,6 +13,42 @@ import java.util.List;
 
 @Mapper
 public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
+    @Select("""
+        SELECT CASE WHEN t.company_id = #{companyId} THEN t.counterparty_company_id
+                    ELSE t.company_id END AS counterpartyCompanyId,
+               COUNT(*) AS contractCount
+        FROM trade_contract t
+        WHERE (t.company_id = #{companyId} OR t.counterparty_company_id = #{companyId})
+          AND t.status IN ('ACTIVE', 'COMPLETED')
+          AND (t.company_id <> #{companyId} OR COALESCE(t.initiator_hidden, 0) = 0)
+        """ + ContractViewerDirectionSql.FILTER + """
+        GROUP BY counterpartyCompanyId
+        """)
+    List<Map<String, Object>> selectSignedTradeContractCounts(@Param("companyId") Long companyId,
+                                                             @Param("viewerDirection") String viewerDirection);
+
+    @Select("""
+        SELECT CASE WHEN t.company_id = #{companyId} THEN t.counterparty_company_id
+                    ELSE t.company_id END AS counterpartyCompanyId,
+               CASE WHEN t.company_id = #{companyId} THEN t.counterparty_name
+                    ELSE NULL END AS counterpartyName,
+               SUM(t.amount) AS totalAmount, COUNT(*) AS orderCount
+        FROM trade_contract t
+        WHERE (t.company_id = #{companyId} OR t.counterparty_company_id = #{companyId})
+          AND t.status IN ('ACTIVE', 'COMPLETED')
+          AND (t.company_id <> #{companyId} OR COALESCE(t.initiator_hidden, 0) = 0)
+        """ + ContractViewerDirectionSql.FILTER + """
+          AND ((#{period} = 'year' AND YEAR(COALESCE(t.approved_at, t.created_at)) = YEAR(CURDATE()))
+            OR (#{period} = 'month' AND YEAR(COALESCE(t.approved_at, t.created_at)) = YEAR(CURDATE())
+                AND MONTH(COALESCE(t.approved_at, t.created_at)) = MONTH(CURDATE()))
+            OR (#{period} = 'last12' AND COALESCE(t.approved_at, t.created_at) >=
+                DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 11 MONTH), '%Y-%m-01')))
+        GROUP BY counterpartyCompanyId, counterpartyName
+        """)
+    List<Map<String, Object>> selectSignedTradeRanking(@Param("companyId") Long companyId,
+                                                      @Param("viewerDirection") String viewerDirection,
+                                                      @Param("period") String period);
+
     @Select("SELECT contract.* " + ContractSigningTodoSql.FROM_AND_WHERE
             + " ORDER BY contract.created_at DESC, contract.id DESC")
     List<TradeContractDO> selectContractsAwaitingSignature(@Param("companyId") long companyId);

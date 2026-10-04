@@ -43,6 +43,13 @@ import com.tradepass.module.trade.service.memo.PersonalMemoService;
 import com.tradepass.module.contract.dal.mysql.signing.ContractSigningTodoSql;
 import com.tradepass.module.contract.dal.mysql.signing.FadadaContractSignTaskMapper;
 import com.tradepass.module.contract.dal.mysql.contract.TradeContractMapper;
+import com.tradepass.module.contract.service.directory.ContractDirectoryServiceImpl;
+import com.tradepass.module.contract.api.directory.ContractDirectoryOperationsImpl;
+import com.tradepass.module.identity.api.directory.IdentityDirectoryOperations;
+import com.tradepass.module.trade.dal.mysql.order.TradeOrderMapper;
+import com.tradepass.module.trade.service.ranking.RankingServiceImpl;
+import com.tradepass.framework.common.pojo.TradePassDtos.RankingItem;
+import com.tradepass.framework.common.pojo.TradePassDtos.CounterpartyContractCount;
 import com.tradepass.module.contract.service.abolish.ContractAbolishIntentService;
 import com.tradepass.module.contract.service.abolish.ContractAbolishRecoveryService;
 import com.tradepass.module.contract.service.archive.ContractArchiveService;
@@ -110,6 +117,7 @@ class MysqlWorkflowConcurrencyTest {
     private static TransactionTemplate tx;
     private static BusinessDocumentMapper documents;
     private static TradeContractMapper contracts;
+    private static TradeOrderMapper orders;
     private static FadadaContractSignTaskMapper signingTasks;
     private static FadadaCallbackEventMapper events;
     private static SysUserMapper users;
@@ -150,6 +158,7 @@ class MysqlWorkflowConcurrencyTest {
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(BusinessDocumentMapper.class);
         config.addMapper(TradeContractMapper.class);
+        config.addMapper(TradeOrderMapper.class);
         config.addMapper(FadadaContractSignTaskMapper.class);
         config.addMapper(FadadaCallbackEventMapper.class);
         config.addMapper(SysUserMapper.class);
@@ -162,6 +171,7 @@ class MysqlWorkflowConcurrencyTest {
         var session = new SqlSessionTemplate(factory.getObject());
         documents = session.getMapper(BusinessDocumentMapper.class);
         contracts = session.getMapper(TradeContractMapper.class);
+        orders = session.getMapper(TradeOrderMapper.class);
         signingTasks = session.getMapper(FadadaContractSignTaskMapper.class);
         events = session.getMapper(FadadaCallbackEventMapper.class);
         users = session.getMapper(SysUserMapper.class);
@@ -203,6 +213,72 @@ class MysqlWorkflowConcurrencyTest {
     }
 
     @AfterEach void clearAuth() { AuthContext.clear(); }
+
+    @Test
+    void homeTradeStatisticsCountSignedContractsForBothPartiesWithoutDuplicatingLinkedOrders() {
+        long supplier = IDS.incrementAndGet(), buyer = IDS.incrementAndGet();
+        var today = jdbc.queryForObject("SELECT CURDATE()", java.sql.Date.class).toLocalDate();
+        var current = today.atTime(12, 0);
+        var old = today.minusYears(1).atTime(12, 0);
+        long sale = rankingContract(supplier, buyer, "SALE", "ACTIVE", "100", old, current);
+        rankingContract(buyer, supplier, "PURCHASE", "COMPLETED", "200", current, current);
+        rankingContract(supplier, buyer, "PURCHASE", "ACTIVE", "300", current, current);
+        rankingContract(supplier, buyer, "SALE", "PENDING", "400", current, null);
+        rankingContract(supplier, buyer, "SALE", "VOIDED", "500", current, current);
+        rankingContract(supplier, buyer, "SALE", "ACTIVE", "600", current, null);
+        rankingContract(supplier, buyer, "SALE", "ACTIVE", "700", old, old);
+        // Historical linked order rows represent the same signed contract, once.
+        jdbc.update("""
+                INSERT INTO trade_order(id,company_id,contract_id,counterparty_company_id,direction,
+                    counterparty_name,order_no,amount,order_date,status,created_by)
+                VALUES (?,?,?,?,?,'买方',?,100,?,'CONFIRMED',7),(?,?,NULL,?,?,'买方',?,50,?,'CONFIRMED',7)
+                """, IDS.incrementAndGet(), supplier, sale, buyer, "SALE", "ORD-LINKED-" + supplier, today,
+                IDS.incrementAndGet(), supplier, buyer, "SALE", "ORD-STANDALONE-" + supplier, today);
+        var identity = mock(IdentityDirectoryOperations.class);
+        when(identity.companyNames(anyList())).thenReturn(Map.of(supplier, "供方", buyer, "买方"));
+        var directory = new ContractDirectoryOperationsImpl(new ContractDirectoryServiceImpl(contracts, identity, jdbc));
+        var access = mock(AccessControlOperations.class);
+        when(access.resolveCompanyId(String.valueOf(supplier))).thenReturn(supplier);
+        when(access.resolveCompanyId(String.valueOf(buyer))).thenReturn(buyer);
+        var ranking = new RankingServiceImpl(orders, mock(CompanyReader.class), access, null, directory);
+
+        var supplierSales = ranking.supplierHome("year", String.valueOf(supplier)).ranking();
+        assertThat(supplierSales).hasSize(1);
+        assertThat(supplierSales.get(0).counterpartyName()).isEqualTo("买方");
+        assertThat(supplierSales.get(0).orderCount()).isEqualTo(4);
+        assertThat(supplierSales.get(0).amount()).isEqualByComparingTo("950");
+        var buyerPurchases = ranking.buyerHome("year", String.valueOf(buyer)).ranking();
+        assertThat(buyerPurchases).containsExactly(new RankingItem(1, "供方", new BigDecimal("900.00"), 3, "FLAT"));
+        assertThat(ranking.buyerHome("month", String.valueOf(supplier)).ranking().get(0).amount())
+                .isEqualByComparingTo("300");
+        assertThat(ranking.supplierHome("last12", String.valueOf(buyer)).ranking().get(0).amount())
+                .isEqualByComparingTo("300");
+        // Partner ordering uses all signed contracts, including older contracts;
+        // standalone orders, pending signatures and voids never increase this count.
+        assertThat(ranking.supplierHome("month", String.valueOf(supplier)).partnerContractCounts())
+                .containsExactly(new CounterpartyContractCount(String.valueOf(buyer), 4));
+        assertThat(ranking.buyerHome("year", String.valueOf(buyer)).partnerContractCounts())
+                .containsExactly(new CounterpartyContractCount(String.valueOf(supplier), 4));
+        assertThat(ranking.supplierHome("year", String.valueOf(buyer)).partnerContractCounts())
+                .containsExactly(new CounterpartyContractCount(String.valueOf(supplier), 1));
+        // A refresh reflects a later void without changing or recreating historical data.
+        jdbc.update("UPDATE trade_contract SET status='VOIDED' WHERE id=?", sale);
+        assertThat(ranking.supplierHome("year", String.valueOf(supplier)).ranking().get(0).amount())
+                .isEqualByComparingTo("850");
+        assertThat(ranking.supplierHome("year", String.valueOf(supplier)).partnerContractCounts())
+                .containsExactly(new CounterpartyContractCount(String.valueOf(buyer), 3));
+    }
+
+    private long rankingContract(long owner, long counterparty, String direction, String status,
+                                 String amount, LocalDateTime created, LocalDateTime approved) {
+        long id = IDS.incrementAndGet();
+        jdbc.update("""
+                INSERT INTO trade_contract(id,company_id,counterparty_company_id,counterparty_name,
+                    name,amount,status,initiated_by,direction,contract_no,created_at,approved_at)
+                VALUES (?,?,?,'买方','统计回归',?,?,7,?,?,?,?)
+                """, id, owner, counterparty, new BigDecimal(amount), status, direction, "HT-STAT-" + id, created, approved);
+        return id;
+    }
 
     @Test void confirmationWinsWithdrawalAndKeepsInventoryAndLedgerConsistent() throws Exception {
         race(4, this::receive, 3, () -> documentService.withdraw(documentId));

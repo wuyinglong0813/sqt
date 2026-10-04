@@ -11,6 +11,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.List;
 import java.util.Map;
+import java.math.BigDecimal;
+import com.tradepass.framework.common.pojo.TradePassDtos.RankingItem;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -21,6 +23,27 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ContractDirectoryServiceTest {
+    @org.junit.jupiter.api.BeforeAll
+    static void initializeContractMapping() {
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+                new org.apache.ibatis.builder.MapperBuilderAssistant(
+                        new com.baomidou.mybatisplus.core.MybatisConfiguration(), "directory-test"),
+                TradeContractDO.class);
+    }
+
+    @Test
+    void tradeRankingResolvesIncomingPartnerNamesWithoutLoadingContractContent() {
+        TradeContractMapper contracts = mock(TradeContractMapper.class);
+        IdentityDirectoryOperations identity = mock(IdentityDirectoryOperations.class);
+        when(contracts.selectSignedTradeRanking(4L, "PURCHASE", "year")).thenReturn(List.of(
+                Map.of("counterpartyCompanyId", 3L, "totalAmount", new BigDecimal("27000"), "orderCount", 4)));
+        when(identity.companyNames(List.of(3L))).thenReturn(Map.of(3L, "供方企业"));
+        var service = new ContractDirectoryServiceImpl(contracts, identity, mock(JdbcTemplate.class));
+
+        assertThat(service.signedTradeRanking(4L, "PURCHASE", "year"))
+                .containsExactly(new RankingItem(0, "供方企业", new BigDecimal("27000"), 4, "FLAT"));
+    }
+
     @Test
     @SuppressWarnings("unchecked")
     void partyListHidesPendingContractsUntilTheInitiatorSigns() {

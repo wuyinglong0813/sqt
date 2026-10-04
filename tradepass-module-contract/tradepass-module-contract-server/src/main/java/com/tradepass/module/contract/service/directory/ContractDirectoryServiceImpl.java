@@ -10,9 +10,12 @@ import com.tradepass.module.contract.dal.mysql.contract.TradeContractMapper;
 import com.tradepass.module.contract.dal.mysql.signing.ContractSigningTodoSql;
 import com.tradepass.module.identity.api.directory.IdentityDirectoryOperations;
 import com.tradepass.module.identity.api.directory.IdentityDirectoryOperations.*;
+import com.tradepass.framework.common.pojo.TradePassDtos.RankingItem;
+import com.tradepass.framework.common.pojo.TradePassDtos.CounterpartyContractCount;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import java.util.List;
+import java.math.BigDecimal;
 
 @Service
 public class ContractDirectoryServiceImpl implements ContractDirectoryService {
@@ -54,6 +57,35 @@ public class ContractDirectoryServiceImpl implements ContractDirectoryService {
     public long partyContractCount(long companyId, String name, String status, String viewerDirection) {
         return contracts.selectCount(partyQuery(companyId, name, status, viewerDirection));
     }
+
+    public List<RankingItem> signedTradeRanking(long companyId, String viewerDirection, String period) {
+        if (!List.of("SALE", "PURCHASE").contains(viewerDirection)
+                || !List.of("year", "month", "last12").contains(period)) {
+            throw new IllegalArgumentException("Invalid trade ranking direction or period");
+        }
+        var rows = contracts.selectSignedTradeRanking(companyId, viewerDirection, period);
+        var ids = rows.stream().map(row -> row.get("counterpartyCompanyId"))
+                .filter(Number.class::isInstance).map(id -> ((Number) id).longValue()).distinct().toList();
+        var names = ids.isEmpty() ? java.util.Map.<Long, String>of() : identity.companyNames(ids);
+        return rows.stream().map(row -> {
+            Long id = row.get("counterpartyCompanyId") instanceof Number value ? value.longValue() : null;
+            String name = id == null ? null : names.get(id);
+            if (name == null) name = row.get("counterpartyName") instanceof String value ? value : "未知企业";
+            return new RankingItem(0, name, (BigDecimal) row.get("totalAmount"),
+                    ((Number) row.get("orderCount")).intValue(), "FLAT");
+        }).toList();
+    }
+
+    public List<CounterpartyContractCount> signedTradeContractCounts(long companyId, String viewerDirection) {
+        if (!List.of("SALE", "PURCHASE").contains(viewerDirection)) {
+            throw new IllegalArgumentException("Invalid trade direction");
+        }
+        return contracts.selectSignedTradeContractCounts(companyId, viewerDirection).stream()
+                .filter(row -> row.get("counterpartyCompanyId") != null)
+                .map(row -> new CounterpartyContractCount(String.valueOf(row.get("counterpartyCompanyId")),
+                        ((Number) row.get("contractCount")).intValue())).toList();
+    }
+
     private LambdaQueryWrapper<TradeContractDO> partyQuery(long companyId, String name, String status, String viewerDirection) {
         // Preserve the original INNER JOIN, including removal of rows with missing initiators.
         var initiators = jdbc.queryForList("SELECT DISTINCT company_id FROM trade_contract WHERE company_id = ? OR counterparty_company_id = ?", Long.class, companyId, companyId);
