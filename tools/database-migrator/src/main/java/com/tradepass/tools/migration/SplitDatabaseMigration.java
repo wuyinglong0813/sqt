@@ -74,6 +74,7 @@ public final class SplitDatabaseMigration {
                 target.connection().setAutoCommit(false);
                 // The baseline creates only system permission seed data. Replace it with the source's exact definitions.
                 if (target.role().equals("identity")) execute(target.connection(), "DELETE FROM perm_def");
+                if (target.role().equals("contract")) execute(target.connection(), "DELETE FROM membership_policy_state");
             }
             for (Target target : targets) {
                 for (String table : ownership.get(target.role())) copyAndVerify(source, target, table, "");
@@ -151,8 +152,8 @@ public final class SplitDatabaseMigration {
     private static void requireSourceVersion(Connection source) throws SQLException {
         try (var statement = source.createStatement(); var rows = statement.executeQuery(
                 "SELECT MAX(CAST(version AS UNSIGNED)), SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) FROM flyway_schema_history")) {
-            if (!rows.next() || rows.getInt(1) != 38 || rows.getInt(2) != 0) {
-                throw new IllegalStateException("Source must have completed V38, including the retail tables in the ownership manifest");
+            if (!rows.next() || rows.getInt(1) != 39 || rows.getInt(2) != 0) {
+                throw new IllegalStateException("Source must have completed V39, including retail and membership tables in the ownership manifest");
             }
         }
     }

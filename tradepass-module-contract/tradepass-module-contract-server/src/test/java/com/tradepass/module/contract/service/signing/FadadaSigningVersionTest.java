@@ -119,4 +119,35 @@ class FadadaSigningVersionTest {
                 BigDecimal.TEN, null, null, "条款", "PENDING", version, "7", null, null, null,
                 "签署时供方", "买方", "3", "4", "买方", "SALE", "INITIATOR");
     }
+
+    @Test void existingSigningAndRecipientDoNotConsultNewTaskQuotaPolicy() {
+        var membership=mock(com.tradepass.module.contract.service.membership.MembershipService.class);
+        ((FadadaContractSigningServiceImpl)service).setMembershipService(membership);
+        when(contracts.selectById(12L)).thenReturn(contract);
+        assertThat(service.signingQuote(12L)).containsEntry("newTask",false);
+        AuthContext.set(8L,4L);
+        assertThat(service.signingQuote(12L)).containsEntry("newTask",false).containsEntry("canSign",true);
+        verifyNoInteractions(membership);
+    }
+
+    @Test void completionCallbackRecoversDurableReceiptWithoutLoginOrNewProviderCreation() throws Exception {
+        var membership=mock(com.tradepass.module.contract.service.membership.MembershipService.class);
+        ((FadadaContractSigningServiceImpl)service).setMembershipService(membership);
+        var frozen=snapshot(2);
+        when(membership.confirmedContract("v2")).thenReturn(12L);
+        when(membership.existing(12L,2)).thenReturn(
+                new com.tradepass.module.contract.service.membership.MembershipService.Reservation(
+                        1L,"CONSUMED",false,"v2","file","doc",new ObjectMapper().writeValueAsString(frozen),"a".repeat(64)));
+        var stored=new java.util.concurrent.atomic.AtomicReference<FadadaContractSignTaskDO>();
+        when(tasks.selectOne(any(Wrapper.class))).thenAnswer(inv->stored.get());
+        doAnswer(inv->{ var value=(FadadaContractSignTaskDO)inv.getArgument(0); value.setId(20L); stored.set(value); return 1; })
+                .when(tasks).insert(any(FadadaContractSignTaskDO.class));
+        AuthContext.clear();
+        service.syncBySignTaskId("v2");
+        verify(gateway,never()).createTask(any());
+        verify(pdf,never()).generate(any());
+        verify(trade,never()).contractForElectronicSignature(any(),anyLong());
+        verify(archive).archiveSignedPdf(eq(frozen),any(byte[].class),eq("v2"),eq(7L));
+        verify(trade).activateAfterElectronicSignature(12L,2,7L);
+    }
 }

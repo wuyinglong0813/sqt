@@ -7,6 +7,7 @@ import com.tradepass.module.contract.service.abolish.ContractAbolishRecoveryServ
 import com.tradepass.module.contract.service.archive.ContractArchiveService;
 import com.tradepass.module.contract.service.archive.ContractPdfService;
 import com.tradepass.module.contract.service.contract.TradeService;
+import com.tradepass.module.contract.service.membership.MembershipService;
 import com.tradepass.module.trade.api.bilateral.BilateralStateOperations;
 import com.tradepass.module.trade.api.bilateral.BilateralStateOperations.*;
 
@@ -62,6 +63,31 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
     private final FadadaProperties properties;
     private final JdbcTemplate jdbc;
     private ContractAbolishIntentService abolishIntents;
+    private MembershipService membership;
+
+    @Autowired
+    public void setMembershipService(MembershipService membership) { this.membership = membership; }
+
+    public java.util.Map<String, Object> signingQuote(Long contractId) {
+        long companyId = AuthContext.requireCompanyId();
+        accessControl.requirePermission(companyId, "contract_sign");
+        TradeContractDO contract = requireParty(contractId, companyId);
+        FadadaContractSignTaskDO task = find(contract);
+        if (!"PENDING".equals(contract.getStatus())) throw new BusinessException("当前合同不在待签署状态");
+        if (!contract.getCompanyId().equals(companyId))
+            return java.util.Map.of("canSign", true, "newTask", false, "message", "接收方签署免费，额度由发起方承担");
+        if (task != null && hasText(task.getSignTaskId()))
+            return java.util.Map.of("canSign", true, "newTask", false, "message", "继续已有签署，不再消耗额度");
+        if (membership == null) return java.util.Map.of("canSign", true, "newTask", true, "message", "进入合同签署");
+        MembershipService.Reservation existing = membership.existing(contractId, version(contract));
+        if (existing != null && "CONSUMED".equals(existing.status()))
+            return java.util.Map.of("canSign", true, "newTask", false, "message", "恢复已有签署，不再消耗额度");
+        if (existing != null && !"RELEASED".equals(existing.status()))
+            return java.util.Map.of("canSign", false, "newTask", false, "message", "上次签署创建结果待核实，请联系平台");
+        var status = membership.status(requireCompany(companyId));
+        return java.util.Map.of("canSign", status.canInitiate(), "newTask", true, "message", status.reason(),
+                "policyRevision", status.policyRevision());
+    }
 
     @Autowired
     public void setAbolishIntentService(ContractAbolishIntentService service) { this.abolishIntents = service; }
@@ -156,6 +182,18 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
                         .or().eq(FadadaContractSignTaskDO::getAbolishedSignTaskId, signTaskId))
                 .last("LIMIT 1"));
         if (task == null) {
+            if (membership != null) {
+                Long recoverId = membership.confirmedContract(signTaskId);
+                if (recoverId != null) {
+                    TradeContractDO recover = contractMapper.selectByIdForUpdate(recoverId);
+                    if (recover != null && "PENDING".equals(recover.getStatus())) {
+                        MembershipService.Reservation receipt = membership.existing(recoverId, version(recover));
+                        if (receipt != null && signTaskId.equals(receipt.signTaskId())) task = prepare(recover);
+                    }
+                }
+            }
+        }
+        if (task == null) {
             if (syncCancelledAbolishTask(signTaskId, false)) return;
             if (recoverUnknownAbolishCallback(signTaskId)) return;
             throw new BusinessException("签署任务尚未就绪，请稍后重试");
@@ -248,6 +286,28 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
     private FadadaContractSignTaskDO prepare(TradeContractDO contract) {
         FadadaContractSignTaskDO existing = find(contract, true);
         if (existing != null && hasText(existing.getSignTaskId())) return existing;
+        MembershipService.Reservation receipt = membership == null ? null : membership.existing(contract.getId(), version(contract));
+        if (receipt != null && "CONSUMED".equals(receipt.status())) {
+            FadadaContractSignTaskDO restored = existing == null ? new FadadaContractSignTaskDO() : existing;
+            restored.setContractId(contract.getId());
+            restored.setVersionNo(version(contract));
+            restored.setContractSnapshot(receipt.snapshot());
+            ContractRespDTO frozen = signingSnapshot(contract, restored);
+            restored.setInitiatorCompanyId(contract.getCompanyId());
+            restored.setCounterpartyCompanyId(contract.getCounterpartyCompanyId());
+            String initiatorActor = "SALE".equalsIgnoreCase(frozen.direction()) ? "supplier" : "buyer";
+            restored.setInitiatorActorId(initiatorActor);
+            restored.setCounterpartyActorId("supplier".equals(initiatorActor) ? "buyer" : "supplier");
+            restored.setSignTaskId(receipt.signTaskId());
+            restored.setSourceFileId(receipt.sourceFileId());
+            restored.setDocId(receipt.docId());
+            restored.setSourceSha256(receipt.sha256());
+            restored.setProviderStatus("sign_progress");
+            restored.setPreparedAt(LocalDateTime.now());
+            restored.setLastError("");
+            if (existing == null) taskMapper.insert(restored); else taskMapper.updateById(restored);
+            return restored;
+        }
         CompanyRespDTO initiator = requireCompany(contract.getCompanyId());
         CompanyRespDTO counterparty = requireCompany(contract.getCounterpartyCompanyId());
         FadadaCorpIdentityRespDTO initiatorIdentity = companyService.requireVerified(initiator.getId());
@@ -277,13 +337,24 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
                 throw new BusinessException("签署文件正在准备，请稍后重试");
             }
         }
+        MembershipService.Reservation reservation = membership == null ? null
+                : membership.reserve(initiator, contract.getId(), version(contract), task.getContractSnapshot(), sha256);
         try {
-            FadadaSigningGateway.CreatedTask created = gateway.createTask(new FadadaSigningGateway.CreateTaskCommand(
+            FadadaSigningGateway.CreatedTask created;
+            if (reservation != null && !reservation.createAllowed()) {
+                created = new FadadaSigningGateway.CreatedTask(
+                        reservation.signTaskId(), reservation.sourceFileId(), reservation.docId());
+                task.setContractSnapshot(reservation.snapshot());
+                sha256 = reservation.sha256();
+            } else {
+                created = gateway.createTask(new FadadaSigningGateway.CreateTaskCommand(
                     pdf, pdfService.fileName(payload), contract.getName(),
                     "contract-" + contract.getId() + "-v" + task.getVersionNo(),
                     initiatorIdentity.getOpenCorpId(), initiatorActor, initiator.getName(), initiatorSeal,
                     counterpartyIdentity.getOpenCorpId(), counterpartyActor, counterparty.getName(), counterpartySeal,
                     "supplier", "buyer", properties.getCallbackUrl()));
+                if (reservation != null) membership.confirm(reservation.id(), created);
+            }
             task.setSignTaskId(created.signTaskId());
             task.setSourceFileId(created.fileId());
             task.setDocId(created.docId());
@@ -294,6 +365,7 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
             taskMapper.updateById(task);
             return task;
         } catch (RuntimeException exception) {
+            if (reservation != null) membership.uncertain(reservation.id());
             task.setProviderStatus("CREATE_FAILED");
             task.setLastError(shortMessage(exception));
             taskMapper.updateById(task);

@@ -20,7 +20,8 @@ public class GatewayApplication {
                 "/api/warehouses", "/api/contracts/*/documents", "/api/contracts/*/logistics-documents", "/api/contracts/*/logistics-documents/**",
                 "/api/logistics-documents/**", "/api/contracts/*/memo", "/api/project-ledgers", "/api/project-ledgers/**", "/api/home/**", "/api/rankings/**", "/api/retail/**");
         route(routes, env, "contract", 1112, "/api/contracts", "/api/contracts/**", "/api/contract-templates", "/api/contract-templates/**",
-                "/api/contract-template-categories", "/api/contract-template-categories/**", "/api/fadada/callback");
+                "/api/contract-template-categories", "/api/contract-template-categories/**", "/api/fadada/callback",
+                "/api/membership", "/api/membership/**");
         route(routes, env, "file", 1115, "/api/files/**");
         route(routes, env, "identity", 1111, "/api/auth/**", "/api/me", "/api/me/**", "/api/companies", "/api/companies/**",
                 "/api/company-certifications/**", "/api/counterparties", "/api/roles", "/api/roles/**", "/api/permissions",

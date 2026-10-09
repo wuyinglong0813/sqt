@@ -10,7 +10,7 @@
 
 ## 旧库迁移
 
-1. 源库必须已完成原 V1–V38（包含去外键 V37 和零售表 V38），原迁移脚本保持原样。准备四个全新的空数据库及只授权对应库的账号，完成备份，并停止所有旧业务写入进程和回调入口。目标库执行 owned V1 + V2，交易库另执行零售表 V3，最终不保留数据库外键。
+1. 源库必须已完成原 V1–V39（包含去外键 V37、零售表 V38 和会员额度 V39），原迁移脚本保持原样。准备四个全新的空数据库及只授权对应库的账号，完成备份，并停止所有旧业务写入进程和回调入口。目标库执行 owned V1 + V2，交易库另执行零售表 V3，合同库另执行会员额度 V3，最终不保留数据库外键。
 2. `mvn -f tools/database-migrator/pom.xml -DskipTests package` 构建迁移工具。用受保护的环境变量配置 `SOURCE_DATABASE_URL/SOURCE_DB_USERNAME/SOURCE_DB_PASSWORD` 和四组 `TARGET_<ROLE>_DATABASE_URL/TARGET_<ROLE>_DB_USERNAME/TARGET_<ROLE>_DB_PASSWORD`。
 3. 运行 `java -jar tools/database-migrator/target/tradepass-database-migrator-0.1.0-SNAPSHOT.jar --plan`。此步骤只读，检查表清单和行数，不建表。
 4. 确认写入已停止后，设置 `TRADEPASS_CUTOVER_WRITES_PAUSED=true`，以 `--apply` 运行同一个工具。目标执行各自的 Flyway 基线，复制原 ID、字段和文件 BLOB，按主键排序核对行数和 SHA-256；审计记录按业务类型分配，未知历史类型归 identity。

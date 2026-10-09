@@ -1,0 +1,30 @@
+# Nacos Data ID: tradepass-membership.yaml; Group: TRADEPASS_CORE
+# All quoted times are Beijing time yyyy-MM-dd HH:mm:ss, inclusive of the written second.
+tradepass:
+  membership:
+    trial:
+      enabled: true
+      activity-id: "launch-202610"
+      end-at: "2026-11-08 23:59:59"
+      sign-quota-per-company: 5
+      total-sign-quota: 500
+    # Payment is not connected in phase one. Keep false.
+    billing:
+      enabled: false
+    blacklist: []
+    whitelist: []
+    # Examples: replace with actual company IDs before adding.
+    # blacklist:
+    #   - company-id: "10003"
+    #     valid-until: null
+    #     reason: "暂停新发起电子签"
+    # whitelist:
+    #   - company-id: "10001"
+    #     mode: UNLIMITED
+    #     valid-until: null
+    #     reason: "长期合作"
+    #   - company-id: "10002"
+    #     mode: QUOTA
+    #     quota-total: 200
+    #     valid-until: "2026-12-31 23:59:59"
+    #     reason: "专属免费累计200份"

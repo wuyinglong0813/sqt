@@ -48,7 +48,7 @@ class GatewayRoutesTest {
                     count++;
                 }
             }
-            assertEquals(169, count, "Update the original HTTP contract deliberately when adding APIs");
+            assertEquals(172, count, "Update the original HTTP contract deliberately when adding APIs");
             assertNull(owner(routes, "/internal/identity/resolve"));
             assertNull(owner(routes, "/internal/storage/put"));
             assertNull(owner(routes, "/actuator/prometheus"));

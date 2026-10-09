@@ -47,11 +47,13 @@ public final class MergeBusinessMigration {
                 try (var statement = source.createStatement(); var rows = statement.executeQuery(
                         "SELECT COUNT(*), MAX(CAST(version AS UNSIGNED)), SUM(success = 0) FROM flyway_schema_history WHERE version IS NOT NULL")) {
                     boolean trade = role.equals("trade");
+                    boolean contract = role.equals("contract");
                     if (!rows.next() || rows.getInt(3) != 0
                             || (trade ? rows.getInt(1) != 3 || rows.getInt(2) != 3
+                            : contract ? rows.getInt(1) != 3 || rows.getInt(2) != 3
                             : !((rows.getInt(1) == 1 && rows.getInt(2) == 1)
                             || (rows.getInt(1) == 2 && rows.getInt(2) == 2)))) {
-                        throw new IllegalStateException("Source must match reviewed owned migrations (trade V3; contract/settlement V1 or V2): " + role);
+                        throw new IllegalStateException("Source must match reviewed owned migrations (trade/contract V3; settlement V1 or V2): " + role);
                     }
                 }
                 if (count(source, "undo_log") != 0) throw new IllegalStateException("Pending Seata undo records: " + role);
@@ -63,6 +65,7 @@ public final class MergeBusinessMigration {
                     .baselineOnMigrate(false).load().migrate();
             target.setAutoCommit(false);
             try {
+                try (var statement = target.createStatement()) { statement.executeUpdate("DELETE FROM membership_policy_state"); }
                 long auditRows = 0;
                 for (String role : ROLES) {
                     Connection source = sources.get(role);

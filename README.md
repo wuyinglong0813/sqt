@@ -10,7 +10,7 @@
 | `tradepass-gateway` | 统一 API 入口、路由与限流 |
 | `tradepass-framework/tradepass-common` / `tradepass-framework/tradepass-spring-boot-starter-governance` / `tradepass-framework/tradepass-spring-boot-starter-service` | 公共能力、服务治理、各服务运行配置 |
 | `tradepass-framework/tradepass-spring-boot-starter-rpc` | 跨服务接口适配和分布式事务 |
-| `sql/mysql/` | 历史单体库 Flyway 脚本（V1–V36），供测试与分库迁移参考 |
+| `sql/mysql/` | 历史单体库 Flyway 脚本（V1–V39），供测试与分库迁移参考 |
 | `tools/database-migrator/` | 分库离线复制工具（不在默认 Maven reactor，需 `-f` 单独构建） |
 | 各 `tradepass-module-*-server/src/test/java` | 领域单元/控制器测试（对齐 yudao：测试跟模块） |
 | `deploy/integration-tests` | 架构边界、HTTP 契约、MySQL 跨域流程（需 `-Dtradepass.test.mysql.url`） |
@@ -42,10 +42,12 @@ docker build -f tradepass-module-contract/tradepass-module-contract-server/Docke
 
 所有服务通过 `deploy/server/service.compose.yml` 或 Kubernetes/Helm 部署，统一入口默认网关 1110 端口。配置参见 `deploy/server/.env.example`；本地连接已有中间件可参考根目录 `.env.example`。旧单体的启动脚本、Dockerfile、私有配置和运行入口已移除。
 
-历史 V1–V36 SQL 位于 `sql/mysql/`，Flyway 测试通过 `RepoRoot.legacyMysqlMigrations()` 指向该目录。业务测试在各 `*-server` 与 framework starter 的 `src/test/java` 中运行，无单独「回归」业务模块。
+历史 V1–V39 SQL 位于 `sql/mysql/`，Flyway 测试通过 `RepoRoot.legacyMysqlMigrations()` 指向该目录。业务测试在各 `*-server` 与 framework starter 的 `src/test/java` 中运行，无单独「回归」业务模块。
 
 - [架构和模块边界](docs/microservice-architecture.md)
 - [数据库迁移、部署和验证](docs/server-microservices-cutover.md)
 - [服务器部署](deploy/server/README.md)
 - [CI/CD](docs/cicd-deployment.md)
 - [本次结构调整](MIGRATION.md)
+
+- [会员体验、黑白名单与签署额度的 Nacos 配置](docs/membership-nacos.md)
