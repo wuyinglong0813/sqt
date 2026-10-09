@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 
 public interface ContractDirectoryService {
+    java.math.BigDecimal partySalesAmount(long companyId);
     List<TradeContractDO> contractsByIds(List<Long> ids);
     List<TradeContractDO> activePartyContracts(long companyId);
     Long activePartyContractId(long companyId, Long contractId);

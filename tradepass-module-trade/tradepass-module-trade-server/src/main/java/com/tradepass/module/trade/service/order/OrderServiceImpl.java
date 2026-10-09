@@ -68,6 +68,9 @@ public class OrderServiceImpl implements OrderService {
     }
 
     public List<Map<String, Object>> monthlyOrderSummary(String counterpartyName, String direction) {
+        return monthlyOrderSummary(counterpartyName, direction, null);
+    }
+    public List<Map<String, Object>> monthlyOrderSummary(String counterpartyName, String direction, Long counterpartyCompanyId) {
         String cleanName = trim(counterpartyName);
         String cleanDirection = trim(direction);
         if (cleanName == null || cleanName.isBlank() || cleanDirection == null || cleanDirection.isBlank()) {
@@ -76,8 +79,8 @@ public class OrderServiceImpl implements OrderService {
         long companyId = AuthContext.requireCompanyId();
         accessControlService.requireAnyPermission(companyId, "order_view", "reconciliation");
         validateDirection(cleanDirection, true);
-        return tradeOrderMapper.selectMonthlyOrderSummary(
-                companyId, cleanName, cleanDirection);
+        return counterpartyCompanyId == null ? tradeOrderMapper.selectMonthlyOrderSummary(companyId, cleanName, cleanDirection)
+                : tradeOrderMapper.selectMonthlyOrderSummary(companyId, cleanName, cleanDirection, counterpartyCompanyId);
     }
 
     @Transactional

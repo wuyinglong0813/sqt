@@ -75,15 +75,23 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
 
             if ("DRAFT".equals(businessDocument.getStatus())) {
                 Font draftFont = new Font(baseFont, 10, Font.NORMAL, new Color(180, 106, 0));
-                Paragraph draft = new Paragraph(documentLabel(businessDocument) + "草稿 · 合同生效并发布后方为正式单据", draftFont);
+                Paragraph draft = new Paragraph(documentLabel(businessDocument) + ("RETAIL".equals(businessDocument.getSourceType())
+                        ? "草稿 · 本公司确认开单后生效" : "草稿 · 合同生效并发布后方为正式单据"), draftFont);
                 draft.setAlignment(Element.ALIGN_CENTER);
                 draft.setSpacingAfter(10);
                 document.add(draft);
             }
 
             addDocumentHeader(document, businessDocument, snapshot, bodyFont);
+            if ("RETAIL".equals(businessDocument.getSourceType())) {
+                var content = objectMapper.readTree(businessDocument.getContent());
+                document.add(new Paragraph("联系人：" + content.path("contact").asText("")
+                        + "    电话：" + content.path("phone").asText("")
+                        + "\n收货地址：" + content.path("address").asText("")
+                        + "\n备注：" + content.path("remark").asText(""), bodyFont));
+            }
             addProductTable(document, snapshot, headerFont, bodyFont);
-            SalesOrderSignatureService.Confirmation confirmation = signatureService == null
+            SalesOrderSignatureService.Confirmation confirmation = signatureService == null || "RETAIL".equals(businessDocument.getSourceType())
                     ? null : signatureService.find(businessDocument.getId());
             addFooter(document, businessDocument.getDocumentType(), snapshot, footerFont, confirmation);
 
@@ -112,7 +120,8 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
         table.setWidths(new float[]{62, 38});
         table.setSpacingAfter(4);
         table.addCell(borderlessCell("往来单位：" + snapshot.counterpartyName()
-                + "\n关联合同：" + snapshot.contractNo(), font, Element.ALIGN_LEFT));
+                + ("RETAIL".equals(source.getSourceType()) ? "\n业务 / 原销售单：" : "\n关联合同：")
+                + snapshot.contractNo(), font, Element.ALIGN_LEFT));
         table.addCell(borderlessCell("单据编号：" + source.getDocumentNo()
                 + "\n日期：" + snapshot.date(), font, Element.ALIGN_LEFT));
         document.add(table);

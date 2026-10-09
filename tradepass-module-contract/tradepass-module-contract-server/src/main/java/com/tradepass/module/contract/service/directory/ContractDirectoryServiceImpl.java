@@ -22,6 +22,8 @@ public class ContractDirectoryServiceImpl implements ContractDirectoryService {
     private final TradeContractMapper contracts;
     private final IdentityDirectoryOperations identity;
     private final JdbcTemplate jdbc;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.tradepass.module.trade.api.ranking.SalesPerformanceOperations sales;
     public ContractDirectoryServiceImpl(TradeContractMapper contracts, IdentityDirectoryOperations identity, JdbcTemplate jdbc) {
         this.contracts = contracts; this.identity = identity; this.jdbc = jdbc;
     }
@@ -47,9 +49,25 @@ public class ContractDirectoryServiceImpl implements ContractDirectoryService {
     }
     public List<TradeContractDO> partyContracts(long companyId, String name, String status, String viewerDirection, int limit, long offset) {
         if (limit < 1 || limit > 1000 || offset < 0) throw new IllegalArgumentException("Invalid contract page");
-        return contracts.selectList(partyQuery(companyId, name, status, viewerDirection)
-                .orderByDesc(TradeContractDO::getCreatedAt).orderByDesc(TradeContractDO::getId)
-                .last("LIMIT " + limit + " OFFSET " + offset));
+        var candidates = new java.util.ArrayList<>(contracts.selectList(partyQuery(companyId, name, status, viewerDirection)
+                .orderByDesc(TradeContractDO::getCreatedAt).orderByDesc(TradeContractDO::getId)));
+        var amounts = sales == null ? java.util.Map.<String, com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales>of()
+                : sales.contractSales(companyId);
+        candidates.sort(java.util.Comparator.comparing((TradeContractDO contract) -> {
+            var value = amounts.get(String.valueOf(contract.getId()));
+            return value == null ? BigDecimal.ZERO : value.salesAmount();
+        }).reversed());
+        int from = (int) Math.min(offset, candidates.size());
+        return candidates.subList(from, (int) Math.min((long) from + limit, candidates.size()));
+    }
+
+    public BigDecimal partySalesAmount(long companyId) {
+        var amounts = sales == null ? java.util.Map.<String, com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales>of()
+                : sales.contractSales(companyId);
+        return contracts.selectList(partyQuery(companyId, null, null, null)).stream()
+                .map(c -> amounts.get(String.valueOf(c.getId()))).filter(java.util.Objects::nonNull)
+                .map(com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales::salesAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
     public long partyContractCount(long companyId, String name, String status) {
         return partyContractCount(companyId, name, status, null);

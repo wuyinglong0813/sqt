@@ -39,8 +39,9 @@ public class OrderController {
 
     @GetMapping("/orders/monthly-summary")
     public ApiResponse<List<Map<String, Object>>> monthlyOrderSummary(@RequestParam String counterpartyName,
-                                                                      @RequestParam String direction) {
-        return ApiResponse.ok(tradeService.monthlyOrderSummary(counterpartyName, direction));
+                                                                      @RequestParam String direction,
+                                                                      @RequestParam(required = false) Long counterpartyCompanyId) {
+        return ApiResponse.ok(tradeService.monthlyOrderSummary(counterpartyName, direction, counterpartyCompanyId));
     }
 
     @PostMapping("/orders")

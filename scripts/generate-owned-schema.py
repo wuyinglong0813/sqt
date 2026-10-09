@@ -96,10 +96,12 @@ def generate():
     if int(ordered[-1].name.split('__')[0][1:]) != 36:
         raise ValueError('Review ownership and baseline version before incorporating new migrations')
     all_sql = [(path.name, sql) for path in ordered for sql in statements(path.read_text())]
+    # Ownership follows the current schema; baseline output remains frozen at V36.
+    inventory_sql = [sql for path in MIGRATIONS.glob('V*.sql') for sql in statements(path.read_text())]
     created = {re.match(r'CREATE TABLE (?:IF NOT EXISTS )?`?(\w+)', sql, re.I)[1]
-               for _, sql in all_sql if re.match(r'CREATE TABLE ', sql, re.I)}
+               for sql in inventory_sql if re.match(r'CREATE TABLE ', sql, re.I)}
     dropped = {re.match(r'DROP TABLE (?:IF EXISTS )?`?(\w+)', sql, re.I)[1]
-               for _, sql in all_sql if re.match(r'DROP TABLE ', sql, re.I)}
+               for sql in inventory_sql if re.match(r'DROP TABLE ', sql, re.I)}
     owned = [table for tables in OWNERS.values() for table in tables]
     if len(owned) != len(set(owned)) or set(owned) | {'audit_log'} != created - dropped:
         raise ValueError('Ownership must cover every final business table exactly once')

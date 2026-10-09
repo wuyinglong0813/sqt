@@ -55,13 +55,19 @@ public final class TradePassDtos {
     public record MePayload(UserProfile user, CompanyProfile company, MemberInfo member, List<CompanyRole> companies) {
     }
 
-    public record RankingItem(int rank, String counterpartyName, BigDecimal amount, int orderCount, String trend) {
+    public record RankingItem(int rank, String counterpartyName, BigDecimal amount, int orderCount, String trend, String counterpartyCompanyId) {
+        public RankingItem(int rank, String name, BigDecimal amount, int count, String trend) {
+            this(rank, name, amount, count, trend, null);
+        }
     }
 
     public record CounterpartyContractCount(String counterpartyCompanyId, int contractCount) {
     }
 
-    public record HomePayload(String companyId, String companyName, String role, String roleText, List<String> periods, List<RankingItem> ranking, List<CounterpartyContractCount> partnerContractCounts) {
+    public record HomePayload(String companyId, String companyName, String role, String roleText, List<String> periods, List<RankingItem> ranking, List<CounterpartyContractCount> partnerContractCounts, java.util.Map<String, Object> stats) {
+        public HomePayload(String companyId, String companyName, String role, String roleText, List<String> periods, List<RankingItem> ranking, List<CounterpartyContractCount> partnerContractCounts) {
+            this(companyId, companyName, role, roleText, periods, ranking, partnerContractCounts, java.util.Map.of());
+        }
     }
 
     public record SealRecord(String id, String companyId, String fileUrl, String usage, String status) {

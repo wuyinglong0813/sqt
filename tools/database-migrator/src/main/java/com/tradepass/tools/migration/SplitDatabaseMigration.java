@@ -151,8 +151,8 @@ public final class SplitDatabaseMigration {
     private static void requireSourceVersion(Connection source) throws SQLException {
         try (var statement = source.createStatement(); var rows = statement.executeQuery(
                 "SELECT MAX(CAST(version AS UNSIGNED)), SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) FROM flyway_schema_history")) {
-            if (!rows.next() || (rows.getInt(1) != 36 && rows.getInt(1) != 37) || rows.getInt(2) != 0) {
-                throw new IllegalStateException("Source must have completed V36, optionally with FK-removal V37");
+            if (!rows.next() || rows.getInt(1) != 38 || rows.getInt(2) != 0) {
+                throw new IllegalStateException("Source must have completed V38, including the retail tables in the ownership manifest");
             }
         }
     }

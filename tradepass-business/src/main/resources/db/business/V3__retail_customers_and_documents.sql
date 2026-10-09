@@ -1,0 +1,63 @@
+CREATE TABLE retail_customer (
+    id BIGINT PRIMARY KEY,
+    company_id BIGINT NOT NULL,
+    customer_type VARCHAR(32) NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    contact VARCHAR(64) NOT NULL DEFAULT '',
+    phone VARCHAR(64) NOT NULL DEFAULT '',
+    address VARCHAR(256) NOT NULL DEFAULT '',
+    invoice_title VARCHAR(128) NOT NULL DEFAULT '',
+    tax_no VARCHAR(64) NOT NULL DEFAULT '',
+    remark VARCHAR(500) NOT NULL DEFAULT '',
+    created_by BIGINT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_retail_customer_company (company_id, updated_at, id)
+);
+
+CREATE TABLE retail_document (
+    id BIGINT PRIMARY KEY,
+    company_id BIGINT NOT NULL,
+    customer_id BIGINT NOT NULL,
+    request_id VARCHAR(64) NOT NULL,
+    document_no VARCHAR(64) NOT NULL,
+    document_type VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
+    original_document_id BIGINT NULL,
+    order_date DATE NOT NULL,
+    amount DECIMAL(18,2) NOT NULL,
+    customer_snapshot LONGTEXT NOT NULL,
+    company_name VARCHAR(128) NOT NULL,
+    prepared_by_name VARCHAR(64) NOT NULL,
+    remark VARCHAR(500) NOT NULL DEFAULT '',
+    warehouse_id BIGINT NULL,
+    stock_processed_at DATETIME NULL,
+    created_by BIGINT NOT NULL,
+    confirmed_by BIGINT NULL,
+    confirmed_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_retail_document_request (company_id, request_id),
+    UNIQUE KEY uk_retail_document_no (document_no),
+    INDEX idx_retail_document_customer (company_id, customer_id, order_date, id),
+    INDEX idx_retail_document_original (original_document_id, status),
+    INDEX idx_retail_document_statistics (company_id, status, document_type, order_date)
+);
+
+CREATE TABLE retail_document_item (
+    id BIGINT PRIMARY KEY,
+    document_id BIGINT NOT NULL,
+    line_no INT NOT NULL,
+    line_type VARCHAR(16) NOT NULL DEFAULT 'PRODUCT',
+    original_item_id BIGINT NULL,
+    product_name VARCHAR(128) NOT NULL,
+    specification VARCHAR(256) NOT NULL DEFAULT '',
+    base_unit VARCHAR(32) NOT NULL,
+    quantity DECIMAL(18,4) NOT NULL,
+    unit_price DECIMAL(18,6) NOT NULL,
+    amount DECIMAL(18,2) NOT NULL,
+    inventory_unit_cost DECIMAL(18,6) NULL,
+    remark VARCHAR(500) NOT NULL DEFAULT '',
+    UNIQUE KEY uk_retail_item_line (document_id, line_no),
+    INDEX idx_retail_return_item (original_item_id, document_id)
+);

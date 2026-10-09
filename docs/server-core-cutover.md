@@ -151,7 +151,7 @@ export TRADEPASS_CUTOVER_WRITES_PAUSED=true
 java -jar tools/database-migrator/target/tradepass-database-migrator-0.1.0-SNAPSHOT.jar --merge-business --apply
 ```
 
-工具只接受已审核的 owned V1 源表清单（兼容已执行去外键 V2 的源库）及空目标库；源连接只读；保留 ID、金额、二进制附件和三个库的审计记录，逐行回读比较内容及行数，由迁移代码检查项目、签署任务与合同的关联，全部通过后才提交目标业务数据。目标库不保留数据库外键。重复审计 ID 会报错，不会静默覆盖。identity 库不迁移。
+工具只接受已审核的源表清单及空目标库：交易源库须完成零售表 owned V3，合同、结算源库接受 owned V1 或已执行去外键的 V2。源连接只读；保留 ID、金额、二进制附件和三个库的审计记录，逐行回读比较内容及行数，由迁移代码检查项目、签署任务与合同的关联，全部通过后才提交目标业务数据。目标库自动执行 business V1–V3，最终不保留数据库外键。重复审计 ID 会报错，不会静默覆盖。identity 库不迁移。
 
 MySQL DDL 不可随数据事务回滚：复制失败后，新目标可能保留空表和 Flyway 历史；原库不变。排查错误后使用另一个空 `_business` 库重试，不要清理原库。不得在原业务库运行此工具。
 

@@ -18,7 +18,7 @@ public class GatewayApplication {
         route(routes, env, "trade", 1113, "/api/orders", "/api/orders/**", "/api/approvals/**", "/api/bilateral-actions", "/api/bilateral-actions/**",
                 "/api/document-templates", "/api/document-templates/**", "/api/trade-documents/**", "/api/sales-orders/**", "/api/inventory/**",
                 "/api/warehouses", "/api/contracts/*/documents", "/api/contracts/*/logistics-documents", "/api/contracts/*/logistics-documents/**",
-                "/api/logistics-documents/**", "/api/contracts/*/memo", "/api/project-ledgers", "/api/project-ledgers/**", "/api/home/**", "/api/rankings/**");
+                "/api/logistics-documents/**", "/api/contracts/*/memo", "/api/project-ledgers", "/api/project-ledgers/**", "/api/home/**", "/api/rankings/**", "/api/retail/**");
         route(routes, env, "contract", 1112, "/api/contracts", "/api/contracts/**", "/api/contract-templates", "/api/contract-templates/**",
                 "/api/contract-template-categories", "/api/contract-template-categories/**", "/api/fadada/callback");
         route(routes, env, "file", 1115, "/api/files/**");

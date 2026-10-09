@@ -26,5 +26,6 @@ public interface OrderService {
     PagePayload<TradeOrderRespDTO> pageOrders(String counterpartyName, String direction, int page, int size);
     Map<String, Object> orderSummary(String counterpartyName, String direction);
     List<Map<String, Object>> monthlyOrderSummary(String counterpartyName, String direction);
+    List<Map<String, Object>> monthlyOrderSummary(String counterpartyName, String direction, Long counterpartyCompanyId);
     TradeOrderRespDTO createOrder(CreateOrderReqVO request);
 }

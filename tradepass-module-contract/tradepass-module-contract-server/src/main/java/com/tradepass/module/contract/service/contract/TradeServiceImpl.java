@@ -91,6 +91,9 @@ public class TradeServiceImpl implements TradeService {
     @Autowired(required = false)
     private ContractDirectoryService contractDirectory;
 
+    @Autowired(required = false)
+    private com.tradepass.module.trade.api.ranking.SalesPerformanceOperations salesPerformance;
+
     @Autowired
     public void setApprovalService(ApprovalOperations approvalService) {
         this.approvalService = approvalService;
@@ -378,8 +381,9 @@ public class TradeServiceImpl implements TradeService {
     public List<ContractRespDTO> listContracts(String counterpartyName) {
         long companyId = AuthContext.requireCompanyId();
         requireContractReadPermission(companyId);
+        var sales = contractSales(companyId);
         return partyContracts(companyId, trim(counterpartyName), null, null, 1000, 0)
-                .stream().map(contract -> toReadContractPayload(contract, companyId)).toList();
+                .stream().map(contract -> toReadContractPayload(contract, companyId, sales.get(String.valueOf(contract.getId())))).toList();
     }
 
     public PagePayload<ContractRespDTO> pageContracts(String counterpartyName, String status, String viewerDirection, int page, int size) {
@@ -392,9 +396,10 @@ public class TradeServiceImpl implements TradeService {
         String cleanDirection = normalizeViewerDirection(viewerDirection);
         long total = partyContractCount(companyId, cleanName, cleanStatus, cleanDirection);
         long offset = (long) (normalizedPage - 1) * normalizedSize;
+        var sales = contractSales(companyId);
         List<ContractRespDTO> items = partyContracts(
                         companyId, cleanName, cleanStatus, cleanDirection, normalizedSize, offset)
-                .stream().map(contract -> toReadContractPayload(contract, companyId)).toList();
+                .stream().map(contract -> toReadContractPayload(contract, companyId, sales.get(String.valueOf(contract.getId())))).toList();
         return PagePayload.of(items, total, normalizedPage, normalizedSize);
     }
 
@@ -410,7 +415,9 @@ public class TradeServiceImpl implements TradeService {
     public Map<String, Object> contractSummary() {
         long companyId = AuthContext.requireCompanyId();
         requireContractReadPermission(companyId);
-        return tradeContractMapper.selectContractSummary(companyId);
+        var summary = new java.util.LinkedHashMap<String, Object>(tradeContractMapper.selectContractSummary(companyId));
+        summary.put("salesAmount", contractDirectory == null ? BigDecimal.ZERO : contractDirectory.partySalesAmount(companyId));
+        return summary;
     }
 
     private void requireContractReadPermission(long companyId) {
@@ -419,9 +426,18 @@ public class TradeServiceImpl implements TradeService {
     }
 
     private ContractRespDTO toReadContractPayload(TradeContractDO contract, long companyId) {
+        return toReadContractPayload(contract, companyId, contractSales(companyId).get(String.valueOf(contract.getId())));
+    }
+
+    private ContractRespDTO toReadContractPayload(TradeContractDO contract, long companyId,
+            com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales sales) {
         boolean fullContent = accessControlService.hasPermission(companyId, "contract_view")
                 || accessControlService.hasPermission(companyId, "contract_sign");
-        return toContractPayload(contract, companyId, fullContent);
+        return toContractPayload(contract, companyId, fullContent, sales);
+    }
+
+    private Map<String, com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales> contractSales(long companyId) {
+        return salesPerformance == null ? Map.of() : salesPerformance.contractSales(companyId);
     }
 
     @Transactional
@@ -721,6 +737,11 @@ public class TradeServiceImpl implements TradeService {
     }
 
     private ContractRespDTO toContractPayload(TradeContractDO contract, long viewerCompanyId, boolean fullContent) {
+        return toContractPayload(contract, viewerCompanyId, fullContent, contractSales(viewerCompanyId).get(String.valueOf(contract.getId())));
+    }
+
+    private ContractRespDTO toContractPayload(TradeContractDO contract, long viewerCompanyId, boolean fullContent,
+            com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales sales) {
         boolean outgoing = contract.getCompanyId() == viewerCompanyId;
         String initiatorCompanyName = companyName(contract.getCompanyId());
         String counterpartyCompanyName = companyName(contract.getCounterpartyCompanyId());
@@ -766,7 +787,10 @@ public class TradeServiceImpl implements TradeService {
                 idString(viewerCounterpartyId),
                 viewerCounterpartyName,
                 viewerDirection,
-                outgoing ? "OUTGOING" : "INCOMING"
+                outgoing ? "OUTGOING" : "INCOMING",
+                sales == null ? BigDecimal.ZERO : sales.salesAmount(),
+                sales == null ? BigDecimal.ZERO : sales.returnAmount(),
+                sales == null ? 0 : sales.salesOrderCount()
         );
     }
 

@@ -215,13 +215,13 @@ class MysqlWorkflowConcurrencyTest {
     @AfterEach void clearAuth() { AuthContext.clear(); }
 
     @Test
-    void homeTradeStatisticsCountSignedContractsForBothPartiesWithoutDuplicatingLinkedOrders() {
+    void homeTradeStatisticsUseConfirmedSalesDocumentsInsteadOfContractPrices() {
         long supplier = IDS.incrementAndGet(), buyer = IDS.incrementAndGet();
         var today = jdbc.queryForObject("SELECT CURDATE()", java.sql.Date.class).toLocalDate();
         var current = today.atTime(12, 0);
         var old = today.minusYears(1).atTime(12, 0);
         long sale = rankingContract(supplier, buyer, "SALE", "ACTIVE", "100", old, current);
-        rankingContract(buyer, supplier, "PURCHASE", "COMPLETED", "200", current, current);
+        long second = rankingContract(buyer, supplier, "PURCHASE", "COMPLETED", "200", current, current);
         rankingContract(supplier, buyer, "PURCHASE", "ACTIVE", "300", current, current);
         rankingContract(supplier, buyer, "SALE", "PENDING", "400", current, null);
         rankingContract(supplier, buyer, "SALE", "VOIDED", "500", current, current);
@@ -241,18 +241,32 @@ class MysqlWorkflowConcurrencyTest {
         when(access.resolveCompanyId(String.valueOf(supplier))).thenReturn(supplier);
         when(access.resolveCompanyId(String.valueOf(buyer))).thenReturn(buyer);
         var ranking = new RankingServiceImpl(orders, mock(CompanyReader.class), access, null, directory);
+        long firstDocument = rankingDocument(sale, supplier, buyer, "SALES_ORDER", "ACKNOWLEDGED", "25", today, old);
+        jdbc.update("""
+                INSERT INTO business_document_item (id,document_id,issuer_company_id,recipient_company_id,line_no,
+                    line_type,product_name,base_unit,quantity,unit_price,amount) VALUES (?,?,?,?,2,'FEE','运费','项',1,5,5)
+                """, IDS.incrementAndGet(), firstDocument, supplier, buyer);
+        long secondDocument = rankingDocument(second, supplier, buyer, "SALES_ORDER", "INBOUNDED", "70", today, current);
+        rankingDocument(sale, supplier, buyer, "RETURN_ORDER", "ACKNOWLEDGED", "8", today, current);
+        for (String state : List.of("DRAFT", "ISSUED", "REJECTED", "VOIDED"))
+            rankingDocument(sale, supplier, buyer, "SALES_ORDER", state, "900", today, current);
+        rankingDocument(sale, supplier, buyer, "SALES_ORDER", "ACKNOWLEDGED", "10", today.minusYears(1), current);
+        long deleted = rankingDocument(sale, supplier, buyer, "SALES_ORDER", "ACKNOWLEDGED", "700", today, current);
+        jdbc.update("UPDATE business_document SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?", deleted);
 
         var supplierSales = ranking.supplierHome("year", String.valueOf(supplier)).ranking();
         assertThat(supplierSales).hasSize(1);
         assertThat(supplierSales.get(0).counterpartyName()).isEqualTo("买方");
-        assertThat(supplierSales.get(0).orderCount()).isEqualTo(4);
-        assertThat(supplierSales.get(0).amount()).isEqualByComparingTo("950");
+        assertThat(supplierSales.get(0).orderCount()).isEqualTo(2);
+        assertThat(supplierSales.get(0).amount()).isEqualByComparingTo("100");
         var buyerPurchases = ranking.buyerHome("year", String.valueOf(buyer)).ranking();
-        assertThat(buyerPurchases).containsExactly(new RankingItem(1, "供方", new BigDecimal("900.00"), 3, "FLAT"));
-        assertThat(ranking.buyerHome("month", String.valueOf(supplier)).ranking().get(0).amount())
-                .isEqualByComparingTo("300");
-        assertThat(ranking.supplierHome("last12", String.valueOf(buyer)).ranking().get(0).amount())
-                .isEqualByComparingTo("300");
+        assertThat(buyerPurchases).containsExactly(new RankingItem(1, "供方", new BigDecimal("100.00"), 2, "FLAT", String.valueOf(supplier)));
+        assertThat(ranking.buyerHome("month", String.valueOf(supplier)).ranking()).isEmpty();
+        assertThat(ranking.supplierHome("last12", String.valueOf(buyer)).ranking()).isEmpty();
+        assertThat((BigDecimal) ranking.supplierHome("year", String.valueOf(supplier)).stats().get("netSalesAmount"))
+                .isEqualByComparingTo("92");
+        assertThat(orders.selectMonthlyOrderSummary(supplier, "买方", "SALE", buyer)).singleElement()
+                .satisfies(row -> assertThat((BigDecimal) row.get("amount")).isEqualByComparingTo("100"));
         // Partner ordering uses all signed contracts, including older contracts;
         // standalone orders, pending signatures and voids never increase this count.
         assertThat(ranking.supplierHome("month", String.valueOf(supplier)).partnerContractCounts())
@@ -261,12 +275,154 @@ class MysqlWorkflowConcurrencyTest {
                 .containsExactly(new CounterpartyContractCount(String.valueOf(supplier), 4));
         assertThat(ranking.supplierHome("year", String.valueOf(buyer)).partnerContractCounts())
                 .containsExactly(new CounterpartyContractCount(String.valueOf(supplier), 1));
-        // A refresh reflects a later void without changing or recreating historical data.
-        jdbc.update("UPDATE trade_contract SET status='VOIDED' WHERE id=?", sale);
+        // Refreshes read document state directly; contract prices never reappear as sales.
+        jdbc.update("UPDATE business_document SET status='VOIDED' WHERE id=?", secondDocument);
         assertThat(ranking.supplierHome("year", String.valueOf(supplier)).ranking().get(0).amount())
-                .isEqualByComparingTo("850");
+                .isEqualByComparingTo("30");
+        jdbc.update("UPDATE trade_contract SET status='VOIDED' WHERE id=?", sale);
         assertThat(ranking.supplierHome("year", String.valueOf(supplier)).partnerContractCounts())
                 .containsExactly(new CounterpartyContractCount(String.valueOf(buyer), 3));
+    }
+
+    private long rankingDocument(long contractId, long supplier, long buyer, String type, String status,
+            String amount, java.time.LocalDate businessDate, LocalDateTime created) {
+        long id = IDS.incrementAndGet();
+        String content = "{\"date\":\"" + businessDate + "\",\"companyName\":\"供方\",\"counterpartyName\":\"买方\"}";
+        jdbc.update("""
+                INSERT INTO business_document (id,company_id,recipient_company_id,supplier_company_id,buyer_company_id,
+                    contract_id,document_type,document_no,template_id,template_name,content,status,created_by,created_at)
+                VALUES (?,?,?,?,?,?,?,?,0,'测试',?,?,7,?)
+                """, id, supplier, buyer, supplier, buyer, contractId, type, "PERFORMANCE-" + id, content, status, created);
+        jdbc.update("""
+                INSERT INTO business_document_item (id,document_id,issuer_company_id,recipient_company_id,line_no,
+                    product_name,base_unit,quantity,unit_price,amount) VALUES (?,?,?,?,1,'电缆','米',1,?,?)
+                """, IDS.incrementAndGet(), id, supplier, buyer, new BigDecimal(amount), new BigDecimal(amount));
+        return id;
+    }
+
+    private com.tradepass.module.trade.service.retail.RetailService retailer() {
+        var access = mock(AccessControlOperations.class);
+        when(access.hasPermission(anyLong(), anyString())).thenReturn(true);
+        when(access.resolveCompanyId(anyString())).thenAnswer(call -> Long.valueOf((String) call.getArgument(0)));
+        var company = new com.tradepass.module.identity.api.company.dto.CompanyRespDTO(); company.setName("零售测试企业");
+        var companies = mock(CompanyReader.class); when(companies.selectById(any())).thenReturn(company);
+        var identity = mock(UserIdentityOperations.class); when(identity.currentDisplayName()).thenReturn("测试经办人");
+        return new com.tradepass.module.trade.service.retail.RetailService(jdbc, access, companies, identity, mock(AuditLogService.class), new ObjectMapper());
+    }
+    private com.tradepass.module.trade.service.retail.RetailDtos.DocumentRequest retailRequest(String type, Long original,
+            Long originalItem, String quantity, String price, String requestId) {
+        return new com.tradepass.module.trade.service.retail.RetailDtos.DocumentRequest(requestId, type, original,
+                java.time.LocalDate.now().toString(), "RETURN_ORDER".equals(type) ? "多余材料退回" : "",
+                List.of(new com.tradepass.module.trade.service.retail.RetailDtos.ItemRequest(originalItem, "PRODUCT", "电缆",
+                        "零售测试", "米", new BigDecimal(quantity), new BigDecimal(price), "")));
+    }
+    private long retailCustomer(com.tradepass.module.trade.service.retail.RetailService service, String name) {
+        var request = new com.tradepass.module.trade.service.retail.RetailDtos.CustomerRequest("COMPANY", name, "张经理", "13800000000", "收货地址", "", "", "");
+        return Long.parseLong(String.valueOf(tx.execute(status -> service.saveCustomer(null, request)).get("id")));
+    }
+    private static String retailRequestId() { return "retail-ci-" + java.util.UUID.randomUUID(); }
+
+    @Test void retailSalesDoNotNeedContractsAndRetriesDoNotDuplicateRevenue() {
+        long cid = IDS.incrementAndGet(); AuthContext.set(7, cid); var retail = retailer();
+        long customer = retailCustomer(retail, "未注册的小程序客户");
+        var request = retailRequest("SALES_ORDER", null, null, "3", "3.335", retailRequestId());
+        var draft = tx.execute(status -> retail.createDocument(customer, request));
+        long id = Long.parseLong(String.valueOf(draft.get("id")));
+        assertThat(tx.execute(status -> retail.createDocument(customer, request)).get("id")).isEqualTo(draft.get("id"));
+        var editedRetry = retailRequest("SALES_ORDER", null, null, "3", "4", request.requestId());
+        var retried = tx.execute(status -> retail.createDocument(customer, editedRetry));
+        assertThat(retried.get("id")).isEqualTo(draft.get("id"));
+        assertThat((BigDecimal) retried.get("amount")).isEqualByComparingTo("12");
+        assertThat((BigDecimal) retail.customer(customer).get("salesAmount")).isEqualByComparingTo("0");
+        tx.execute(status -> retail.updateDraft(id, request));
+        tx.execute(status -> retail.confirm(id, null)); tx.execute(status -> retail.confirm(id, null));
+        assertThat((BigDecimal) retail.customer(customer).get("salesAmount")).isEqualByComparingTo("10.01");
+        assertThat(retail.summary(cid, "year").get("salesOrderCount").toString()).isEqualTo("1");
+        tx.execute(status -> retail.saveCustomer(customer, new com.tradepass.module.trade.service.retail.RetailDtos.CustomerRequest(
+                "COMPANY", "客户已改名", "", "", "", "", "", "")));
+        assertThat(((Map<?, ?>) retail.document(id).get("customer")).get("name")).isEqualTo("未注册的小程序客户");
+        assertThatThrownBy(() -> tx.execute(status -> retail.deleteDraft(id))).hasMessageContaining("已生效单据不能删除");
+        AuthContext.set(7, cid + 1);
+        assertThatThrownBy(() -> retail.customer(customer)).hasMessageContaining("无权访问");
+        assertThatThrownBy(() -> retail.document(id)).hasMessageContaining("无权访问");
+        assertThatThrownBy(() -> tx.execute(status -> retail.confirm(id, null))).hasMessageContaining("无权访问");
+    }
+
+    @Test void concurrentPartialRetailReturnsCannotExceedTheOriginalQuantity() throws Exception {
+        long cid = IDS.incrementAndGet(); AuthContext.set(7, cid); var retail = retailer();
+        long customer = retailCustomer(retail, "分次退货客户");
+        long saleId = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer,
+                retailRequest("SALES_ORDER", null, null, "100", "2.50", retailRequestId()))).get("id")));
+        tx.execute(status -> retail.confirm(saleId, null));
+        long itemId = jdbc.queryForObject("SELECT id FROM retail_document_item WHERE document_id = ?", Long.class, saleId);
+        long first = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer,
+                retailRequest("RETURN_ORDER", saleId, itemId, "80", "999", retailRequestId()))).get("id")));
+        long second = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer,
+                retailRequest("RETURN_ORDER", saleId, itemId, "80", "999", retailRequestId()))).get("id")));
+        var gate = new CountDownLatch(1); var pool = Executors.newFixedThreadPool(2);
+        java.util.function.LongFunction<Callable<Boolean>> confirm = id -> () -> {
+            AuthContext.set(7, cid);
+            try { gate.await(); tx.execute(status -> retail.confirm(id, null)); return true; }
+            catch (BusinessException error) { assertThat(error.getMessage()).contains("剩余可退数量"); return false; }
+            finally { AuthContext.clear(); }
+        };
+        try {
+            var a = pool.submit(confirm.apply(first)); var b = pool.submit(confirm.apply(second)); gate.countDown();
+            assertThat(List.of(a.get(20, TimeUnit.SECONDS), b.get(20, TimeUnit.SECONDS))).containsExactlyInAnyOrder(true, false);
+        } finally { pool.shutdownNow(); }
+        assertThat((BigDecimal) retail.customer(customer).get("returnAmount")).isEqualByComparingTo("200");
+        assertThat((BigDecimal) retail.customer(customer).get("netSalesAmount")).isEqualByComparingTo("50");
+    }
+
+    @Test void partialRetailReturnsAllocateRoundingWithoutOverRefunding() {
+        long cid = IDS.incrementAndGet(); AuthContext.set(7, cid); var retail = retailer();
+        long customer = retailCustomer(retail, "退货尾差客户");
+        long sale = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer,
+                retailRequest("SALES_ORDER", null, null, "3", "3.335", retailRequestId()))).get("id")));
+        tx.execute(status -> retail.confirm(sale, null));
+        long item = jdbc.queryForObject("SELECT id FROM retail_document_item WHERE document_id = ?", Long.class, sale);
+        var aRequest = retailRequest("RETURN_ORDER", sale, item, "1", "3.335", retailRequestId());
+        var bRequest = retailRequest("RETURN_ORDER", sale, item, "1", "3.335", retailRequestId());
+        long a = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer, aRequest)).get("id")));
+        long b = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer, bRequest)).get("id")));
+        tx.execute(status -> retail.confirm(a, null));
+        assertThatThrownBy(() -> tx.execute(status -> retail.confirm(b, null))).hasMessageContaining("刷新草稿金额");
+        var refreshed = tx.execute(status -> retail.updateDraft(b, bRequest));
+        assertThat((BigDecimal) refreshed.get("amount")).isEqualByComparingTo("3.33");
+        tx.execute(status -> retail.confirm(b, null));
+        long c = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer,
+                retailRequest("RETURN_ORDER", sale, item, "1", "3.335", retailRequestId()))).get("id")));
+        tx.execute(status -> retail.confirm(c, null));
+        assertThat((BigDecimal) retail.customer(customer).get("returnAmount")).isEqualByComparingTo("10.01");
+        assertThat((BigDecimal) retail.customer(customer).get("netSalesAmount")).isEqualByComparingTo("0");
+        assertThat(retail.pdfDocument(b).getContent()).contains("含累计舍入尾差");
+    }
+
+    @Test void retailStockUpdatesUseCostAndAreIdempotentAndTransactional() {
+        long cid = IDS.incrementAndGet(); AuthContext.set(7, cid); var retail = retailer();
+        long customer = retailCustomer(retail, "库存客户"), warehouse = IDS.incrementAndGet(), product = IDS.incrementAndGet();
+        jdbc.update("INSERT INTO warehouse (id,company_id,name,created_by) VALUES (?,?,'主仓',7)", warehouse, cid);
+        jdbc.update("INSERT INTO inventory_product (id,company_id,product_name,specification,base_unit) VALUES (?,?,'电缆','零售测试','米')", product, cid);
+        jdbc.update("INSERT INTO inventory_balance (id,company_id,warehouse_id,product_id,quantity,unit_price,inventory_amount) VALUES (?,?,?,?,200,1.25,250)", IDS.incrementAndGet(), cid, warehouse, product);
+        long sale = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer,
+                retailRequest("SALES_ORDER", null, null, "100", "2.50", retailRequestId()))).get("id")));
+        tx.execute(status -> retail.confirm(sale, null));
+        tx.execute(status -> retail.processStock(sale, warehouse)); tx.execute(status -> retail.processStock(sale, warehouse));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction WHERE biz_id = ?", Long.class, sale)).isEqualTo(1);
+        long item = jdbc.queryForObject("SELECT id FROM retail_document_item WHERE document_id = ?", Long.class, sale);
+        long returned = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer,
+                retailRequest("RETURN_ORDER", sale, item, "40", "2.50", retailRequestId()))).get("id")));
+        tx.execute(status -> retail.confirm(returned, warehouse)); tx.execute(status -> retail.processStock(returned, warehouse));
+        var balance = jdbc.queryForMap("SELECT quantity,inventory_amount FROM inventory_balance WHERE company_id = ? AND warehouse_id = ? AND product_id = ?", cid, warehouse, product);
+        assertThat((BigDecimal) balance.get("quantity")).isEqualByComparingTo("140");
+        assertThat((BigDecimal) balance.get("inventory_amount")).isEqualByComparingTo("175");
+        long insufficient = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer,
+                retailRequest("SALES_ORDER", null, null, "141", "2.50", retailRequestId()))).get("id")));
+        assertThatThrownBy(() -> tx.execute(status -> retail.confirm(insufficient, warehouse))).hasMessageContaining("库存不足");
+        assertThat(retail.document(insufficient).get("status")).isEqualTo("DRAFT");
+        assertThat(jdbc.queryForObject("SELECT quantity FROM inventory_balance WHERE company_id = ? AND warehouse_id = ? AND product_id = ?", BigDecimal.class, cid, warehouse, product)).isEqualByComparingTo("140");
+        var pdf = new com.tradepass.module.trade.service.document.BusinessDocumentPdfServiceImpl(new ObjectMapper(), mock(SalesOrderSignatureService.class));
+        assertThat(pdf.generate(retail.pdfDocument(sale))).startsWith("%PDF".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
     }
 
     private long rankingContract(long owner, long counterparty, String direction, String status,
