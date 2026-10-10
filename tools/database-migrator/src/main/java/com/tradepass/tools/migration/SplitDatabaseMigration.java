@@ -152,8 +152,8 @@ public final class SplitDatabaseMigration {
     private static void requireSourceVersion(Connection source) throws SQLException {
         try (var statement = source.createStatement(); var rows = statement.executeQuery(
                 "SELECT MAX(CAST(version AS UNSIGNED)), SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) FROM flyway_schema_history")) {
-            if (!rows.next() || rows.getInt(1) != 39 || rows.getInt(2) != 0) {
-                throw new IllegalStateException("Source must have completed V39, including retail and membership tables in the ownership manifest");
+            if (!rows.next() || rows.getInt(1) != 40 || rows.getInt(2) != 0) {
+                throw new IllegalStateException("Source must have completed V40, including membership payment tables in the ownership manifest");
             }
         }
     }

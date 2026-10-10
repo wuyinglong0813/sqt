@@ -1,0 +1,40 @@
+CREATE TABLE membership_purchase_order (
+    order_no CHAR(32) PRIMARY KEY,
+    company_id BIGINT NOT NULL,
+    subject_key VARCHAR(32) NOT NULL,
+    buyer_id BIGINT NOT NULL,
+    idempotency_key VARCHAR(64) NOT NULL,
+    product_id VARCHAR(48) NOT NULL,
+    product_name VARCHAR(100) NOT NULL,
+    product_type VARCHAR(16) NOT NULL,
+    amount_fen INT NOT NULL,
+    first_offer BOOLEAN NOT NULL DEFAULT FALSE,
+    vip_days INT NOT NULL,
+    sign_quota BIGINT NOT NULL,
+    quota_days INT NOT NULL,
+    policy_revision BIGINT NOT NULL,
+    app_id VARCHAR(32) NOT NULL,
+    mch_id VARCHAR(32) NOT NULL,
+    payer_openid VARCHAR(128) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    prepay_id VARCHAR(128) NULL,
+    prepay_started_at DATETIME(6) NULL,
+    transaction_id VARCHAR(64) NULL,
+    created_at DATETIME(6) NOT NULL,
+    expires_at DATETIME(6) NOT NULL,
+    paid_at DATETIME(6) NULL,
+    granted_at DATETIME(6) NULL,
+    vip_start_at DATETIME(6) NULL,
+    vip_end_at DATETIME(6) NULL,
+    quota_end_at DATETIME(6) NULL,
+    UNIQUE KEY uk_membership_order_request(subject_key,buyer_id,idempotency_key),
+    UNIQUE KEY uk_membership_payment_transaction(transaction_id),
+    INDEX idx_membership_orders_subject(subject_key,created_at)
+);
+
+CREATE TABLE membership_payment_event (
+    event_id VARCHAR(64) PRIMARY KEY,
+    order_no CHAR(32) NOT NULL,
+    content_hash CHAR(64) NOT NULL,
+    received_at DATETIME(6) NOT NULL
+);

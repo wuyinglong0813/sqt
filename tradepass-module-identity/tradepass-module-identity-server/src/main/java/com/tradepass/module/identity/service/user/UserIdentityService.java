@@ -17,4 +17,5 @@ public interface UserIdentityService {
     void setIdentityMapper(FadadaUserIdentityMapper identityMapper);
     String currentDisplayName();
     String requireCurrentVerifiedName(long companyId);
+    UserIdentityOperations.PaymentIdentity currentPaymentIdentity();
 }

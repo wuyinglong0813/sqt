@@ -53,7 +53,9 @@ public final class DomainComponentRegistrar implements BeanDefinitionRegistryPos
                 "com.tradepass.module.identity.framework.config.SystemPermissionInitializer", "com.tradepass.module.identity.framework.config.DatabaseInitializer"));
         if (HostedRoles.hosts(role, "contract")) roots.addAll(List.of("com.tradepass.module.contract.framework.callback.FadadaCallbackRecovery",
                 "com.tradepass.module.contract.job.LocalCallbackRecoveryScheduler",
-                "com.tradepass.module.contract.framework.membership.MembershipNacosLoader"));
+                "com.tradepass.module.contract.framework.membership.MembershipNacosLoader",
+                "com.tradepass.module.contract.framework.membership.WechatPayNacosLoader",
+                "com.tradepass.module.contract.job.MembershipPaymentReconciler"));
         candidates.keySet().stream().filter(type -> roots.contains(type.getName())).forEach(pending::add);
         while (!pending.isEmpty()) {
             Class<?> type = pending.remove();

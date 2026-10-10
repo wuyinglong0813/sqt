@@ -11,7 +11,8 @@ import java.util.*;
 
 /** Immutable, all-or-nothing operational policy. Human-readable times are always Beijing time. */
 public record MembershipPolicy(Trial trial, boolean billingEnabled,
-                               Map<Long, Rule> blacklist, Map<Long, Rule> whitelist) {
+                               Map<Long, Rule> blacklist, Map<Long, Rule> whitelist,
+                               List<Product> products, int orderExpireMinutes) {
     public static final ZoneId BEIJING = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter FORMAT =
             DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss").withResolverStyle(ResolverStyle.STRICT);
@@ -22,9 +23,11 @@ public record MembershipPolicy(Trial trial, boolean billingEnabled,
     public record Rule(String mode, Long quotaTotal, Instant endExclusive) {
         public boolean active(Instant now) { return endExclusive == null || now.isBefore(endExclusive); }
     }
+    public record Product(String id, String name, String type, int priceFen, Integer firstPriceFen,
+                          int vipDays, long signQuota, int quotaDays, boolean onSale, boolean vipOnly) { }
 
     public static MembershipPolicy empty() {
-        return new MembershipPolicy(new Trial(false, "", Instant.EPOCH, 0, 0), false, Map.of(), Map.of());
+        return new MembershipPolicy(new Trial(false, "", Instant.EPOCH, 0, 0), false, Map.of(), Map.of(), List.of(), 15);
     }
 
     public static MembershipPolicy parse(String content) {
@@ -41,7 +44,7 @@ public record MembershipPolicy(Trial trial, boolean billingEnabled,
         if (!root.isEmpty() && !parent.containsKey("membership"))
             throw new IllegalArgumentException("缺少 tradepass.membership 配置");
         Map<?, ?> config = map(parent.get("membership"));
-        keys(config, "trial", "billing", "blacklist", "whitelist");
+        keys(config, "trial", "billing", "blacklist", "whitelist", "products");
         if (config.isEmpty()) return empty();
         Map<?, ?> trial = map(config.get("trial"));
         keys(trial, "enabled", "activity-id", "end-at", "sign-quota-per-company", "total-sign-quota");
@@ -53,10 +56,41 @@ public record MembershipPolicy(Trial trial, boolean billingEnabled,
         if (enabled && (end == null || !activity.matches("[A-Za-z0-9_-]{1,48}")))
             throw new IllegalArgumentException("体验启用时必须填写合法 activity-id 和北京时间 end-at");
         Map<?, ?> billing = map(config.get("billing"));
-        keys(billing, "enabled");
+        keys(billing, "enabled", "order-expire-minutes");
+        long expire = number(billing.get("order-expire-minutes"), 15);
+        if (expire < 2 || expire > 120) throw new IllegalArgumentException("order-expire-minutes 必须为 2 至 120");
         return new MembershipPolicy(new Trial(enabled, activity, end == null ? Instant.EPOCH : end, each, budget),
                 bool(billing, "enabled", false), rules(config.get("blacklist"), true),
-                rules(config.get("whitelist"), false));
+                rules(config.get("whitelist"), false), products(config.get("products")), (int) expire);
+    }
+
+    private static List<Product> products(Object raw) {
+        if (raw == null) return List.of();
+        if (!(raw instanceof List<?> list) || list.size() > 30) throw new IllegalArgumentException("products 必须为最多30项的列表");
+        List<Product> result = new ArrayList<>();
+        Set<String> ids = new HashSet<>();
+        for (Object item : list) {
+            Map<?, ?> product = map(item);
+            keys(product, "id", "name", "type", "price-fen", "first-price-fen", "vip-days", "sign-quota",
+                    "quota-days", "on-sale", "vip-only");
+            String id = string(product.get("id")), name = string(product.get("name")), type = string(product.get("type"));
+            if (!id.matches("[A-Za-z0-9_-]{1,48}") || !ids.add(id)) throw new IllegalArgumentException("商品ID无效或重复");
+            if (name.isBlank() || name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 100)
+                throw new IllegalArgumentException("商品名称不能为空且不能超过100字节");
+            if (!Set.of("VIP", "QUOTA").contains(type)) throw new IllegalArgumentException("商品type必须为VIP或QUOTA");
+            long price = number(product.get("price-fen"), 0), quota = number(product.get("sign-quota"), 0);
+            long days = number(product.get("quota-days"), 365), vip = number(product.get("vip-days"), 0);
+            Integer first = product.get("first-price-fen") == null ? null : (int)number(product.get("first-price-fen"), 0);
+            if (price < 1 || price > 100_000_000 || quota < 1 || days < 1 || days > 3650
+                    || ("VIP".equals(type) ? vip < 1 || vip > 3650 : vip != 0)
+                    || (first != null && (first < 1 || first > price || !"VIP".equals(type))))
+                throw new IllegalArgumentException("商品价格、期限或份额无效");
+            boolean vipOnly = bool(product, "vip-only", false);
+            if (vipOnly && "VIP".equals(type)) throw new IllegalArgumentException("VIP商品不能设为vip-only");
+            result.add(new Product(id, name, type, (int)price, first, (int)vip, quota, (int)days,
+                    bool(product, "on-sale", false), vipOnly));
+        }
+        return List.copyOf(result);
     }
 
     private static Map<Long, Rule> rules(Object raw, boolean deny) {

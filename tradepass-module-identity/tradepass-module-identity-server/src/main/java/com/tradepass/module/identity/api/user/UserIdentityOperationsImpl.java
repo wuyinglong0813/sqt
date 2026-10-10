@@ -10,4 +10,5 @@ public class UserIdentityOperationsImpl implements UserIdentityOperations {
     public UserIdentityOperationsImpl(@Lazy UserIdentityService delegate) { this.delegate = delegate; }
     @Override public String currentDisplayName() { return delegate.currentDisplayName(); }
     @Override public String requireCurrentVerifiedName(long companyId) { return delegate.requireCurrentVerifiedName(companyId); }
+    @Override public PaymentIdentity currentPaymentIdentity() { return delegate.currentPaymentIdentity(); }
 }

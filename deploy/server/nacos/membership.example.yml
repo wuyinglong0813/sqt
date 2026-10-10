@@ -8,11 +8,52 @@ tradepass:
       end-at: "2026-11-08 23:59:59"
       sign-quota-per-company: 5
       total-sign-quota: 500
-    # Payment is not connected in phase one. Keep false.
+    # Keep false until tradepass-payment.yaml and actual payment capability are ready.
     billing:
       enabled: false
+      order-expire-minutes: 15
     blacklist: []
     whitelist: []
+    # Prices below are editable examples, in RMB fen. Review before opening sales.
+    products:
+      - id: "vip-year"
+        name: "企业VIP年会员"
+        type: VIP
+        price-fen: 99900
+        first-price-fen: 69900
+        vip-days: 365
+        sign-quota: 100
+        quota-days: 365
+        on-sale: true
+      - id: "sign-10"
+        name: "电子签10份"
+        type: QUOTA
+        price-fen: 9900
+        sign-quota: 10
+        quota-days: 365
+        on-sale: true
+      - id: "sign-50"
+        name: "电子签50份"
+        type: QUOTA
+        price-fen: 39900
+        sign-quota: 50
+        quota-days: 365
+        on-sale: true
+      - id: "sign-100"
+        name: "电子签100份"
+        type: QUOTA
+        price-fen: 69900
+        sign-quota: 100
+        quota-days: 365
+        on-sale: true
+      - id: "vip-sign-100"
+        name: "VIP电子签增购100份"
+        type: QUOTA
+        price-fen: 59900
+        sign-quota: 100
+        quota-days: 365
+        vip-only: true
+        on-sale: true
     # Examples: replace with actual company IDs before adding.
     # blacklist:
     #   - company-id: "10003"

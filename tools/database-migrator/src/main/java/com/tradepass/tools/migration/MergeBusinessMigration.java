@@ -50,10 +50,10 @@ public final class MergeBusinessMigration {
                     boolean contract = role.equals("contract");
                     if (!rows.next() || rows.getInt(3) != 0
                             || (trade ? rows.getInt(1) != 3 || rows.getInt(2) != 3
-                            : contract ? rows.getInt(1) != 3 || rows.getInt(2) != 3
+                            : contract ? rows.getInt(1) != 4 || rows.getInt(2) != 4
                             : !((rows.getInt(1) == 1 && rows.getInt(2) == 1)
                             || (rows.getInt(1) == 2 && rows.getInt(2) == 2)))) {
-                        throw new IllegalStateException("Source must match reviewed owned migrations (trade/contract V3; settlement V1 or V2): " + role);
+                        throw new IllegalStateException("Source must match reviewed owned migrations (trade V3; contract V4; settlement V1 or V2): " + role);
                     }
                 }
                 if (count(source, "undo_log") != 0) throw new IllegalStateException("Pending Seata undo records: " + role);

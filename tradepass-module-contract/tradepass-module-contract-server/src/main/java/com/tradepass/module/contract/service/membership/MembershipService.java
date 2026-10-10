@@ -19,7 +19,7 @@ public class MembershipService {
     public record Status(String companyId, String companyName, String membershipText, boolean vip, String validUntil,
                          String signingMode, boolean unlimited, Long quotaTotal, long used, long reserved, Long remaining,
                          long paidRemaining, boolean canInitiate, String reason, boolean purchaseEnabled,
-                         long policyRevision, String policyUpdatedAt) { }
+                         long policyRevision, String policyUpdatedAt, String paidVipUntil, List<String> purchasePlatforms) { }
     public record Reservation(long id, String status, boolean createAllowed, String signTaskId, String sourceFileId,
                               String docId, String snapshot, String sha256) { }
     private record Pool(String scope, long total, long used, long reserved, LocalDateTime expires) {
@@ -31,6 +31,12 @@ public class MembershipService {
     private final MembershipPolicyStore policies;
     private final TransactionTemplate tx;
     private final Clock clock;
+    private com.tradepass.module.contract.service.payment.WechatPayGateway payments;
+    private com.tradepass.module.identity.api.permission.AccessControlOperations access;
+    @Autowired public void setPurchaseSupport(com.tradepass.module.contract.service.payment.WechatPayGateway payments,
+            com.tradepass.module.identity.api.permission.AccessControlOperations access) {
+        this.payments=payments; this.access=access;
+    }
 
     @Autowired
     public MembershipService(JdbcTemplate jdbc, MembershipPolicyStore policies, PlatformTransactionManager manager) {
@@ -57,10 +63,10 @@ public class MembershipService {
                     (rs, row) -> rs.getTimestamp(1).toLocalDateTime(), subject).stream().findFirst().orElse(null);
             boolean paid = paidVip != null && paidVip.isAfter(localNow());
             boolean vip = isWhite || trial.active(now) || paid;
-            String label = isWhite ? "企业专属 VIP" : trial.active(now) ? "上线体验中" : paid ? "企业 VIP" : "企业基础版";
+            String label = isWhite ? "企业专属 VIP" : paid ? "企业 VIP" : trial.active(now) ? "上线体验中" : "企业基础版";
             String until = isWhite ? MembershipPolicy.displayEnd(white.endExclusive())
-                    : trial.active(now) ? MembershipPolicy.displayEnd(trial.endExclusive())
-                    : paid ? paidVip.toString().replace('T', ' ') : "";
+                    : paid ? MembershipPolicy.display(paidVip.atZone(MembershipPolicy.BEIJING).toInstant())
+                    : trial.active(now) ? MembershipPolicy.displayEnd(trial.endExclusive()) : "";
             Selection choice = select(company, subject, snapshot, false);
             Pool special = pool("SPECIAL", subject);
             Pool trialPool = pool("TRIAL:" + trial.activityId(), subject);
@@ -79,7 +85,12 @@ public class MembershipService {
                     vip, until, isBlack ? "BLOCKED" : infinite ? "UNLIMITED" : isWhite ? "QUOTA" : "NORMAL",
                     infinite && !isBlack, infinite ? null : total, used, reserved, infinite ? null : remaining,
                     paidRemaining, verified && choice.scope() != null, reason,
-                    false, snapshot.revision(), snapshot.updatedAt()); // Payment is deliberately not connected in phase one.
+                    verified && !isBlack && !infinite && policy.billingEnabled() && payments!=null && payments.ready()
+                            && policy.products().stream().anyMatch(MembershipPolicy.Product::onSale) && access!=null
+                            && (access.hasPermission(company.getId(),"member_manage") || access.hasPermission(company.getId(),"auth_manage")),
+                    snapshot.revision(), snapshot.updatedAt(),
+                    paid?MembershipPolicy.display(paidVip.atZone(MembershipPolicy.BEIJING).toInstant()):"",
+                    payments==null?List.of():List.copyOf(payments.settings().allowedPlatforms()));
         });
     }
 

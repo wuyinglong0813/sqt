@@ -1,0 +1,21 @@
+# Nacos Data ID: tradepass-payment.yaml; Group: TRADEPASS_CORE
+# Keep disabled until the real merchant configuration and approved payment capabilities are ready.
+# Do not commit a Nacos export containing actual payment keys to Git.
+tradepass:
+  payment:
+    enabled: false
+    channel: WECHAT_JSAPI
+    # Must equal the login AppID in tradepass-common.yaml.
+    app-id: ""
+    mch-id: ""
+    merchant-serial: ""
+    # Paste complete PKCS#8 apiclient_key.pem content in Nacos using a YAML block.
+    merchant-private-key-pem: ""
+    api-v3-key: ""
+    # WeChat payment public-key ID (PUB_KEY_ID_...) or platform certificate serial.
+    verification-key-id: ""
+    # Paste the corresponding complete public-key PEM or platform certificate PEM in Nacos.
+    verification-key-pem: ""
+    notify-url: "https://sqt.org.cn/api/membership/payment/notify"
+    # Fill only clients actually permitted for the merchant/service/payment channel.
+    allowed-platforms: []

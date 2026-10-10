@@ -175,6 +175,14 @@ class MysqlMembershipTest {
                 .withProperty("tradepass.membership.data-id",dataId);
         var loader=new com.tradepass.module.contract.framework.membership.MembershipNacosLoader(
                 policies,factory.getBeanProvider(com.alibaba.cloud.nacos.NacosConfigManager.class),environment);
+        String paymentDataId="payment-test-"+System.nanoTime()+".yaml";
+        var paymentStore=new com.tradepass.module.contract.service.payment.WechatPayConfigStore();
+        var paymentEnvironment=new org.springframework.mock.env.MockEnvironment()
+                .withProperty("spring.cloud.nacos.config.enabled","true")
+                .withProperty("spring.cloud.nacos.config.group",group)
+                .withProperty("tradepass.payment.data-id",paymentDataId);
+        var paymentLoader=new com.tradepass.module.contract.framework.membership.WechatPayNacosLoader(
+                paymentStore,factory.getBeanProvider(com.alibaba.cloud.nacos.NacosConfigManager.class),paymentEnvironment);
         String prefix="tradepass:\n  membership:\n    whitelist: [{company-id: '3', mode: QUOTA, quota-total: ";
         try {
             assertThat(config.publishConfig(dataId,group,prefix+"1}]\n")).isTrue();
@@ -190,7 +198,26 @@ class MysqlMembershipTest {
             assertThat(config.removeConfig(dataId,group)).isTrue();
             await(()->!service.status(company(3)).vip());
             assertThat(service.status(company(3)).canInitiate()).isFalse();
-        } finally { loader.close(); config.removeConfig(dataId,group); config.shutDown(); }
+            var rsa=java.security.KeyPairGenerator.getInstance("RSA"); rsa.initialize(2048);
+            String publicPem="-----BEGIN PUBLIC KEY-----\n"+java.util.Base64.getEncoder()
+                    .encodeToString(rsa.generateKeyPair().getPublic().getEncoded())+"\n-----END PUBLIC KEY-----";
+            String paymentConfig=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(java.util.Map.of(
+                    "tradepass",java.util.Map.of("payment",java.util.Map.of("enabled",false,"channel","WECHAT_JSAPI",
+                    "api-v3-key","0123456789abcdef0123456789abcdef","verification-key-id","PUB_KEY_ID_123456",
+                    "verification-key-pem",publicPem,"allowed-platforms",java.util.List.of("android")))));
+            assertThat(config.publishConfig(paymentDataId,group,paymentConfig)).isTrue();
+            paymentLoader.start();
+            await(()->paymentStore.current().verificationReady());
+            assertThat(paymentStore.current().readyForSale()).isFalse();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM membership_policy_history WHERE content LIKE '%api-v3-key%'",Long.class)).isZero();
+            assertThat(config.publishConfig(paymentDataId,group,"tradepass: {payment: {enabled: true}}")).isTrue();
+            await(paymentStore::refreshFailed);
+            assertThat(paymentStore.current().verificationReady()).isTrue();
+            assertThat(paymentStore.current().readyForSale()).isFalse();
+        } finally {
+            paymentLoader.close(); loader.close(); config.removeConfig(paymentDataId,group);
+            config.removeConfig(dataId,group); config.shutDown();
+        }
     }
     private void await(java.util.function.BooleanSupplier condition) throws Exception {
         long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(20);

@@ -19,6 +19,20 @@ public class UserIdentityServiceImpl implements UserIdentityService {
     private final SysUserMapper userMapper;
     private final CompanyMapper companyMapper;
     private FadadaUserIdentityMapper identityMapper;
+    private String wechatAppId;
+
+    @Autowired
+    public void setPaymentEnvironment(org.springframework.core.env.Environment environment) {
+        wechatAppId = environment.getProperty("wechat.app-id", "");
+    }
+
+    public UserIdentityOperations.PaymentIdentity currentPaymentIdentity() {
+        SysUserDO user = userMapper.selectById(AuthContext.userId());
+        if (user == null || user.getOpenid() == null || user.getOpenid().isBlank()
+                || wechatAppId == null || wechatAppId.isBlank())
+            throw new BusinessException("请使用当前小程序重新登录后再购买");
+        return new UserIdentityOperations.PaymentIdentity(wechatAppId, user.getOpenid());
+    }
 
     public UserIdentityServiceImpl(SysUserMapper userMapper, CompanyMapper companyMapper) {
         this.userMapper = userMapper;
