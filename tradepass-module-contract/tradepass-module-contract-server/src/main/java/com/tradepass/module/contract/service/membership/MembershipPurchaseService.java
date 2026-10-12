@@ -58,7 +58,7 @@ public class MembershipPurchaseService {
             String reason=saleReason(company,snapshot,platform);
             List<ProductView> products=new ArrayList<>();
             if (payments.platformAllowed(platform)) for (var product:snapshot.policy().products()) {
-                if (!product.onSale()) continue;
+                if (!product.onSale() || !product.availableForCompany(company.getId())) continue;
                 boolean first="VIP".equals(product.type()) && product.firstPriceFen()!=null && firstVip(subject(company));
                 String restriction=reason;
                 if (restriction.isBlank() && product.vipOnly() && !paidVip(subject(company)))
@@ -94,7 +94,8 @@ public class MembershipPurchaseService {
             }
             String reason=saleReason(company,snapshot,platform);
             if (!reason.isBlank()) throw new BusinessException(reason);
-            var product=snapshot.policy().products().stream().filter(p->p.onSale() && p.id().equals(productId))
+            var product=snapshot.policy().products().stream()
+                    .filter(p->p.onSale() && p.id().equals(productId) && p.availableForCompany(company.getId()))
                     .findFirst().orElseThrow(()->new BusinessException("该套餐已下架，请刷新后选择"));
             if (product.vipOnly() && !paidVip(subject)) throw new BusinessException("此增购包仅供有效付费VIP购买");
             if ("VIP".equals(product.type()) && jdbc.queryForObject("""

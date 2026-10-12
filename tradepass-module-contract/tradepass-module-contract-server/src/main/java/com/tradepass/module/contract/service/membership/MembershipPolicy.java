@@ -24,7 +24,13 @@ public record MembershipPolicy(Trial trial, boolean billingEnabled,
         public boolean active(Instant now) { return endExclusive == null || now.isBefore(endExclusive); }
     }
     public record Product(String id, String name, String type, int priceFen, Integer firstPriceFen,
-                          int vipDays, long signQuota, int quotaDays, boolean onSale, boolean vipOnly) { }
+                          int vipDays, long signQuota, int quotaDays, boolean onSale, boolean vipOnly,
+                          Set<Long> allowedCompanyIds) {
+        public Product { allowedCompanyIds = Set.copyOf(allowedCompanyIds); }
+        public boolean availableForCompany(long companyId) {
+            return allowedCompanyIds.isEmpty() || allowedCompanyIds.contains(companyId);
+        }
+    }
 
     public static MembershipPolicy empty() {
         return new MembershipPolicy(new Trial(false, "", Instant.EPOCH, 0, 0), false, Map.of(), Map.of(), List.of(), 15);
@@ -72,7 +78,7 @@ public record MembershipPolicy(Trial trial, boolean billingEnabled,
         for (Object item : list) {
             Map<?, ?> product = map(item);
             keys(product, "id", "name", "type", "price-fen", "first-price-fen", "vip-days", "sign-quota",
-                    "quota-days", "on-sale", "vip-only");
+                    "quota-days", "on-sale", "vip-only", "allowed-company-ids");
             String id = string(product.get("id")), name = string(product.get("name")), type = string(product.get("type"));
             if (!id.matches("[A-Za-z0-9_-]{1,48}") || !ids.add(id)) throw new IllegalArgumentException("商品ID无效或重复");
             if (name.isBlank() || name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 100)
@@ -87,10 +93,27 @@ public record MembershipPolicy(Trial trial, boolean billingEnabled,
                 throw new IllegalArgumentException("商品价格、期限或份额无效");
             boolean vipOnly = bool(product, "vip-only", false);
             if (vipOnly && "VIP".equals(type)) throw new IllegalArgumentException("VIP商品不能设为vip-only");
+            Set<Long> companies = product.containsKey("allowed-company-ids")
+                    ? productCompanies(product.get("allowed-company-ids")) : Set.of();
             result.add(new Product(id, name, type, (int)price, first, (int)vip, quota, (int)days,
-                    bool(product, "on-sale", false), vipOnly));
+                    bool(product, "on-sale", false), vipOnly, companies));
         }
         return List.copyOf(result);
+    }
+
+    private static Set<Long> productCompanies(Object raw) {
+        if (!(raw instanceof List<?> list) || list.isEmpty() || list.size() > 2000)
+            throw new IllegalArgumentException("allowed-company-ids 必须为1至2000项的企业ID列表；公开商品请省略该字段");
+        Set<Long> companies = new LinkedHashSet<>();
+        for (Object value : list) {
+            String id = string(value);
+            if (!id.matches("[1-9][0-9]{0,18}")) throw new IllegalArgumentException("商品企业ID必须为正整数");
+            long companyId;
+            try { companyId = Long.parseLong(id); }
+            catch (NumberFormatException e) { throw new IllegalArgumentException("商品企业ID超出范围"); }
+            if (!companies.add(companyId)) throw new IllegalArgumentException("商品企业ID不可重复");
+        }
+        return Set.copyOf(companies);
     }
 
     private static Map<Long, Rule> rules(Object raw, boolean deny) {

@@ -53,4 +53,39 @@ class MembershipPolicyTest {
         for (String content : new String[]{null, "", "tradepass: {membership: {}}"})
             assertThat(MembershipPolicy.parse(content)).isEqualTo(MembershipPolicy.empty());
     }
+
+    @Test void enterpriseOfferPreservesLongCompanyIdAndPublicProductsRemainAvailable() {
+        var restricted = MembershipPolicy.parse(product("allowed-company-ids: ['2104508694149730306']"))
+                .products().get(0);
+        assertThat(restricted.allowedCompanyIds()).containsExactly(2104508694149730306L);
+        assertThat(restricted.availableForCompany(2104508694149730306L)).isTrue();
+        assertThat(restricted.availableForCompany(2104508694149730307L)).isFalse();
+        assertThat(restricted.priceFen()).isEqualTo(100);
+        assertThat(restricted.signQuota()).isEqualTo(9);
+        assertThat(MembershipPolicy.parse(product("")).products().get(0)
+                .availableForCompany(2104508694149730307L)).isTrue();
+    }
+
+    @Test void invalidEnterpriseRestrictionsCannotTurnAnOfferIntoAPublicProduct() {
+        for (String value : new String[] {"[]", "null", "'2104508694149730306'", "[0]", "[-1]", "[1.5]",
+                "[true]", "['9223372036854775808']", "['1', '1']", "['2104508694149730306', null]"}) {
+            assertThatThrownBy(() -> MembershipPolicy.parse(product("allowed-company-ids: " + value)))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    private String product(String restriction) {
+        return """
+                tradepass:
+                  membership:
+                    products:
+                      - id: sign-test-9
+                        name: 电子签9份
+                        type: QUOTA
+                        price-fen: 100
+                        sign-quota: 9
+                        quota-days: 365
+                        on-sale: true
+                """ + "        " + restriction + "\n";
+    }
 }

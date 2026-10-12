@@ -55,6 +55,15 @@ tradepass:
         vip-only: true
         on-sale: true
     # Examples: replace with actual company IDs before adding.
+    # For a company-only paid offer, append under products after updating business:
+    #   - id: "sign-test-9"
+    #     name: "电子签9份"
+    #     type: QUOTA
+    #     price-fen: 100
+    #     sign-quota: 9
+    #     quota-days: 365
+    #     on-sale: true
+    #     allowed-company-ids: ["10001"]
     # blacklist:
     #   - company-id: "10003"
     #     valid-until: null
