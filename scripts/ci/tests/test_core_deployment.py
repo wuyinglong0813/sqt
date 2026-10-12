@@ -68,15 +68,17 @@ class CoreDeploymentTest(unittest.TestCase):
 
     def test_resident_memory_caps_leave_room_for_os(self):
         total = 0
-        for filename in ("infra.core.compose.yml", "yudao.core.compose.yml"):
+        for filename in ("infra.core.compose.yml", "yudao.core.compose.yml", "edge.core.compose.yml"):
             compose = yaml.safe_load((ROOT / "deploy/server" / filename).read_text())
             for name, service in compose["services"].items():
                 if name in ("rocketmq-init", "rocketmq-topic-init"):
                     continue
                 limit = service["mem_limit"]
-                self.assertTrue(limit.endswith("m"))
-                total += int(limit[:-1])
-        self.assertLessEqual(total, 3584)
+                units = {"m": 1, "g": 1024}
+                self.assertIn(limit[-1], units)
+                total += int(limit[:-1]) * units[limit[-1]]
+        # On the 8 GiB deployment, leave at least 4 GiB for the OS, Jenkins and builds.
+        self.assertLessEqual(total, 4096)
 
 
 if __name__ == "__main__":

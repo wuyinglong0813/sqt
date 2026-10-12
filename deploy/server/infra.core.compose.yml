@@ -177,7 +177,10 @@ services:
   nacos:
     image: nacos/nacos-server:v2.3.2-slim
     restart: on-failure:2
-    mem_limit: 576m
+    # The deployed 576 MiB container was OOM-killed despite a 256 MiB Java heap.
+    # Retain heap settings and leave more room for JVM/native allocations.
+    mem_limit: 1g
+    memswap_limit: 1g
     networks:
     - tradepass
     ports:

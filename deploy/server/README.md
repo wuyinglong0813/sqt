@@ -64,9 +64,11 @@ docker compose --env-file .env -f yudao.compose.yml up -d --no-build --wait --wa
 
 数据库地址固定为 `127.0.0.1` 上的 `tradepass_staging_identity`、`tradepass_staging_contract`、`tradepass_staging_trade`、`tradepass_staging_settlement`。密码仍从 `.env` 读取。本机 3306、6379、8080、8081、8091、9876、10911 已被占用时，先改 `MYSQL_PORT` 或 `REDIS_PUBLISH_PORT`，或停掉占用进程。这些端口不要对公网开放。
 
-## 4GB 机器：三个进程，保留 Nacos 和 RocketMQ
+## 三个进程，保留 Nacos 和 RocketMQ：建议至少 8GB
 
 推荐使用 `yudao.core.compose.yml`（gateway、identity、business）和 `infra.core.compose.yml`（MySQL、Redis、Nacos、RocketMQ）。Seata、XXL-JOB、ELK、SkyWalking 不启动。business 复用合同、交易、结算、文件模块，核心数据库合并为新的 `_business` 库，通过本地事务保持核心写入一致性；identity 保留原库。
+
+Nacos 容器上限已从 576 MiB 调到 1 GiB，Java 堆保持 256 MiB。应用、中间件及 Nginx 的容器上限合计为 4 GiB，宿主机需另外为操作系统、Jenkins 和构建留出内存；当前模板建议至少 8 GiB。现场 OOM 处理与已有容器更新步骤见切换手册的内存章节。
 
 **不能把旧的三个业务库直接填进新 business 配置。** 新环境及已有服务器的迁移、构建、Nacos 初始化、启动顺序和回退限制见 [三进程切换手册](../../docs/server-core-cutover.md)。使用单独的 `.env.core`；不要混用六进程的 profiles 或同时启动两套业务。
 

@@ -65,7 +65,7 @@ docker compose -f .runtime/edge.compose.yml up -d
 
 微信、法大大、数据源等现有 Spring 配置支持上述引导方式。OSS 与历史 COS 凭据的读取已从系统环境变量改为 Spring 属性；启用这部分功能时需要部署本次更新后的 business 镜像，否则旧镜像不会读取 Nacos 中的存储密钥。
 
-在构建机执行，避免在 4G 业务服务器并发构建：
+在构建机执行，避免在业务服务器并发构建：
 
 ```bash
 mvn -B -pl tradepass-business -am -DskipTests package
@@ -95,9 +95,20 @@ ssh -N -L 18848:127.0.0.1:8848 root@124.221.190.63
 
 然后打开 `http://127.0.0.1:18848/nacos`。仍使用当前 Nacos 账号，密码只保存在服务器私有文件和 Nacos 中，不提交 Git。
 
-## 4G 内存与 NameServer OOM
+## 8G 内存与中间件 OOM
 
-应用及常驻基础容器上限合计 3584 MiB，含 Nginx 为 3648 MiB；相对额定 4 GiB 剩余 448 MiB。以 `free -m` 实际总内存为准：系统显示约 3.6 GiB 时不能允许所有容器同时顶满上限。低并发测试文件处理、PDF、签署和 MQ 积压；持续内存不足时需扩容或移出中间件。
+应用及常驻基础容器上限合计 4032 MiB，含 Nginx 为 4096 MiB；建议至少 8 GiB 宿主机，为操作系统、Jenkins 和构建预留空间。以 `free -m` 实际总内存为准，并单独计算 CI 和构建进程的峰值。当前配置在 4 GiB 机器上已没有系统余量，不再适合原来的 4G 部署。低并发测试文件处理、PDF、签署和 MQ 积压；持续内存不足时需扩容或移出中间件。
+
+2026-10-12 现场 Nacos 的 576 MiB 容器退出码为 137、`OOMKilled=true`，宿主机排查时仍有约 3.5 GiB 可用内存。模板现将 Nacos 的 `mem_limit` 和 `memswap_limit` 都设为 `1g`，与现场已执行的 Docker 更新一致，Java 堆仍为 256 MiB。单次 OOM 记录不能证明长期稳定性，后续应观察内存占用和健康状态。
+
+已有容器可直接更新限制并启动，不需要重建数据卷：
+
+```bash
+docker update --memory=1g --memory-swap=1g tradepass-infra-static-nacos-1
+docker start tradepass-infra-static-nacos-1
+```
+
+服务器使用 `/opt/sqt/deploy/server/infra.core.compose.yml` 时，拉取本次提交即可保存以后重建所用的参数；若使用生成的私有 `.runtime/infra.compose.yml`，也应同步该文件中 Nacos 的两个内存限制。仅修改 Compose 文件不会更新现有容器；上述 Docker 更新已生效的容器无需再次重建。
 
 NameServer 上限已从 160 调到 256 MiB，Java 堆保持 64 MiB并限制代码缓存与 JVM 可见 CPU 数。若 business 出现 `callbackConsumer`、`getTopicRouteInfoFromNameServer`、`connect to null failed`，先检查 NameServer 状态，不能仅凭此异常判断 OOM：
 
