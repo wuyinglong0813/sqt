@@ -14,7 +14,7 @@
 - `tradepass_staging_identity`：账号、会话、企业、成员、角色、邀请、个人及企业认证、印章映射、认证申请、合作关系、通知、审计记录。
 - `tradepass_staging_business`：合同、签署任务、认证回调、模板、订单、单据、库存、项目、对账、零售客户及单据、会员额度、赠送活动使用量、付费会员、支付订单及回调、会员策略历史等全部本地业务记录。
 - `membership_policy_state` 清空后在同一事务中重建 `id=1` 的空初始行；应用启动后从 Nacos 重新导入策略。不能只删除这行，否则会员配置加载会失败。
-- 保留：表结构、Flyway 迁移历史、identity 的 `perm_def` 权限字典、`undo_log` 事务恢复记录。存在待恢复的事务时拒绝执行。
+- 保留：表结构、Flyway 迁移历史、identity 的 `perm_def` 权限字典、business 中现场已有的 `tz_migration` 表及其记录、`undo_log` 事务恢复记录。存在待恢复的事务时拒绝执行。
 - 不处理：法大大账户/认证/授权/合同、对象存储文件、Redis、RocketMQ、Nacos 配置、Jenkins。
 
 脚本按仓库的表归属白名单操作，发现缺表、非 InnoDB 表、未知业务表、触发器或尚未移除的外键会报错退出。

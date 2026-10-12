@@ -110,6 +110,7 @@ BEGIN
           AND t.table_type = 'BASE TABLE' AND r.table_name IS NULL
           AND t.table_name NOT IN ('flyway_schema_history', 'undo_log')
           AND NOT (t.table_schema = 'tradepass_staging_identity' AND t.table_name = 'perm_def')
+          AND NOT (t.table_schema = 'tradepass_staging_business' AND t.table_name = 'tz_migration')
     ) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Unexpected application table: review reset scope before deleting';
     END IF;

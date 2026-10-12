@@ -92,6 +92,10 @@ def main():
                   + ','.join('`' + column + '`' for column, _ in pairs) + ') VALUES ('
                   + ','.join(sample(kind) for _, kind in pairs) + ');')
         identity, business = databases['identity'], databases['business']
+        # The deployed business schema has this additional table; keep its rows intact.
+        mysql('CREATE TABLE `' + business + '`.tz_migration '
+              '(id INT PRIMARY KEY, marker VARCHAR(100)) ENGINE=InnoDB;'
+              'INSERT INTO `' + business + '`.tz_migration VALUES (1, "keep existing table");')
         mysql('INSERT INTO `' + identity + "`.perm_def(code,label) VALUES ('keep','keep permission');")
         permissions_before = mysql('SELECT code,label,sort_order FROM `' + identity + '`.perm_def ORDER BY code;')
 
@@ -141,9 +145,10 @@ def main():
         assert mysql('SELECT code,label,sort_order FROM `' + identity + '`.perm_def ORDER BY code;') == permissions_before
         for database in databases.values():
             assert mysql('SELECT description FROM `' + database + '`.flyway_schema_history;').strip() == 'keep migration history'
+        assert mysql('SELECT marker FROM `' + business + '`.tz_migration;').strip() == 'keep existing table'
         assert 'PREVIEW_ONLY_NO_DATA_DELETED' in mysql(reset)
         assert 'RESET_COMPLETE' in mysql(clear), 'Reset should remain repeatable'
-        print('PASS: clear removes all business rows, restores policy seed and retains permissions/history')
+        print('PASS: clear removes all business rows, restores policy seed and retains permissions/history/tz_migration')
     finally:
         # Only the random databases allocated by this invocation are dropped.
         for database in created:
