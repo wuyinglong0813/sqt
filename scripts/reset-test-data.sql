@@ -57,6 +57,14 @@ BEGIN
         ('tradepass_staging_business', 'fadada_contract_sign_task'),
         ('tradepass_staging_business', 'fadada_cancelled_abolish_task'),
         ('tradepass_staging_business', 'fadada_abolish_creation_intent'),
+        ('tradepass_staging_business', 'membership_policy_state'),
+        ('tradepass_staging_business', 'membership_policy_history'),
+        ('tradepass_staging_business', 'membership_quota_pool'),
+        ('tradepass_staging_business', 'membership_trial_budget'),
+        ('tradepass_staging_business', 'membership_signing_usage'),
+        ('tradepass_staging_business', 'membership_paid_vip'),
+        ('tradepass_staging_business', 'membership_purchase_order'),
+        ('tradepass_staging_business', 'membership_payment_event'),
         ('tradepass_staging_business', 'trade_order'),
         ('tradepass_staging_business', 'business_document_template'),
         ('tradepass_staging_business', 'business_document'),
@@ -77,6 +85,9 @@ BEGIN
         ('tradepass_staging_business', 'inventory_transfer'),
         ('tradepass_staging_business', 'project_contract_prompt_preference'),
         ('tradepass_staging_business', 'inventory_manual_entry'),
+        ('tradepass_staging_business', 'retail_customer'),
+        ('tradepass_staging_business', 'retail_document'),
+        ('tradepass_staging_business', 'retail_document_item'),
         ('tradepass_staging_business', 'contract_attachment'),
         ('tradepass_staging_business', 'reconciliation_statement'),
         ('tradepass_staging_business', 'reconciliation_entry'),
@@ -165,6 +176,11 @@ BEGIN
             DEALLOCATE PREPARE reset_statement;
         END LOOP;
         CLOSE target_cursor;
+        -- MembershipPolicyStore locks this singleton; startup needs it even in an empty database.
+        -- The next startup imports the active policy from Nacos again.
+        INSERT INTO tradepass_staging_business.membership_policy_state
+            (id, revision, content_hash, content, updated_at)
+            VALUES (1, 0, '', '', CURRENT_TIMESTAMP(6));
         COMMIT;
         SELECT 'RESET_COMPLETE' AS result;
     ELSE
