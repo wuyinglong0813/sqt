@@ -33,6 +33,7 @@ public interface FadadaPersonalIdentityService {
     PersonalIdentityRespDTO syncCurrent();
     PersonalIdentityRespDTO requireCurrentVerified();
     String verifiedOpenUserId(long userId);
+    String verifiedFddId(long userId);
     FadadaAuthUrlRespDTO createAuthUrl();
     PersonalIdentityRespDTO syncByClientUserId(String clientUserId);
     PersonalIdentityRespDTO syncCallback(String clientUserId, JsonNode data);

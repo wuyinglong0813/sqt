@@ -43,7 +43,7 @@ public class FadadaAccessTokenProvider {
                 AccessTokenRes value = response.getData();
                 long expiresIn = parse(value.getExpiresIn());
                 accessToken = value.getAccessToken();
-                expiresAt = now.plusSeconds(Math.max(60, expiresIn - 60));
+                expiresAt = now.plusSeconds(cacheLifetime(expiresIn));
                 return accessToken;
             } catch (ApiException exception) {
                 log.warn("Electronic signature access token request failed", exception);
@@ -52,9 +52,21 @@ public class FadadaAccessTokenProvider {
         }
     }
 
+    public synchronized void invalidate(String rejectedToken) {
+        if (java.util.Objects.equals(accessToken, rejectedToken)) expiresAt = Instant.EPOCH;
+    }
+
+    static long cacheLifetime(long expiresIn) {
+        if (expiresIn <= 0) throw new BusinessException("电子签访问令牌有效期异常，请稍后重试");
+        return expiresIn - Math.min(60, Math.max(1, expiresIn / 10));
+    }
+
     private long parse(String value) {
-        try { return Math.max(120, Long.parseLong(value)); }
-        catch (NumberFormatException ignored) { return 7200; }
+        if (!hasText(value)) return 7200;
+        try { return Long.parseLong(value); }
+        catch (NumberFormatException ignored) {
+            throw new BusinessException("电子签访问令牌有效期异常，请稍后重试");
+        }
     }
 
     private boolean hasText(String value) { return value != null && !value.isBlank(); }

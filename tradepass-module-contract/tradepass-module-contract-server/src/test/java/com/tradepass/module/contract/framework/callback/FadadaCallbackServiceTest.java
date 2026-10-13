@@ -79,6 +79,18 @@ class FadadaCallbackServiceTest {
     }
 
     @Test
+    void keepsDocumentedExistingAuthorizationIdentifiersWithoutUnrelatedPrivateData() throws Exception {
+        String body = "{\"clientCorpId\":\"c-new\",\"existClientCorpId\":\"c-old\",\"existOpenCorpId\":\"open-old\","
+                + "\"authResult\":\"fail\",\"authFailedReason\":\"exist\",\"legalRepIdentNo\":\"secret\"}";
+        AtomicReference<FadadaCallbackEventDO> saved = new AtomicReference<>();
+        doAnswer(invocation -> { FadadaCallbackEventDO event = invocation.getArgument(0); event.setId(41L); saved.set(event); return 1; })
+                .when(eventMapper).insert(any(FadadaCallbackEventDO.class));
+        service.accept(signedHeaders(body, "corp-authorize", "nonce-41"), body);
+        assertThat(saved.get().getRetryPayload()).contains("\"existClientCorpId\":\"c-old\"", "\"existOpenCorpId\":\"open-old\"")
+                .doesNotContain("legalRepIdentNo", "secret");
+    }
+
+    @Test
     void failedLegacyEventCanRecoverFromProviderRedelivery() throws Exception {
         String body = "{\"signTaskId\":\"task-9\"}";
         FadadaCallbackEventDO event = new FadadaCallbackEventDO(); event.setId(29L); event.setStatus("FAILED");

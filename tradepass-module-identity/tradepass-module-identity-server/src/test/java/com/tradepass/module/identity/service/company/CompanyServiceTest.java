@@ -148,6 +148,20 @@ class CompanyServiceTest {
     }
 
     @Test
+    void onboardedSearchRequiresVerificationForBothNameAndCreditCodeMatchesBeforeLimiting() {
+        when(companyMapper.selectList(any(Wrapper.class))).thenAnswer(invocation -> {
+            var query = (com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<CompanyDO>) invocation.getArgument(0);
+            // Keep the status outside the OR group, so a matching credit code cannot bypass it.
+            assertThat(query.getSqlSegment()).matches(
+                    "\\(certification_status = .* AND \\(name LIKE .* OR credit_code LIKE .*\\)\\) ORDER BY name ASC LIMIT 20");
+            assertThat(query.getParamNameValuePairs().values())
+                    .containsExactlyInAnyOrder("VERIFIED", "%河北%", "%河北%");
+            return List.of();
+        });
+        assertThat(service.searchCompanies("河北")).isEmpty();
+    }
+
+    @Test
     void unfinishedOnboardingIsScopedToTheCreatorAndDoesNotRequireActiveMembership() {
         CompanyDO pending = company(9L, "待认证企业");
         pending.setCertificationStatus("PENDING_REVIEW");

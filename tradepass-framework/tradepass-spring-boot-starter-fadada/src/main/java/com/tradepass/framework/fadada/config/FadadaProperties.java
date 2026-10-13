@@ -11,6 +11,9 @@ public class FadadaProperties {
     private String appSecret = "";
     private String serverUrl = "https://api.fadada.com/api/v5";
     private String callbackUrl = "";
+    // The public 5.1 document does not define the SDK extension's operatorId namespace.
+    // Enable only after provider confirmation for this integration, never from user input.
+    private boolean operatorOpenUserIdConfirmed;
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -22,6 +25,8 @@ public class FadadaProperties {
     public void setServerUrl(String serverUrl) { this.serverUrl = safe(serverUrl); }
     public String getCallbackUrl() { return callbackUrl; }
     public void setCallbackUrl(String callbackUrl) { this.callbackUrl = safe(callbackUrl); }
+    public boolean isOperatorOpenUserIdConfirmed() { return operatorOpenUserIdConfirmed; }
+    public void setOperatorOpenUserIdConfirmed(boolean value) { this.operatorOpenUserIdConfirmed = value; }
 
     private String safe(String value) {
         return value == null ? "" : value.trim();

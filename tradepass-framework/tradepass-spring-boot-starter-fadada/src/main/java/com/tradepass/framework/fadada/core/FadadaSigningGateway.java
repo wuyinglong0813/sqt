@@ -9,14 +9,46 @@ public interface FadadaSigningGateway {
     byte[] downloadSignedPdf(String signTaskId, String ownerOpenCorpId, String fileName);
     byte[] downloadSignedPreviewPage(String signTaskId, String ownerOpenCorpId);
     void cancel(String signTaskId, String reason);
-    String abolish(String signTaskId, String reason, String callbackUrl);
+    String abolish(String signTaskId, String actorId, String reason, String callbackUrl);
 
     record CreateTaskCommand(byte[] pdf, String fileName, String subject, String contractReference,
                              String initiatorOpenCorpId, String initiatorActorId,
                              String initiatorName, String initiatorSealId,
                              String counterpartyOpenCorpId, String counterpartyActorId,
                              String counterpartyName, String counterpartySealId,
-                             String supplierActorId, String buyerActorId, String callbackUrl) {}
+                             String supplierActorId, String buyerActorId, String callbackUrl) {
+        public void validate() {
+            if (pdf == null || pdf.length == 0 || pdf.length > 50 * 1024 * 1024) {
+                throw new com.tradepass.framework.common.exception.BusinessException("签署合同文件必须非空且不超过50MB");
+            }
+            required(fileName, 200, "合同文件名");
+            if (!fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".pdf")
+                    || fileName.matches(".*[\\\\/:*?\"<>|\\r\\n].*")) {
+                throw new com.tradepass.framework.common.exception.BusinessException("签署合同文件名必须为有效的PDF文件名");
+            }
+            required(subject, 200, "合同主题"); required(contractReference, 128, "合同业务编号");
+            required(initiatorName, 128, "发起企业名称"); required(counterpartyName, 128, "相对企业名称");
+            required(initiatorOpenCorpId, 64, "发起企业标识"); required(counterpartyOpenCorpId, 64, "相对企业标识");
+            required(initiatorActorId, 32, "发起参与方标识"); required(counterpartyActorId, 32, "相对参与方标识");
+            required(supplierActorId, 32, "供方标识"); required(buyerActorId, 32, "需方标识");
+            if (supplierActorId.equals(buyerActorId) || initiatorActorId.equals(counterpartyActorId)
+                    || !java.util.Set.of(supplierActorId, buyerActorId).equals(java.util.Set.of(initiatorActorId, counterpartyActorId))) {
+                throw new com.tradepass.framework.common.exception.BusinessException("合同参与方标识不完整或重复");
+            }
+            for (String seal : new String[]{initiatorSealId, counterpartySealId}) {
+                try { if (Long.parseLong(seal) <= 0) throw new NumberFormatException(); }
+                catch (RuntimeException invalid) {
+                    throw new com.tradepass.framework.common.exception.BusinessException("企业电子印章标识无效");
+                }
+            }
+        }
+
+        private static void required(String value, int max, String name) {
+            if (value == null || value.isBlank() || value.length() > max) {
+                throw new com.tradepass.framework.common.exception.BusinessException(name + "为空或超过服务商长度限制");
+            }
+        }
+    }
     record CreatedTask(String signTaskId, String fileId, String docId) {}
     record ActorStatus(String actorId, String signStatus) {}
     record TaskStatus(String signTaskId, String status, List<ActorStatus> actors,

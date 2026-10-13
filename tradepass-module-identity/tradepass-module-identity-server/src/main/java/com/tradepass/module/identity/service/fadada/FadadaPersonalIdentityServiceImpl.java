@@ -104,6 +104,25 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         return identity.getOpenUserId();
     }
 
+    /** Compare the provider person to the enterprise member without persisting contact data. */
+    public String verifiedFddId(long userId) {
+        String openUserId = verifiedOpenUserId(userId);
+        String clientUserId = "tradepass-user-" + userId;
+        var account = gateway.getUser(clientUserId, null);
+        if (account == null || !clientUserId.equals(account.clientUserId())
+                || !openUserId.equals(account.openUserId())
+                || !"enable".equals(account.availableStatus()) || !"authorized".equals(account.bindingStatus())
+                || account.authScopes() == null || !account.authScopes().contains(AUTH_SCOPE)) {
+            throw new BusinessException("个人账号授权关联尚未确认，请重新同步个人认证");
+        }
+        var detail = gateway.getIdentityInfo(openUserId);
+        if (detail == null || !openUserId.equals(detail.openUserId()) || !"identified".equals(detail.identStatus())
+                || detail.fddId() == null || detail.fddId().isBlank()) {
+            throw new BusinessException("认证服务尚未返回可核对的个人标识，请联系管理员核验");
+        }
+        return detail.fddId();
+    }
+
     @Transactional
     public FadadaAuthUrlRespDTO createAuthUrl() {
         requireReady();
@@ -120,6 +139,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         // redirectMiniAppUrl accepts an encoded native, non-tabBar page (FASC 5.1).
         // The return page confirms server state and restores the originating company flow.
         FadadaUserGateway.AuthUrlResult result;
+        LocalDateTime attemptStartedAt = LocalDateTime.now();
         try {
             result = gateway.createAuthUrl(new FadadaUserGateway.AuthUrlCommand(
                 identity.getClientUserId(), user.getPhone(), callbackUrl(),
@@ -135,7 +155,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         identity.setLocalStatus("IN_PROGRESS");
         identity.setIdentProcessStatus("identifying");
         identity.setFailureReason("");
-        identity.setIdentSubmittedAt(LocalDateTime.now());
+        identity.setIdentSubmittedAt(attemptStartedAt);
         identityMapper.updateById(identity);
         return new FadadaAuthUrlRespDTO(result.authUrl(), toPayload(identity));
     }
@@ -171,6 +191,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
                 && identity.getIdentVerifiedAt() == null;
         if (FadadaAuthorizationCallback.completed(data, "user-authorize", "identProcessStatus", List.of(AUTH_SCOPE))
                 && clientUserId.equals(callbackText(data, "clientUserId"))
+                && identity.getIdentSubmittedAt() != null && !eventTime.isBefore(identity.getIdentSubmittedAt().withNano(0))
                 && (firstCompletion || identity.getLastSyncAt() == null || eventTime.isAfter(identity.getLastSyncAt()))
                 && hasText(openUserId) && hasText(callbackText(data, "openUserId"))) {
             identity.setOpenUserId(openUserId);
@@ -215,7 +236,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
                 .contains(identity.getFailureReason() == null ? "" : identity.getFailureReason())) {
             identity.setFailureReason("");
         }
-        if (hasText(account.clientUserId()) && !identity.getClientUserId().equals(account.clientUserId())) {
+        if (!identity.getClientUserId().equals(account.clientUserId())) {
             throw new BusinessException("认证服务用户绑定与当前账号不一致");
         }
         if (hasText(account.openUserId())) identity.setOpenUserId(account.openUserId());
@@ -223,15 +244,35 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         if (hasText(account.identStatus())) identity.setIdentStatus(account.identStatus());
         if (account.authScopes() != null) identity.setAuthScopes(json(account.authScopes()));
 
-        if ("identified".equalsIgnoreCase(identity.getIdentStatus()) && hasText(identity.getOpenUserId())) {
+        boolean accountReady = "enable".equalsIgnoreCase(account.availableStatus())
+                && "authorized".equalsIgnoreCase(account.bindingStatus())
+                && account.authScopes() != null && account.authScopes().contains(AUTH_SCOPE)
+                && "identified".equalsIgnoreCase(account.identStatus()) && hasText(account.openUserId());
+        boolean confirmed = false;
+        if (accountReady) {
             FadadaUserGateway.UserIdentityResult detail = gateway.getIdentityInfo(identity.getOpenUserId());
+            if (!identity.getOpenUserId().equals(detail.openUserId())) {
+                identity.setLocalStatus("IN_PROGRESS");
+                identity.setFailureReason("个人实名信息与当前认证账号不一致，请联系管理员核验账号关联");
+                identity.setLastSyncAt(LocalDateTime.now());
+                identityMapper.updateById(identity);
+                return identity;
+            }
+            confirmed = "identified".equalsIgnoreCase(detail.identStatus());
             if (hasText(detail.identStatus())) identity.setIdentStatus(detail.identStatus());
-            if (hasText(detail.userName())) identity.setVerifiedName(detail.userName());
-            if (hasText(detail.identMethod())) identity.setIdentMethod(detail.identMethod());
-            identity.setIdentSubmittedAt(parseTime(detail.identSubmitTime(), identity.getIdentSubmittedAt()));
-            identity.setIdentVerifiedAt(parseTime(detail.identSuccessTime(), beijingNow()));
+            if (confirmed) {
+                if (hasText(detail.userName())) identity.setVerifiedName(detail.userName());
+                if (hasText(detail.identMethod())) identity.setIdentMethod(detail.identMethod());
+                identity.setIdentSubmittedAt(parseTime(detail.identSubmitTime(), identity.getIdentSubmittedAt()));
+                identity.setIdentVerifiedAt(parseTime(detail.identSuccessTime(), beijingNow()));
+            }
         }
-        identity.setLocalStatus(resolveLocalStatus(identity));
+        identity.setLocalStatus(resolveLocalStatus(identity, confirmed));
+        if (!"enable".equalsIgnoreCase(account.availableStatus())) {
+            identity.setFailureReason("个人电子签账号未启用，请核对账号状态后重新同步");
+        } else if (account.authScopes() == null || !account.authScopes().contains(AUTH_SCOPE)) {
+            identity.setFailureReason("个人身份信息授权尚未完成，请重新办理授权后同步");
+        }
         if ("VERIFIED".equals(identity.getLocalStatus())) {
             identity.setIdentProcessStatus("success");
             identity.setFailureReason("");
@@ -285,9 +326,8 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
                 text(identity.getIdentSubmittedAt()), text(identity.getIdentVerifiedAt()), text(identity.getLastSyncAt()));
     }
 
-    private String resolveLocalStatus(FadadaUserIdentityDO identity) {
-        if ("identified".equalsIgnoreCase(identity.getIdentStatus())
-                && "authorized".equalsIgnoreCase(identity.getBindingStatus())) return "VERIFIED";
+    private String resolveLocalStatus(FadadaUserIdentityDO identity, boolean confirmed) {
+        if (confirmed) return "VERIFIED";
         if ("failed".equalsIgnoreCase(identity.getIdentProcessStatus())) return "FAILED";
         if ("IN_PROGRESS".equals(identity.getLocalStatus()) || hasText(identity.getOpenUserId())
                 || "authorized".equalsIgnoreCase(identity.getBindingStatus())) return "IN_PROGRESS";
@@ -346,27 +386,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
     }
 
     private LocalDateTime parseTime(String value, LocalDateTime fallback) {
-        if (!hasText(value)) return fallback;
-        try {
-            return OffsetDateTime.parse(value).atZoneSameInstant(BEIJING_ZONE).toLocalDateTime();
-        } catch (DateTimeParseException ignored) {
-            // Continue with provider formats that do not carry an explicit offset.
-        }
-        try {
-            return Instant.parse(value).atZone(BEIJING_ZONE).toLocalDateTime();
-        } catch (DateTimeParseException ignored) {
-            // Continue with provider formats that are documented as Beijing local time.
-        }
-        for (DateTimeFormatter formatter : List.of(DateTimeFormatter.ISO_LOCAL_DATE_TIME,
-                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
-                DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))) {
-            try {
-                return LocalDateTime.parse(value, formatter);
-            } catch (DateTimeParseException ignored) {
-                // Try the next documented/common provider timestamp format.
-            }
-        }
-        return fallback;
+        return com.tradepass.framework.fadada.core.FadadaProviderTime.parse(value, fallback);
     }
 
     private String text(LocalDateTime value) {

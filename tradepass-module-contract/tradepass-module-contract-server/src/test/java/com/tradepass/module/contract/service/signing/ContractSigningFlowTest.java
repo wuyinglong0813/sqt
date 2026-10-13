@@ -68,6 +68,13 @@ class ContractSigningFlowTest {
 
     @AfterEach void clear() { AuthContext.clear(); }
 
+    @Test void invalidAbolishReasonDoesNotOpenAnUncertainCreationIntent() {
+        contract.setStatus("ACTIVE");
+        assertThatThrownBy(() -> service.abolishUrl(12L, "字".repeat(201))).hasMessageContaining("200字");
+        verify(intents, never()).begin(any());
+        verify(gateway, never()).abolish(anyString(), anyString(), anyString(), anyString());
+    }
+
     @Test void anUnpreparedContractIsActionableOnlyByItsInitiator() {
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(null);
         assertThat(service.current(12L).canSign()).isTrue();
@@ -115,7 +122,7 @@ class ContractSigningFlowTest {
     @Test void failureToOpenAbolishPageKeepsItsCreatedProviderId() {
         contract.setStatus("ACTIVE");
         when(jdbc.queryForObject(contains("action_type = 'VOID'"), eq(Long.class), eq(12L))).thenReturn(1L);
-        when(gateway.abolish(anyString(), anyString(), anyString())).thenReturn("abolish");
+        when(gateway.abolish(anyString(), anyString(), anyString(), anyString())).thenReturn("abolish");
         when(gateway.actorUrl(anyString(), anyString(), anyString(), anyString())).thenThrow(new IllegalStateException("timeout"));
         assertThatThrownBy(() -> service.abolishUrl(12L, "测试")).hasMessageContaining("任务已保留");
         assertThat(task.getAbolishedSignTaskId()).isEqualTo("abolish");
@@ -125,21 +132,21 @@ class ContractSigningFlowTest {
     @Test void creationTimeoutMarksUncertaintyAndPreventsBlindRetry() {
         contract.setStatus("ACTIVE");
         when(jdbc.queryForObject(contains("action_type = 'VOID'"), eq(Long.class), eq(12L))).thenReturn(1L);
-        when(gateway.abolish(anyString(), anyString(), anyString())).thenThrow(new IllegalStateException("timeout"));
+        when(gateway.abolish(anyString(), anyString(), anyString(), anyString())).thenThrow(new IllegalStateException("timeout"));
         assertThatThrownBy(() -> service.abolishUrl(12L, "测试")).hasMessageContaining("结果尚未确认");
         assertThat(task.getProviderStatus()).isEqualTo("ABOLISH_CREATION_UNCERTAIN");
         assertThatThrownBy(() -> service.abolishUrl(12L, "测试")).hasMessageContaining("结果尚未确认");
-        verify(gateway, times(1)).abolish(anyString(), anyString(), anyString());
+        verify(gateway, times(1)).abolish(anyString(), anyString(), anyString(), anyString());
     }
 
     @Test void providerCallIsPrecededByDurableIntentAndConfirmedOnlyAfterTaskSave() {
         contract.setStatus("ACTIVE");
-        when(gateway.abolish(anyString(), anyString(), anyString())).thenReturn("abolish");
+        when(gateway.abolish(anyString(), anyString(), anyString(), anyString())).thenReturn("abolish");
         when(gateway.actorUrl(anyString(), anyString(), anyString(), anyString())).thenReturn("https://example.test/sign");
         service.abolishUrl(12L, "测试");
         var order = inOrder(intents, gateway, tasks);
         order.verify(intents).begin(task);
-        order.verify(gateway).abolish(anyString(), anyString(), anyString());
+        order.verify(gateway).abolish(anyString(), anyString(), anyString(), anyString());
         order.verify(tasks).update(eq(task), any(Wrapper.class));
         order.verify(intents).confirm("intent", "abolish");
     }
@@ -155,7 +162,7 @@ class ContractSigningFlowTest {
         assertThat(task.getInitiatorSignStatus()).isNull();
         assertThat(task.getCounterpartySignStatus()).isNull();
         verify(intents).confirm("intent", "child");
-        verify(gateway, never()).abolish(anyString(), anyString(), anyString());
+        verify(gateway, never()).abolish(anyString(), anyString(), anyString(), anyString());
     }
 
     @Test void unknownChildCallbackRecoversTheIntentOnceWithinItsTransaction() {
@@ -173,7 +180,7 @@ class ContractSigningFlowTest {
         contract.setStatus("ACTIVE");
         when(intents.pending(task)).thenReturn(List.of(new ContractAbolishIntentService.PendingIntent("intent", null)));
         assertThatThrownBy(() -> service.abolishUrl(12L, "测试")).hasMessageContaining("结果尚未确认");
-        verify(gateway, never()).abolish(anyString(), anyString(), anyString());
+        verify(gateway, never()).abolish(anyString(), anyString(), anyString(), anyString());
     }
 
     @Test void mismatchedRemoteParentCannotConfirmAnOrphanedChild() {

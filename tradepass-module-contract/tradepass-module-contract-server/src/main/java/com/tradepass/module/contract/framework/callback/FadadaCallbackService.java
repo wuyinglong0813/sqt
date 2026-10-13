@@ -112,7 +112,7 @@ public class FadadaCallbackService {
             var result = objectMapper.createObjectNode();
             // Persist only routing identifiers and status details used by the processor,
             // never arbitrary provider fields such as full identity documents or face data.
-            for (String field : java.util.List.of("clientUserId", "clientCorpId", "openCorpId", "signTaskId",
+            for (String field : java.util.List.of("clientUserId", "clientCorpId", "openCorpId", "existClientCorpId", "existOpenCorpId", "signTaskId",
                     "openUserId", "existOpenUserId", "authResult", "verifyStatus", "corpIdentProcessStatus",
                     "corpIdentFailedReason", "authFailedReason", "identProcessStatus", "identMethod", "identFailedReason",
                     "eventTime", "availableStatus", "userName", "corpName", "corpIdentNo", "corpIdentMethod", "memberId")) {

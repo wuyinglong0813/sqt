@@ -234,6 +234,7 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         if (!recovering.isEmpty()) throw new BusinessException("双方正在确认恢复履约，请先处理恢复申请");
         FadadaContractSignTaskDO task = find(contract, true);
         if (task == null || !hasText(task.getSignTaskId())) throw new BusinessException("该合同没有电子签署记录");
+        String checkedReason = safeReason(reason);
         reconcileAbolishIntent(task);
         if (!hasText(task.getAbolishedSignTaskId()) || abolishRetryable(task.getProviderStatus())) {
             if (hasText(task.getAbolishedSignTaskId())) {
@@ -251,7 +252,7 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
             String intentId = abolishIntents.begin(task);
             String previousChildId = task.getAbolishedSignTaskId();
             try {
-                String abolishId = gateway.abolish(task.getSignTaskId(), safeReason(reason), properties.getCallbackUrl());
+                String abolishId = gateway.abolish(task.getSignTaskId(), actorId(task, companyId), checkedReason, properties.getCallbackUrl());
                 if (!hasText(abolishId) || abolishId.equals(previousChildId)) throw new BusinessException("未返回新的作废任务编号");
                 task.setAbolishedSignTaskId(abolishId);
             } catch (RuntimeException exception) {
@@ -318,6 +319,13 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         String counterpartyActor = "supplier".equals(initiatorActor) ? "buyer" : "supplier";
         ContractRespDTO payload = signingSnapshot(contract, existing);
         byte[] pdf = pdfService.generate(payload);
+        var createCommand = new FadadaSigningGateway.CreateTaskCommand(
+                pdf, pdfService.fileName(payload), contract.getName(),
+                "contract-" + contract.getId() + "-v" + version(contract),
+                initiatorIdentity.getOpenCorpId(), initiatorActor, initiator.getName(), initiatorSeal,
+                counterpartyIdentity.getOpenCorpId(), counterpartyActor, counterparty.getName(), counterpartySeal,
+                "supplier", "buyer", properties.getCallbackUrl());
+        createCommand.validate(); // Fail locally before reserving quota or creating a remote task.
         String sha256 = FileTypeInspector.sha256(pdf);
         FadadaContractSignTaskDO task = existing == null ? new FadadaContractSignTaskDO() : existing;
         task.setContractSnapshot(serializeSnapshot(payload));
@@ -347,12 +355,7 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
                 task.setContractSnapshot(reservation.snapshot());
                 sha256 = reservation.sha256();
             } else {
-                created = gateway.createTask(new FadadaSigningGateway.CreateTaskCommand(
-                    pdf, pdfService.fileName(payload), contract.getName(),
-                    "contract-" + contract.getId() + "-v" + task.getVersionNo(),
-                    initiatorIdentity.getOpenCorpId(), initiatorActor, initiator.getName(), initiatorSeal,
-                    counterpartyIdentity.getOpenCorpId(), counterpartyActor, counterparty.getName(), counterpartySeal,
-                    "supplier", "buyer", properties.getCallbackUrl()));
+                created = gateway.createTask(createCommand);
                 if (reservation != null) membership.confirm(reservation.id(), created);
             }
             task.setSignTaskId(created.signTaskId());
@@ -398,6 +401,14 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         } else {
             task.setProviderStatus(status.status());
             if ("task_finished".equalsIgnoreCase(status.status()) && task.getArchivedAt() == null) {
+                boolean bothSigned = java.util.stream.Stream.of(task.getInitiatorActorId(), task.getCounterpartyActorId())
+                        .allMatch(id -> status.actors().stream().anyMatch(actor -> id.equals(actor.actorId())
+                                && "signed".equals(actor.signStatus())));
+                if (!bothSigned) {
+                    task.setLastError("签署任务已结束，但双方签署证据尚未齐全，请稍后同步或联系管理员核验");
+                    taskMapper.updateById(task);
+                    return task;
+                }
                 FadadaCorpIdentityRespDTO owner = companyService.requireVerified(contract.getCompanyId());
                 ContractRespDTO payload = signingSnapshot(contract, task);
                 task.setContractSnapshot(serializeSnapshot(payload));
@@ -637,7 +648,11 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
     private long safeUserId(TradeContractDO contract) {
         return contract.getInitiatedBy() == null ? 1L : contract.getInitiatedBy();
     }
-    private String safeReason(String reason) { return hasText(reason) ? reason.trim() : "双方协商作废合同"; }
+    private String safeReason(String reason) {
+        String value = hasText(reason) ? reason.trim() : "双方协商作废合同";
+        if (value.length() > 200) throw new BusinessException("合同作废原因不能超过200字");
+        return value;
+    }
     private String shortMessage(RuntimeException exception) {
         String value = exception.getMessage();
         return hasText(value) ? value.substring(0, Math.min(512, value.length())) : "签署任务创建失败";

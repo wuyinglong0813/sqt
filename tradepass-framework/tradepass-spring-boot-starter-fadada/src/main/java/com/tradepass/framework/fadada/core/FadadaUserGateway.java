@@ -23,6 +23,7 @@ public interface FadadaUserGateway {
                              String openUserId,
                              String bindingStatus,
                              String identStatus,
+                             String availableStatus,
                              List<String> authScopes) {
     }
 
@@ -31,6 +32,11 @@ public interface FadadaUserGateway {
                               String userName,
                               String identMethod,
                               String identSubmitTime,
-                              String identSuccessTime) {
+                              String identSuccessTime,
+                              String fddId) {
+        public UserIdentityResult(String openUserId, String identStatus, String userName,
+                                  String identMethod, String identSubmitTime, String identSuccessTime) {
+            this(openUserId, identStatus, userName, identMethod, identSubmitTime, identSuccessTime, null);
+        }
     }
 }

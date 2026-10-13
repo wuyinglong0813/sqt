@@ -33,6 +33,62 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class FadadaPersonalIdentityServiceTest {
+    @Test
+    void memberPersonComparisonRequiresFreshClientBindingAndTheSameIdentifiedPerson() {
+        var saved = identity("VERIFIED"); saved.setOpenUserId("open-user-8");
+        when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(saved);
+        when(gateway.getUser("tradepass-user-8", null)).thenReturn(new FadadaUserGateway.UserAccountResult(
+                "tradepass-user-8", "open-user-8", "authorized", "identified", "enable", List.of("ident_info")));
+        when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
+                "open-user-8", "identified", "张三", "face", null, null, "fdd-user-8"));
+        assertThat(service.verifiedFddId(8L)).isEqualTo("fdd-user-8");
+        when(gateway.getUser("tradepass-user-8", null)).thenReturn(new FadadaUserGateway.UserAccountResult(
+                "other-client", "open-user-8", "authorized", "identified", "enable", List.of("ident_info")));
+        assertThatThrownBy(() -> service.verifiedFddId(8L)).hasMessageContaining("授权关联尚未确认");
+    }
+
+    @Test
+    void successFromAnOlderAttemptRequiresCurrentProviderEvidence() {
+        var saved = identity("IN_PROGRESS");
+        when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(saved);
+        when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                "tradepass-user-8", "open-user-8", "unauthorized", "unidentified", "enable", List.of()));
+        var old = successCallback().put("eventTime", String.valueOf(System.currentTimeMillis() - 120000));
+        assertThat(service.syncCallback("tradepass-user-8", old).status()).isNotEqualTo("VERIFIED");
+        assertThat(saved.getIdentVerifiedAt()).isNull();
+        verify(gateway).getUser(any(), any());
+    }
+    @Test
+    void authoritativeQueryCannotRetainVerificationForDisabledUnknownOrUnscopedAccount() {
+        for (String state : List.of("disable", "", "unknown", "missing-scope")) {
+            org.mockito.Mockito.reset(gateway);
+            var saved = identity("VERIFIED"); saved.setOpenUserId("open-user-8");
+            when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(saved);
+            when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                    "tradepass-user-8", "open-user-8", "authorized", "identified",
+                    "missing-scope".equals(state) ? "enable" : state,
+                    "missing-scope".equals(state) ? List.of() : List.of("ident_info")));
+            assertThat(service.syncByClientUserId("tradepass-user-8").status()).isNotEqualTo("VERIFIED");
+            verify(gateway, org.mockito.Mockito.never()).getIdentityInfo(any());
+            assertThatThrownBy(() -> service.requireCurrentVerified()).isInstanceOf(BusinessException.class);
+        }
+    }
+
+    @Test
+    void identityDetailMustNameTheRequestedUserAndHaveAConfirmedStatus() {
+        for (String[] detail : new String[][] {{"another-user", "identified"}, {"", "identified"},
+                {"open-user-8", ""}, {"open-user-8", "unidentified"}}) {
+            org.mockito.Mockito.reset(gateway);
+            var saved = identity("IN_PROGRESS");
+            when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(saved);
+            when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                    "tradepass-user-8", "open-user-8", "authorized", "identified", "enable", List.of("ident_info")));
+            when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
+                    detail[0], detail[1], "张三", "face", null, null));
+            assertThat(service.syncCurrent().status()).isNotEqualTo("VERIFIED");
+            assertThat(saved.getIdentVerifiedAt()).isNull();
+        }
+    }
     private FadadaUserIdentityMapper identityMapper;
     private SysUserMapper userMapper;
     private FadadaUserGateway gateway;
@@ -169,7 +225,7 @@ class FadadaPersonalIdentityServiceTest {
         when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
         when(gateway.getUser("tradepass-user-8", null)).thenReturn(
                 new FadadaUserGateway.UserAccountResult("tradepass-user-8", "open-user-8",
-                        "authorized", "identified", List.of("ident_info")));
+                        "authorized", "identified", "enable", List.of("ident_info")));
         when(gateway.getIdentityInfo("open-user-8")).thenReturn(
                 new FadadaUserGateway.UserIdentityResult("open-user-8", "identified", "张三",
                         "face", "2026-08-27 10:00:00", "2026-08-27T02:05:00Z"));
@@ -220,7 +276,7 @@ class FadadaPersonalIdentityServiceTest {
         when(gateway.createAuthUrl(any())).thenThrow(new FadadaUserQueryException("210002"));
         when(gateway.getUser("tradepass-user-8", null)).thenReturn(
                 new FadadaUserGateway.UserAccountResult("tradepass-user-8", "open-user-8",
-                        "authorized", "identified", List.of("ident_info")));
+                        "authorized", "identified", "enable", List.of("ident_info")));
         when(gateway.getIdentityInfo("open-user-8")).thenReturn(
                 new FadadaUserGateway.UserIdentityResult("open-user-8", "identified", "张三",
                         "face", null, null));
@@ -244,7 +300,7 @@ class FadadaPersonalIdentityServiceTest {
         org.mockito.Mockito.verify(gateway, org.mockito.Mockito.never()).getIdentityInfo(any());
         identity.setLastSyncAt(LocalDateTime.now().minusSeconds(31));
         org.mockito.Mockito.doReturn(new FadadaUserGateway.UserAccountResult("tradepass-user-8", "open-user-8",
-                "authorized", "identified", List.of("ident_info"))).when(gateway).getUser("tradepass-user-8", null);
+                "authorized", "identified", "enable", List.of("ident_info"))).when(gateway).getUser("tradepass-user-8", null);
         when(gateway.getIdentityInfo("open-user-8")).thenReturn(
                 new FadadaUserGateway.UserIdentityResult("open-user-8", "identified", "张三", "face", null, null));
         assertThat(service.syncCurrent().status()).isEqualTo("VERIFIED");
@@ -312,7 +368,7 @@ class FadadaPersonalIdentityServiceTest {
             when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
             var callback = successCallback(); callback.remove(field);
             when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
-                    "tradepass-user-8", "open-user-8", "unauthorized", "unidentified", List.of()));
+                    "tradepass-user-8", "open-user-8", "unauthorized", "unidentified", "enable", List.of()));
             assertThat(service.syncCallback("tradepass-user-8", callback).status()).isEqualTo("IN_PROGRESS");
             verify(gateway).getUser(any(), any());
         }
@@ -329,7 +385,7 @@ class FadadaPersonalIdentityServiceTest {
             when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
             var callback = successCallback().put(change[0], change[1]);
             when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
-                    "tradepass-user-8", "open-user-8", "unauthorized", "unidentified", List.of()));
+                    "tradepass-user-8", "open-user-8", "unauthorized", "unidentified", "enable", List.of()));
             assertThat(service.syncCallback("tradepass-user-8", callback).status()).isEqualTo("IN_PROGRESS");
             verify(gateway).getUser(any(), any());
         }
@@ -353,7 +409,7 @@ class FadadaPersonalIdentityServiceTest {
         when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(identity);
         var callback = successCallback().put("eventTime", String.valueOf(System.currentTimeMillis() - 60000));
         when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
-                "tradepass-user-8", "open-user-8", "authorized", "identified", List.of("ident_info")));
+                "tradepass-user-8", "open-user-8", "authorized", "identified", "enable", List.of("ident_info")));
         when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
                 "open-user-8", "identified", "张三", "mobile", null, null));
         assertThat(service.syncCallback("tradepass-user-8", callback.deepCopy().put("authResult", "fail")).status())
@@ -361,7 +417,7 @@ class FadadaPersonalIdentityServiceTest {
         org.mockito.Mockito.reset(gateway);
         identity.setLocalStatus("IN_PROGRESS"); identity.setBindingStatus("unauthorized");
         when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
-                "tradepass-user-8", "open-user-8", "unauthorized", "identified", List.of()));
+                "tradepass-user-8", "open-user-8", "unauthorized", "identified", "enable", List.of()));
         when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
                 "open-user-8", "identified", "张三", "mobile", null, null));
         assertThat(service.syncCallback("tradepass-user-8", callback).status()).isNotEqualTo("VERIFIED");
@@ -408,6 +464,7 @@ class FadadaPersonalIdentityServiceTest {
         identity.setIdentStatus("unidentified");
         identity.setIdentProcessStatus("identifying");
         identity.setAuthScopes("[\"ident_info\"]");
+        identity.setIdentSubmittedAt(LocalDateTime.now().minusMinutes(1));
         return identity;
     }
 

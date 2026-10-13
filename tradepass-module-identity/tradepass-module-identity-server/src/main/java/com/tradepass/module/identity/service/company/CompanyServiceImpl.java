@@ -128,6 +128,7 @@ public class CompanyServiceImpl implements CompanyService {
             throw new BusinessException("搜索关键词格式不正确");
         }
         return companyMapper.selectList(new LambdaQueryWrapper<CompanyDO>()
+                        .eq(CompanyDO::getCertificationStatus, "VERIFIED")
                         .and(query -> query.like(CompanyDO::getName, kw).or().like(CompanyDO::getCreditCode, kw))
                         .orderByAsc(CompanyDO::getName)
                         .last("LIMIT 20"))

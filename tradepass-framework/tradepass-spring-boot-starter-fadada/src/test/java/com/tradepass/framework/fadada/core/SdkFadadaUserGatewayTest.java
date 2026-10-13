@@ -7,6 +7,23 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class SdkFadadaUserGatewayTest {
+    @Test
+    @SuppressWarnings("unchecked")
+    void accountQueryPreservesTheDocumentedAvailableStatus() throws Exception {
+        var properties = new FadadaProperties();
+        properties.setAppId("test"); properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var gateway = new SdkFadadaUserGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.UserClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "userClient", client);
+        var detail = new com.fasc.open.api.v5_1.res.user.UserRes();
+        detail.setAvailableStatus("disable");
+        com.fasc.open.api.bean.base.BaseRes<com.fasc.open.api.v5_1.res.user.UserRes> response =
+                org.mockito.Mockito.mock(com.fasc.open.api.bean.base.BaseRes.class);
+        org.mockito.Mockito.when(response.isSuccess()).thenReturn(true);
+        org.mockito.Mockito.when(response.getData()).thenReturn(detail);
+        org.mockito.Mockito.when(client.get(org.mockito.ArgumentMatchers.any())).thenReturn(response);
+        assertThat(gateway.getUser("local-8", null).availableStatus()).isEqualTo("disable");
+    }
 
     @Test
     @SuppressWarnings("unchecked")

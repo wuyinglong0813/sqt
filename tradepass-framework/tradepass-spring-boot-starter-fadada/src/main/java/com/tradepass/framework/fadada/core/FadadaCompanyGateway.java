@@ -7,6 +7,7 @@ public interface FadadaCompanyGateway {
     CompanyAccount getCompany(String clientCorpId, String openCorpId);
     CompanyAccount getCompanyByCreditCode(String creditCode);
     CompanyIdentity getIdentity(String openCorpId);
+    CompanyMember getMember(String openCorpId, long memberId);
     List<SealInfo> listSeals(String openCorpId);
     String createSealManageUrl(String openCorpId, String clientUserId, String redirectUrl);
     String createIdentityChangeUrl(String clientCorpId, String openCorpId, String clientUserId);
@@ -20,4 +21,5 @@ public interface FadadaCompanyGateway {
                            String creditCode, String legalRepName, String identMethod,
                            String submittedAt, String verifiedAt, String operatorType, String operatorId) {}
     record SealInfo(String sealId, String sealName, String categoryType, String status) {}
+    record CompanyMember(Long memberId, String memberStatus, List<String> roleTypes, String fddId) {}
 }

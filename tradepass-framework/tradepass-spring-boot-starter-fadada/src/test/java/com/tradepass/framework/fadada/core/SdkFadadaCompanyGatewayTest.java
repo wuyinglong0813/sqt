@@ -9,6 +9,100 @@ import static org.assertj.core.api.Assertions.*;
 
 class SdkFadadaCompanyGatewayTest {
     @Test
+    void readsEverySealPageAndOnlyReturnsThePrimaryCompanysSeals() throws Exception {
+        var properties = new FadadaProperties(); properties.setAppId("test");
+        properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.SealClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "sealClient", client);
+        org.mockito.Mockito.when(client.getSealInfoListNew(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+            var request = (com.fasc.open.api.v5_1.req.seal.GetSealInfoListReq) call.getArgument(0);
+            assertThat(request.getListPageSize()).isEqualTo(100);
+            var page = new com.fasc.open.api.v5_1.res.seal.GetSealInfoListRes();
+            page.setListPageNo(request.getListPageNo()); page.setListPageCount(2);
+            var own = new com.fasc.open.api.v5_1.res.seal.GetSealInfoListRes.SealBaseInfo();
+            own.setSealId((long) request.getListPageNo()); own.setEntityType("primary"); own.setSealStatus("enable");
+            var subsidiary = new com.fasc.open.api.v5_1.res.seal.GetSealInfoListRes.SealBaseInfo();
+            subsidiary.setSealId(99L); subsidiary.setEntityType("subsidiary");
+            page.setSealInfos(java.util.List.of(own, subsidiary));
+            return successful(page);
+        });
+        assertThat(gateway.listSeals("corp-3")).extracting(FadadaCompanyGateway.SealInfo::sealId)
+                .containsExactly("1", "2");
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(2)).getSealInfoListNew(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void malformedSealPaginationMustNotBeReturnedAsACompleteSnapshot() throws Exception {
+        var properties = new FadadaProperties(); properties.setAppId("test");
+        properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.SealClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "sealClient", client);
+        var page = new com.fasc.open.api.v5_1.res.seal.GetSealInfoListRes();
+        page.setListPageNo(1); page.setListPageCount(2); page.setSealInfos(java.util.List.of());
+        org.mockito.Mockito.when(client.getSealInfoListNew(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> successful(page));
+        assertThatThrownBy(() -> gateway.listSeals("corp-3")).hasMessageContaining("不完整");
+    }
+
+    @Test
+    void memberLookupUsesTheSignedMemberIdAndReturnsOnlyIdentityAndAuthorityEvidence() throws Exception {
+        var properties = new FadadaProperties(); properties.setAppId("test");
+        properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.OrgClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "orgClient", client);
+        var member = new com.fasc.open.api.v5_1.res.org.GetCorpMemberDetailRes();
+        member.setMemberId(88L); member.setMemberStatus("activated"); member.setRoleType(java.util.List.of("super_admin"));
+        member.setFddId("fdd-user-7"); member.setMemberMobile("13800138000");
+        org.mockito.Mockito.when(client.getCorpMemberDetail(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+            var request = (com.fasc.open.api.v5_1.req.org.GetCorpMemberDetailReq) call.getArgument(0);
+            assertThat(request.getMemberId()).isEqualTo(88L); assertThat(request.getOpenCorpId()).isEqualTo("corp-3");
+            assertThat(request.getInternalIdentifier()).isNull(); return successful(member);
+        });
+        assertThat(gateway.getMember("corp-3", 88L)).isEqualTo(new FadadaCompanyGateway.CompanyMember(
+                88L, "activated", java.util.List.of("super_admin"), "fdd-user-7"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> com.fasc.open.api.bean.base.BaseRes<T> successful(T data) {
+        var response = (com.fasc.open.api.bean.base.BaseRes<T>) org.mockito.Mockito.mock(com.fasc.open.api.bean.base.BaseRes.class);
+        org.mockito.Mockito.when(response.isSuccess()).thenReturn(true); org.mockito.Mockito.when(response.getData()).thenReturn(data);
+        return response;
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void authorizationUsesDocumentedNestedCompanyFieldsAndNativeReturnPage() throws Exception {
+        var properties = new FadadaProperties();
+        properties.setAppId("test"); properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var tokens = org.mockito.Mockito.mock(FadadaAccessTokenProvider.class);
+        var gateway = new SdkFadadaCompanyGateway(properties, tokens);
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.CorpClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "corpClient", client);
+        var detail = new com.fasc.open.api.v5_1.res.common.ECorpAuthUrlRes();
+        detail.setAuthUrl("https://example.test/auth");
+        com.fasc.open.api.bean.base.BaseRes<com.fasc.open.api.v5_1.res.common.ECorpAuthUrlRes> response =
+                org.mockito.Mockito.mock(com.fasc.open.api.bean.base.BaseRes.class);
+        org.mockito.Mockito.when(response.isSuccess()).thenReturn(true);
+        org.mockito.Mockito.when(response.getData()).thenReturn(detail);
+        org.mockito.Mockito.when(client.getCorpAuthUrl(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+            var request = (com.fasc.open.api.v5_1.req.corp.GetCorpAuthResourceUrlReq) call.getArgument(0);
+            assertThat(request.getCorpIdentInfo().getCorpName()).isEqualTo("测试企业");
+            assertThat(request.getCorpIdentInfo().getCorpIdentNo()).isEqualTo("TEST-CREDIT");
+            assertThat(request.getCorpName()).isNull();
+            assertThat(request.getCorpIdentNo()).isNull();
+            assertThat(request.getCorpIdentInfoMatch()).isNull();
+            assertThat(request.getCorpNonEditableInfo()).containsExactly("corpName", "corpIdentNo");
+            assertThat(request.getClientUserId()).isEqualTo("user-7");
+            assertThat(request.getRedirectMiniAppUrl()).isEqualTo("%2Fpages%2Fservice-return%2Fservice-return");
+            return response;
+        });
+        assertThat(gateway.createAuthUrl(new FadadaCompanyGateway.AuthCommand("corp-3", "user-7",
+                "测试企业", "TEST-CREDIT", java.util.List.of("ident_info"), "https://example.test/callback",
+                "%2Fpages%2Fservice-return%2Fservice-return"))).isEqualTo("https://example.test/auth");
+    }
+    @Test
     @SuppressWarnings("unchecked")
     void creditCodeLookupSendsOnlyCreditCodeAndPreservesProviderErrorCodes() throws Exception {
         var properties = new FadadaProperties();
@@ -42,7 +136,7 @@ class SdkFadadaCompanyGatewayTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void legalVerificationUrlBindsTheCurrentPersonalAccountToTheVerifiedEnterprise() throws Exception {
+    void businessInformationChangeRequiresTheConfirmedEnterpriseAndDoesNotChangeItsClientMapping() throws Exception {
         var properties = new com.tradepass.framework.fadada.config.FadadaProperties();
         properties.setAppId("test-app"); properties.setAppSecret("test-secret");
         properties.setServerUrl("https://example.test");

@@ -1,6 +1,7 @@
 package com.tradepass.framework.fadada.core;
 
 import com.fasc.open.api.bean.base.BaseRes;
+import com.fasc.open.api.bean.base.BaseReq;
 import com.fasc.open.api.bean.common.UserIdentInfo;
 import com.fasc.open.api.exception.ApiException;
 import com.fasc.open.api.v5_1.client.OpenApiClient;
@@ -45,7 +46,7 @@ public class SdkFadadaUserGateway implements FadadaUserGateway {
         if (hasText(command.callbackUrl())) request.setCallbackUrl(command.callbackUrl());
         if (hasText(command.redirectUrl())) request.setRedirectUrl(command.redirectUrl());
         if (hasText(command.redirectMiniAppUrl())) request.setRedirectMiniAppUrl(command.redirectMiniAppUrl());
-        EUrlRes response = invoke(() -> userClient.getUserAuthUrl(request), "获取个人认证地址");
+        EUrlRes response = invoke(request, () -> userClient.getUserAuthUrl(request), "获取个人认证地址");
         String authUrl = firstText(response.getAuthUrl(), response.geteUrl(), response.getAuthShortUrl());
         if (!hasText(authUrl)) throw new BusinessException("认证服务未返回个人认证地址");
         return new AuthUrlResult(authUrl);
@@ -56,9 +57,9 @@ public class SdkFadadaUserGateway implements FadadaUserGateway {
         GetUserReq request = new GetUserReq();
         request.setAccessToken(tokenProvider.get());
         applyUserLookup(request, clientUserId, openUserId);
-        UserRes response = invoke(() -> userClient.get(request), "查询个人认证状态");
+        UserRes response = invoke(request, () -> userClient.get(request), "查询个人认证状态");
         return new UserAccountResult(response.getClientUserId(), response.getOpenUserId(),
-                response.getBindingStatus(), response.getIdentStatus(), response.getAuthScope());
+                response.getBindingStatus(), response.getIdentStatus(), response.getAvailableStatus(), response.getAuthScope());
     }
 
     @Override
@@ -66,11 +67,11 @@ public class SdkFadadaUserGateway implements FadadaUserGateway {
         GetUserIdentityInfoReq request = new GetUserIdentityInfoReq();
         request.setAccessToken(tokenProvider.get());
         request.setOpenUserId(openUserId);
-        UserIdentityInfoRes response = invoke(() -> userClient.getIdentityInfo(request), "查询个人实名信息");
+        UserIdentityInfoRes response = invoke(request, () -> userClient.getIdentityInfo(request), "查询个人实名信息");
         UserIdentInfo identity = response.getUserIdentInfo();
         return new UserIdentityResult(response.getOpenUserId(), response.getIdentStatus(),
                 identity == null ? null : identity.getUserName(), response.getIdentMethod(),
-                response.getIdentSubmitTime(), response.getIdentSuccessTime());
+                response.getIdentSubmitTime(), response.getIdentSuccessTime(), response.getFddId());
     }
 
     static void applyUserLookup(GetUserReq request, String clientUserId, String openUserId) {
@@ -85,16 +86,16 @@ public class SdkFadadaUserGateway implements FadadaUserGateway {
         throw new BusinessException("个人认证用户标识缺失");
     }
 
-    private <T> T invoke(ApiCall<T> call, String action) {
+    private <T> T invoke(BaseReq request, FadadaApiSupport.ApiCall<T> call, String action) {
         try {
-            BaseRes<T> response = call.call();
+            BaseRes<T> response = FadadaApiSupport.execute(request, tokenProvider, call);
             if (response == null || !response.isSuccess() || response.getData() == null) {
                 String requestId = response == null ? "" : response.getRequestId();
-                String code = response == null ? "null" : response.getCode();
+                String code = response == null ? "null" : String.valueOf(response.getCode());
                 log.warn("Fadada {} failed: code={}, requestId={}, message={}", action, code, requestId,
                         safeDiagnosticMessage(response == null ? null : response.getMsg()));
                 if (("查询个人认证状态".equals(action)
-                        && ("210022".equals(code) || "100020".equals(code)))
+                        && ("210022".equals(code) || List.of("100004", "100009", "100020").contains(code)))
                         || ("获取个人认证地址".equals(action) && "210002".equals(code))) {
                     throw new FadadaUserQueryException(code);
                 }
@@ -126,8 +127,4 @@ public class SdkFadadaUserGateway implements FadadaUserGateway {
         return null;
     }
 
-    @FunctionalInterface
-    private interface ApiCall<T> {
-        BaseRes<T> call() throws ApiException;
-    }
 }

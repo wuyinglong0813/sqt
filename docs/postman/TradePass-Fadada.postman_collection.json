@@ -224,7 +224,7 @@
               "urlencoded": [
                 {
                   "key": "bizContent",
-                  "value": "{\n  \"clientCorpId\": \"{{client_corp_id}}\",\n  \"clientUserId\": \"{{client_user_id}}\",\n  \"corpName\": \"{{company_name}}\",\n  \"corpIdentNo\": \"{{credit_code}}\",\n  \"corpIdentInfoMatch\": true,\n  \"corpNonEditableInfo\": [\n    \"corpName\",\n    \"corpIdentNo\"\n  ],\n  \"authScopes\": [\n    \"ident_info\",\n    \"seal_info\",\n    \"signtask_init\",\n    \"signtask_info\",\n    \"signtask_file\"\n  ],\n  \"callbackUrl\": \"{{callback_url}}\"\n}",
+                  "value": "{\n  \"clientCorpId\": \"{{client_corp_id}}\",\n  \"clientUserId\": \"{{client_user_id}}\",\n  \"corpNonEditableInfo\": [\n    \"corpName\",\n    \"corpIdentNo\"\n  ],\n  \"authScopes\": [\n    \"ident_info\",\n    \"seal_info\",\n    \"signtask_init\",\n    \"signtask_info\",\n    \"signtask_file\",\n    \"organization\"\n  ],\n  \"callbackUrl\": \"{{callback_url}}\",\n  \"corpIdentInfo\": {\n    \"corpName\": \"{{company_name}}\",\n    \"corpIdentNo\": \"{{credit_code}}\"\n  }\n}",
                   "type": "text"
                 }
               ]
@@ -582,7 +582,7 @@
                 "value": "application/x-www-form-urlencoded"
               }
             ],
-            "url": "{{fdd_base_url}}/sign-task/app/get-detail",
+            "url": "{{fdd_base_url}}/sign-task/get-detail",
             "description": "",
             "body": {
               "mode": "urlencoded",
@@ -774,7 +774,7 @@
               "urlencoded": [
                 {
                   "key": "bizContent",
-                  "value": "{\n  \"signTaskId\": \"{{sign_task_id}}\",\n  \"reason\": \"{{reason}}\",\n  \"followOriginalConfig\": true,\n  \"autoStart\": true,\n  \"callbackUrl\": \"{{callback_url}}\"\n}",
+                  "value": "{\n  \"signTaskId\": \"{{sign_task_id}}\",\n  \"reason\": \"{{reason}}\",\n  \"followOriginalConfig\": true,\n  \"autoStart\": true,\n  \"callbackUrl\": \"{{callback_url}}\",\n  \"abolishedInitiator\": {\n    \"actorId\": \"{{actor_id}}\"\n  },\n  \"docSource\": \"platform\"\n}",
                   "type": "text"
                 }
               ]

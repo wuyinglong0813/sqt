@@ -58,7 +58,8 @@ class FadadaSigningVersionTest {
         task.setInitiatorActorId("supplier"); task.setCounterpartyActorId("buyer");
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
         when(contracts.selectByIdForUpdate(12L)).thenReturn(contract);
-        when(gateway.status("v2")).thenReturn(new FadadaSigningGateway.TaskStatus("v2", "task_finished", List.of()));
+        when(gateway.status("v2")).thenReturn(new FadadaSigningGateway.TaskStatus("v2", "task_finished", List.of(
+                new FadadaSigningGateway.ActorStatus("supplier", "signed"), new FadadaSigningGateway.ActorStatus("buyer", "signed"))));
         FadadaCorpIdentityRespDTO identity = new FadadaCorpIdentityRespDTO(); identity.setOpenCorpId("corp3");
         when(companies.requireVerified(3L)).thenReturn(identity);
         when(pdf.fileName(any())).thenReturn("signed.pdf");
@@ -66,6 +67,17 @@ class FadadaSigningVersionTest {
         AuthContext.set(7L, 3L);
     }
     @AfterEach void clear() { AuthContext.clear(); }
+
+    @Test void endedTaskWithMissingCurrentActorEvidenceCannotArchiveOrActivate() {
+        task.setInitiatorSignStatus("signed"); task.setCounterpartySignStatus("signed");
+        when(gateway.status("v2")).thenReturn(new FadadaSigningGateway.TaskStatus("v2", "task_finished", List.of(
+                new FadadaSigningGateway.ActorStatus("supplier", "signed"))));
+        service.syncBySignTaskId("v2");
+        assertThat(task.getArchivedAt()).isNull();
+        assertThat(task.getLastError()).contains("双方签署证据");
+        verifyNoInteractions(archive, trade);
+        verify(gateway, never()).downloadSignedPdf(any(), any(), any());
+    }
 
     @Test void lateOldVersionCallbackCannotActivateOrArchiveNewVersion() {
         task.setVersionNo(1); task.setSignTaskId("v1");

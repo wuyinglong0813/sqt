@@ -1,6 +1,7 @@
 package com.tradepass.framework.fadada.core;
 
 import com.fasc.open.api.bean.base.BaseRes;
+import com.fasc.open.api.bean.base.BaseReq;
 import com.fasc.open.api.bean.common.Actor;
 import com.fasc.open.api.bean.common.Field;
 import com.fasc.open.api.bean.common.FieldCorpSeal;
@@ -23,7 +24,7 @@ import com.fasc.open.api.v5_1.req.signtask.GetOwnerDownloadUrlReq;
 import com.fasc.open.api.v5_1.req.signtask.GetSignTaskImgDownloadUrlReq;
 import com.fasc.open.api.v5_1.req.signtask.ListSignTaskActorReq;
 import com.fasc.open.api.v5_1.req.signtask.SignTaskActorGetUrlReq;
-import com.fasc.open.api.v5_1.req.signtask.SignTaskBaseReq;
+import com.fasc.open.api.v5_1.req.signtask.QuerySignTaskDetailReq;
 import com.fasc.open.api.v5_1.req.signtask.SignTaskCancelReq;
 import com.fasc.open.api.v5_1.res.doc.FileId;
 import com.fasc.open.api.v5_1.res.doc.FileProcessRes;
@@ -75,6 +76,7 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
 
     @Override
     public CreatedTask createTask(CreateTaskCommand command) {
+        command.validate();
         String fileId = uploadAndProcess(command.pdf(), command.fileName());
         String docId = "contract-doc";
         CreateSignTaskReq request = new CreateSignTaskReq();
@@ -104,7 +106,7 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
                 actor(command.counterpartyActorId(), command.counterpartyName(), command.counterpartyOpenCorpId(),
                         command.counterpartySealId(), docId, command.counterpartyActorId().equals(command.supplierActorId())
                                 ? "supplier-seal" : "buyer-seal", 2)));
-        CreateSignTaskRes response = invoke(() -> signTaskClient.create(request), "创建合同签署任务");
+        CreateSignTaskRes response = invoke(request, () -> signTaskClient.create(request), "创建合同签署任务");
         if (!hasText(response.getSignTaskId())) throw new BusinessException("合同签署任务创建失败，请稍后重试");
         return new CreatedTask(response.getSignTaskId(), fileId, docId);
     }
@@ -116,22 +118,32 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         request.setSignTaskId(signTaskId);
         request.setActorId(actorId);
         request.setClientUserId(clientUserId);
-        request.setRedirectMiniAppUrl(redirectMiniAppUrl);
-        SignTaskActorGetUrlRes response = invoke(() -> signTaskClient.signTaskActorGetUrl(request), "获取合同签署地址");
+        request.setRedirectMiniAppUrl(hasText(redirectMiniAppUrl) ? java.net.URLEncoder.encode(
+                redirectMiniAppUrl, java.nio.charset.StandardCharsets.UTF_8) : null);
+        SignTaskActorGetUrlRes response = invoke(request, () -> signTaskClient.signTaskActorGetUrl(request), "获取合同签署地址");
         return requiredActorEmbedUrl(response);
     }
 
     @Override
     public TaskStatus status(String signTaskId) {
-        SignTaskBaseReq detailRequest = new SignTaskBaseReq();
+        QuerySignTaskDetailReq detailRequest = new QuerySignTaskDetailReq();
         detailRequest.setAccessToken(tokenProvider.get());
         detailRequest.setSignTaskId(signTaskId);
-        SignTaskDetailRes detail = invoke(() -> signTaskClient.getDetail(detailRequest), "查询合同签署状态");
+        SignTaskDetailRes detail = invoke(detailRequest, () -> signTaskClient.querySignTaskDetail(detailRequest), "查询合同签署状态");
+        if (!signTaskId.equals(detail.getSignTaskId()) || !hasText(detail.getSignTaskStatus())) {
+            throw new BusinessException("签署任务状态主体不一致或结果不完整，请稍后重试");
+        }
         ListSignTaskActorReq actorRequest = new ListSignTaskActorReq();
         actorRequest.setAccessToken(tokenProvider.get());
         actorRequest.setSignTaskId(signTaskId);
-        List<ListSignTaskActorRes> actors = invoke(() -> signTaskClient.listSignTaskActor(actorRequest),
+        List<ListSignTaskActorRes> actors = invoke(actorRequest, () -> signTaskClient.listSignTaskActor(actorRequest),
                 "查询合同参与方状态");
+        var actorIds = new java.util.HashSet<String>();
+        for (var actor : actors) {
+            if (actor == null || !hasText(actor.getActorId()) || !actorIds.add(actor.getActorId())) {
+                throw new BusinessException("签署参与方结果不完整，请稍后重试");
+            }
+        }
         return new TaskStatus(signTaskId, detail.getSignTaskStatus(), actors == null ? List.of() : actors.stream()
                 .map(value -> new ActorStatus(value.getActorId(), value.getSignStatus())).toList(),
                 detail.getOriginalSignTaskId(), detail.getAbolishedSignTaskId());
@@ -145,8 +157,9 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         request.setSignTaskId(signTaskId);
         request.setCompression(false);
         request.setDownloadMode("download");
-        request.setCustomName(fileName);
-        OwnerDownloadUrlRes response = invoke(() -> signTaskClient.getOwnerDownloadUrl(request), "获取签署文件");
+        // customName is optional and limited to 85 characters, unlike source names (200).
+        if (hasText(fileName) && fileName.length() <= 85) request.setCustomName(fileName);
+        OwnerDownloadUrlRes response = invoke(request, () -> signTaskClient.getOwnerDownloadUrl(request), "获取签署文件");
         return download(response.getDownloadUrl());
     }
 
@@ -156,7 +169,7 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         request.setAccessToken(tokenProvider.get());
         request.setOwnerId(OpenId.getInstance("corp", ownerOpenCorpId));
         request.setSignTaskId(signTaskId);
-        GetSigntaskImgDownloadUrlRes response = invoke(
+        GetSigntaskImgDownloadUrlRes response = invoke(request,
                 () -> signTaskClient.getSignTaskOwnerSlicingTicketId(request),
                 "获取签署合同预览");
         return lastPngFromZip(download(response.getSignTaskImgUrl()));
@@ -168,19 +181,26 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         request.setAccessToken(tokenProvider.get());
         request.setSignTaskId(signTaskId);
         request.setTerminationNote(reason);
-        invokeNoData(() -> signTaskClient.cancel(request), "撤回合同签署任务");
+        invokeNoData(request, () -> signTaskClient.cancel(request), "撤回合同签署任务");
     }
 
     @Override
-    public String abolish(String signTaskId, String reason, String callbackUrl) {
+    public String abolish(String signTaskId, String actorId, String reason, String callbackUrl) {
+        if (!hasText(actorId) || actorId.length() > 32 || !hasText(reason) || reason.length() > 200) {
+            throw new BusinessException("合同作废参与方或原因无效，作废原因不能超过200字");
+        }
         CancelSignTaskCreateReq request = new CancelSignTaskCreateReq();
         request.setAccessToken(tokenProvider.get());
         request.setSignTaskId(signTaskId);
+        var initiator = new CancelSignTaskCreateReq.AbolishedInitiator();
+        initiator.setActorId(actorId);
+        request.setAbolishedInitiator(initiator);
+        request.setDocSource("platform");
         request.setReason(reason);
         request.setFollowOriginalConfig(true);
         request.setAutoStart(true);
         request.setCallbackUrl(callbackUrl);
-        CancelSignTaskCreateRes response = invoke(() -> signTaskClient.abolishSignTask(request), "创建合同作废任务");
+        CancelSignTaskCreateRes response = invoke(request, () -> signTaskClient.abolishSignTask(request), "创建合同作废任务");
         if (!hasText(response.getAbolishedSignTaskId())) throw new BusinessException("合同作废任务创建失败，请稍后重试");
         return response.getAbolishedSignTaskId();
     }
@@ -190,7 +210,7 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         uploadRequest.setAccessToken(tokenProvider.get());
         uploadRequest.setFileType("doc");
         uploadRequest.setStorageType("cloud");
-        GetUploadUrlRes upload = invoke(() -> docClient.getUploadFileUrl(uploadRequest), "获取合同上传地址");
+        GetUploadUrlRes upload = invoke(uploadRequest, () -> docClient.getUploadFileUrl(uploadRequest), "获取合同上传地址");
         put(upload.getUploadUrl(), pdf);
         FddFileUrl source = new FddFileUrl();
         source.setFileType("doc");
@@ -202,7 +222,7 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         processRequest.setStorageType("cloud");
         processRequest.setSeparation(false);
         processRequest.setFddFileUrlList(List.of(source));
-        FileProcessRes processed = invoke(() -> docClient.process(processRequest), "处理合同文件");
+        FileProcessRes processed = invoke(processRequest, () -> docClient.process(processRequest), "处理合同文件");
         FileId file = processed.getFileIdList() == null || processed.getFileIdList().isEmpty()
                 ? null : processed.getFileIdList().get(0);
         if (file == null || !hasText(file.getFileId())) throw new BusinessException("合同文件处理失败，请稍后重试");
@@ -244,8 +264,6 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         position.setKeywordOffsetX("0");
         position.setKeywordOffsetY("0");
         FieldCorpSeal seal = new FieldCorpSeal();
-        seal.setWidth(42);
-        seal.setHeight(42);
         seal.setFollowSignSize(true);
         Field field = new Field();
         field.setFieldId(fieldId);
@@ -386,9 +404,9 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         catch (RuntimeException exception) { throw new BusinessException("企业电子印章标识无效，请重新同步印章"); }
     }
 
-    private <T> T invoke(ApiCall<T> call, String action) {
+    private <T> T invoke(BaseReq request, FadadaApiSupport.ApiCall<T> call, String action) {
         try {
-            BaseRes<T> response = call.call();
+            BaseRes<T> response = FadadaApiSupport.execute(request, tokenProvider, call);
             if (response == null || !response.isSuccess() || response.getData() == null) {
                 log.warn("Electronic signature {} failed: code={}, requestId={}", action,
                         response == null ? "null" : response.getCode(), response == null ? "" : response.getRequestId());
@@ -401,9 +419,9 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         }
     }
 
-    private void invokeNoData(ApiCall<Void> call, String action) {
+    private void invokeNoData(BaseReq request, FadadaApiSupport.ApiCall<Void> call, String action) {
         try {
-            BaseRes<Void> response = call.call();
+            BaseRes<Void> response = FadadaApiSupport.execute(request, tokenProvider, call);
             if (response == null || !response.isSuccess()) throw new BusinessException(action + "失败，请稍后重试");
         } catch (ApiException exception) {
             log.warn("Electronic signature {} failed", action, exception);
@@ -418,5 +436,4 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
     }
 
     private static boolean hasText(String value) { return value != null && !value.isBlank(); }
-    @FunctionalInterface private interface ApiCall<T> { BaseRes<T> call() throws ApiException; }
 }
