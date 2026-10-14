@@ -18,6 +18,7 @@ import com.tradepass.framework.common.pojo.ServiceUrlPayload;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpSealDO;
+import com.tradepass.module.identity.dal.dataobject.user.SysUserDO;
 import com.tradepass.framework.fadada.core.FadadaCompanyGateway;
 import com.tradepass.framework.fadada.core.FadadaCompanyQueryException;
 import com.tradepass.framework.fadada.core.FadadaAuthorizationCallback;
@@ -26,6 +27,7 @@ import com.tradepass.module.identity.service.certification.CompanyCertificationS
 import com.tradepass.module.identity.dal.mysql.company.CompanyMapper;
 import com.tradepass.module.identity.dal.mysql.fadada.FadadaCorpIdentityMapper;
 import com.tradepass.module.identity.dal.mysql.fadada.FadadaCorpSealMapper;
+import com.tradepass.module.identity.dal.mysql.user.SysUserMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,6 +48,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
     private final FadadaCorpIdentityMapper identityMapper;
     private final FadadaCorpSealMapper sealMapper;
     private final CompanyMapper companyMapper;
+    private final SysUserMapper userMapper;
     private final AccessControlService accessControl;
     private final CompanyCertificationService certificationService;
     private final FadadaPersonalIdentityService personalIdentityService;
@@ -63,6 +66,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
     public FadadaCompanyServiceImpl(FadadaCorpIdentityMapper identityMapper,
                                 FadadaCorpSealMapper sealMapper,
                                 CompanyMapper companyMapper,
+                                SysUserMapper userMapper,
                                 AccessControlService accessControl,
                                 CompanyCertificationService certificationService,
                                 FadadaPersonalIdentityService personalIdentityService,
@@ -72,6 +76,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         this.identityMapper = identityMapper;
         this.sealMapper = sealMapper;
         this.companyMapper = companyMapper;
+        this.userMapper = userMapper;
         this.accessControl = accessControl;
         this.certificationService = certificationService;
         this.personalIdentityService = personalIdentityService;
@@ -88,11 +93,12 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
     @Transactional
     public ServiceUrlPayload createAuthUrl(long companyId) {
         requireReady();
+        long userId = AuthContext.userId();
         accessControl.requireCertificationOperator(companyId);
         personalIdentityService.requireCurrentVerified();
         CompanyDO company = requireCompany(companyId);
         requireCompanyFields(company);
-        FadadaCorpIdentityDO identity = ensure(companyId, AuthContext.userId());
+        FadadaCorpIdentityDO identity = ensure(companyId, userId);
         if ("CANCELLED".equals(identity.getLocalStatus())) {
             identity.setLocalStatus("NOT_STARTED");
             identity.setFailureReason("");
@@ -108,11 +114,12 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             var result = syncCurrent(companyId);
             return new ServiceUrlPayload(null, "company", result.status());
         }
+        SysUserDO currentUser = userMapper.selectById(userId);
         String url;
         LocalDateTime attemptStartedAt = LocalDateTime.now();
         try {
             url = gateway.createAuthUrl(new FadadaCompanyGateway.AuthCommand(
-                identity.getClientCorpId(), clientUserId(AuthContext.userId()),
+                identity.getClientCorpId(), clientUserId(userId), currentUser == null ? null : currentUser.getPhone(),
                 company.getName(), company.getCreditCode(), ONBOARDING_SCOPES, properties.getCallbackUrl(),
                 java.net.URLEncoder.encode("/pages/service-return/service-return?scene=company&companyId=" + companyId,
                         java.nio.charset.StandardCharsets.UTF_8)));

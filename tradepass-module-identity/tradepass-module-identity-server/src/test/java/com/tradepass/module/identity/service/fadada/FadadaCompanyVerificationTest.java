@@ -9,6 +9,8 @@ import com.tradepass.module.identity.service.permission.AccessControlService;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMapper;
 import com.tradepass.module.identity.dal.mysql.fadada.FadadaCorpIdentityMapper;
 import com.tradepass.module.identity.dal.mysql.fadada.FadadaCorpSealMapper;
+import com.tradepass.module.identity.dal.mysql.user.SysUserMapper;
+import com.tradepass.module.identity.dal.dataobject.user.SysUserDO;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -241,7 +243,7 @@ class FadadaCompanyVerificationTest {
         when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/auth");
         com.tradepass.framework.common.core.AuthContext.set(7L, 3L);
         try {
-            var service = new FadadaCompanyServiceImpl(f.identities, f.seals, f.companies, mock(AccessControlService.class),
+            var service = new FadadaCompanyServiceImpl(f.identities, f.seals, f.companies, f.users, mock(AccessControlService.class),
                     f.certifications, f.personal, f.gateway, properties, new ObjectMapper());
             service.createAuthUrl(3L);
             verify(f.gateway).createAuthUrl(argThat(command ->
@@ -249,6 +251,25 @@ class FadadaCompanyVerificationTest {
                             .equals("/pages/service-return/service-return?scene=company&companyId=3")));
             verify(f.companies, never()).update(any(Wrapper.class));
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
+    }
+
+    @Test
+    void companyAuthorizationPrefillsTheCurrentUsersBoundPhoneInsteadOfCompanyContactOrPastApplicant() {
+        var f = new Fixture();
+        f.company.setContactPhone("13900139000");
+        f.identity.setApplicantUserId(99L);
+        var currentUser = new SysUserDO(); currentUser.setId(7L); currentUser.setPhone("13800138000");
+        when(f.users.selectById(7L)).thenReturn(currentUser);
+        when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/auth");
+        AuthContext.set(7L, 3L);
+        try {
+            assertThat(f.service.createAuthUrl(3L).url()).isEqualTo("https://example.test/auth");
+            verify(f.gateway).createAuthUrl(argThat(command -> "tradepass-user-7".equals(command.clientUserId())
+                    && "13800138000".equals(command.accountName())));
+            verify(f.users).selectById(7L);
+            verify(f.users, never()).selectById(99L);
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
     }
 
     @Test
@@ -585,6 +606,7 @@ class FadadaCompanyVerificationTest {
         final FadadaCorpIdentityMapper identities = mock(FadadaCorpIdentityMapper.class);
         final FadadaCorpSealMapper seals = mock(FadadaCorpSealMapper.class);
         final CompanyMapper companies = mock(CompanyMapper.class);
+        final SysUserMapper users = mock(SysUserMapper.class);
         final CompanyCertificationService certifications = mock(CompanyCertificationService.class);
         final FadadaPersonalIdentityService personal = mock(FadadaPersonalIdentityService.class);
         final FadadaCompanyGateway gateway = mock(FadadaCompanyGateway.class);
@@ -608,7 +630,7 @@ class FadadaCompanyVerificationTest {
             properties.setOperatorOpenUserIdConfirmed(providerConfirmed);
             properties.setEnabled(true); properties.setAppId("test-app"); properties.setAppSecret("test-secret");
             properties.setServerUrl("https://example.test"); properties.setCallbackUrl("https://example.test/callback");
-            service = new FadadaCompanyServiceImpl(identities, seals, companies, mock(AccessControlService.class),
+            service = new FadadaCompanyServiceImpl(identities, seals, companies, users, mock(AccessControlService.class),
                     certifications, personal, gateway, properties, new ObjectMapper());
         }
         void superAdmin() {
@@ -633,7 +655,7 @@ class FadadaCompanyVerificationTest {
         MybatisTestSupport.initialize(FadadaCorpIdentityDO.class);
         var identities = mock(FadadaCorpIdentityMapper.class);
         var companies = mock(CompanyMapper.class);
-        var service = new FadadaCompanyServiceImpl(identities, mock(FadadaCorpSealMapper.class), companies,
+        var service = new FadadaCompanyServiceImpl(identities, mock(FadadaCorpSealMapper.class), companies, mock(SysUserMapper.class),
                 mock(AccessControlService.class), mock(CompanyCertificationService.class),
                 mock(FadadaPersonalIdentityService.class), mock(FadadaCompanyGateway.class),
                 new FadadaProperties(), new ObjectMapper());

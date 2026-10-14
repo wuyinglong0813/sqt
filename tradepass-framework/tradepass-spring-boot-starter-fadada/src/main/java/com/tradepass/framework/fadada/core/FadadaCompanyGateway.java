@@ -12,7 +12,7 @@ public interface FadadaCompanyGateway {
     String createSealManageUrl(String openCorpId, String clientUserId, String redirectUrl);
     String createIdentityChangeUrl(String clientCorpId, String openCorpId, String clientUserId);
 
-    record AuthCommand(String clientCorpId, String clientUserId, String companyName,
+    record AuthCommand(String clientCorpId, String clientUserId, String accountName, String companyName,
                        String creditCode, List<String> authScopes, String callbackUrl,
                        String redirectMiniAppUrl) {}
     record CompanyAccount(String clientCorpId, String openCorpId, String bindingStatus,

@@ -71,9 +71,11 @@ class SdkFadadaCompanyGatewayTest {
         return response;
     }
 
-    @Test
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {" ", "13800138000"})
     @SuppressWarnings("unchecked")
-    void authorizationUsesDocumentedNestedCompanyFieldsAndNativeReturnPage() throws Exception {
+    void authorizationUsesDocumentedNestedCompanyFieldsNativeReturnPageAndOptionalPhone(String accountName) throws Exception {
         var properties = new FadadaProperties();
         properties.setAppId("test"); properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
         var tokens = org.mockito.Mockito.mock(FadadaAccessTokenProvider.class);
@@ -95,10 +97,11 @@ class SdkFadadaCompanyGatewayTest {
             assertThat(request.getCorpIdentInfoMatch()).isNull();
             assertThat(request.getCorpNonEditableInfo()).containsExactly("corpName", "corpIdentNo");
             assertThat(request.getClientUserId()).isEqualTo("user-7");
+            assertThat(request.getAccountName()).isEqualTo(accountName == null || accountName.isBlank() ? null : accountName);
             assertThat(request.getRedirectMiniAppUrl()).isEqualTo("%2Fpages%2Fservice-return%2Fservice-return");
             return response;
         });
-        assertThat(gateway.createAuthUrl(new FadadaCompanyGateway.AuthCommand("corp-3", "user-7",
+        assertThat(gateway.createAuthUrl(new FadadaCompanyGateway.AuthCommand("corp-3", "user-7", accountName,
                 "测试企业", "TEST-CREDIT", java.util.List.of("ident_info"), "https://example.test/callback",
                 "%2Fpages%2Fservice-return%2Fservice-return"))).isEqualTo("https://example.test/auth");
     }

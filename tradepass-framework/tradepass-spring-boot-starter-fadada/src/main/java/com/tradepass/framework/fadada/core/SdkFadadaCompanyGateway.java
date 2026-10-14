@@ -52,6 +52,8 @@ public class SdkFadadaCompanyGateway implements FadadaCompanyGateway {
         request.setAccessToken(tokenProvider.get());
         request.setClientCorpId(command.clientCorpId());
         request.setClientUserId(command.clientUserId());
+        // Prefill the current operator's bound phone; the provider still verifies the login.
+        if (hasText(command.accountName())) request.setAccountName(command.accountName());
         CorpIdentInfoReq company = new CorpIdentInfoReq();
         company.setCorpName(command.companyName());
         company.setCorpIdentNo(command.creditCode());
