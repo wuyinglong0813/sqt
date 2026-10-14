@@ -32,6 +32,20 @@ class FadadaApiSupportTest {
                 .isSameAs(expired);
         assertThat(calls.get()).isEqualTo(2);
     }
+    @Test void invalidatesTheRejectedTokenEvenWhenTheOfficialSdkClearsItFromTheRequest() throws Exception {
+        var request = new BaseReq(); request.setAccessToken("old-token");
+        var tokens = mock(FadadaAccessTokenProvider.class); when(tokens.get()).thenReturn("new-token");
+        var usedTokens = new java.util.ArrayList<String>();
+        var expired = response("100002", false); var success = response("100000", true);
+        assertThat(FadadaApiSupport.execute(request, tokens, () -> {
+            usedTokens.add(request.getAccessToken());
+            // OpenApiClient.getBodyMap clears this field before serializing bizContent.
+            request.setAccessToken(null);
+            return usedTokens.size() == 1 ? expired : success;
+        })).isSameAs(success);
+        assertThat(usedTokens).containsExactly("old-token", "new-token");
+        verify(tokens).invalidate("old-token");
+    }
     @Test void doesNotReplayMutationsOnGenericRateLimitSignatureOrUnknownErrors() throws Exception {
         for (String code : java.util.List.of("100001", "100003", "100004", "100009", "210002")) {
             var request = new BaseReq(); var tokens = mock(FadadaAccessTokenProvider.class);

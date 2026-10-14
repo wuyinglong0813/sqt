@@ -46,3 +46,28 @@
 - 前端完整回归 239 项通过；随后修正重载期间连续点击的异步防重，并新增 1 项回归。修改后的认证返回定向测试 57 项通过，覆盖新增连续点击用例。
 - identity 及依赖模块 `mvn -B -pl tradepass-module-identity/tradepass-module-identity-server -am -DskipTests package` 构建成功。此构建不替代此前已通过的单元回归。
 - 两仓库 `git diff --check` 通过。本次源码按用户要求提交并推送，由用户自行发布；未操作生产发布。生产企业认证仍需实际复测和服务商页面诊断。
+
+## 再次核对官方文档与 SDK
+
+2026-10-14 重新读取法大大官方 5.1 个人授权、企业授权、账号查询、授权事件、错误码参数表及官方小程序示例，核对当前源码的完整请求和页面跳转。
+
+| 检查项 | 核对结果 |
+| --- | --- |
+| 授权接口与页面链接 | `/user/get-auth-url` 与 `/corp/get-auth-url` 返回的 `authUrl` 明确支持小程序 `web-view`，无需为认证额外转换签署嵌入链接。当前使用方式符合该约定。 |
+| 个人与企业经办人关联 | 两处使用同格式的 `tradepass-user-{当前用户ID}`；企业请求没有把个人 `openUserId` 错用作经办人的本地标识。 |
+| 企业资料和范围 | 使用 `corpIdentInfo` 嵌套名称、信用代码，授权范围均在官方列表中；未发现能直接解释本次网页失败的必填参数遗漏。 |
+| 手机号与再次验证 | 企业 `accountName` 是可选账号字段；之前未传不违反必填约定。文档描述 `clientUserId` 建立免登映射，但没有承诺本次企业授权一定免短信，也未规定个人成功后必须等待若干秒才能办理企业授权。不能把再次短信验证本身认定为我方接口用错。 |
+| 完成回跳 | 当前原生结果页地址编码一次且不是 tabBar，符合 `redirectMiniAppUrl` 约定。 |
+| 网页“操作太频繁” | 官方 API `100020` 要求检查异常请求参数，但录屏网页提示没有该返回码，生产同期也没有该 API 错误。网页验证码频控维度和白屏内部原因仍需对应页面请求记录确认。 |
+
+发现一处可复现的**我方 SDK 兼容缺陷**：官方 SDK `OpenApiClient.getBodyMap` 会在生成请求正文时清空 `BaseReq.accessToken`。我方原 `FadadaApiSupport` 在调用后读取这个字段来失效缓存，因此遇到明确的 `100002` 时传给缓存失效方法的是 `null`，可能继续取出旧凭证。新增回归在旧逻辑上失败，修复改为首次 SDK 调用前保留实际提交的凭证，收到 `100002` 后精确失效该凭证，仍仅重试一次。
+
+**本次已查询的故障时段没有 `100002`，因此这处真实缺陷不能当作此次网页短信或白屏的已确认原因。** 该修复位于共享 SDK，发布范围为 **identity 和 business**，前端沿用已推送的恢复防护版本；没有数据库迁移。
+
+共享凭证修复的相关回归 145 项全部通过；identity、business 及依赖模块打包成功，`git diff --check` 通过。按用户已授权的流程提交推送源码，由用户自行发布，未更改生产服务。
+
+小程序示例另有两项尚未与此次故障关联的差异：本地刷脸回调要求与初始页面同主机，官方示例不作这个限制；`isRedirect` 后本地仅成功刷脸返回时重建承载页，官方示例也会在取消后返回时重建。跨服务商子域的构造用例会被本地拒绝，但没有取得本次实际刷脸 callback，也没有短信阶段必须触发该桥接流程的证据，不能据此宣称此次根因已确认或擅自放开回调地址边界。
+
+本次复核结论：未发现可以直接解释本次故障的授权接口/必填参数错误；也不能凭页面属于法大大就排除我方接入和生产配置问题。应结合本次网页验证码请求、账号会话、实名页内部错误及实际回跳地址与服务商共同定位。
+
+官方依据：[个人授权](https://cloud.fadada.com/api/edge-developer/document/nodes/ZS612WYE9M/article?id=IQDPQYVGZM2Y9OOC&version=5.1)、[企业授权](https://cloud.fadada.com/api/edge-developer/document/nodes/CGKNKJZFM5/article?id=77KS5R59TERABQH9&version=5.1)、[错误码](https://cloud.fadada.com/api/edge-developer/document/nodes/JOQQIJXLFL/article?id=H4F0HSKMHQ3HPIIM&version=5.1)、[官方小程序示例](https://gitee.com/fadada-cloud/pages-face-demo)。SDK依据为项目固定版本 `5.8.7.0428.3` 源码。

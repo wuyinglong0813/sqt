@@ -10,9 +10,11 @@ final class FadadaApiSupport {
 
     static <T> BaseRes<T> execute(BaseReq request, FadadaAccessTokenProvider tokens, ApiCall<T> call)
             throws ApiException {
+        // The official SDK clears BaseReq.accessToken while creating the request body.
+        String submittedToken = request.getAccessToken();
         BaseRes<T> response = call.call();
         if (response != null && !response.isSuccess() && "100002".equals(response.getCode())) {
-            tokens.invalidate(request.getAccessToken());
+            tokens.invalidate(submittedToken);
             request.setAccessToken(tokens.get());
             return call.call();
         }
