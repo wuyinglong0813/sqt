@@ -42,9 +42,26 @@ class FadadaPersonalIdentityServiceTest {
         when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
                 "open-user-8", "identified", "张三", "face", null, null, "fdd-user-8"));
         assertThat(service.verifiedFddId(8L)).isEqualTo("fdd-user-8");
+        var person = service.verifiedPerson(8L);
+        assertThat(person.openUserId()).isEqualTo("open-user-8");
+        assertThat(person.fddId()).isEqualTo("fdd-user-8");
+        assertThat(person.toString()).doesNotContain("open-user-8", "fdd-user-8", "张三");
+        assertThat(person.name()).isEqualTo("张三");
         when(gateway.getUser("tradepass-user-8", null)).thenReturn(new FadadaUserGateway.UserAccountResult(
                 "other-client", "open-user-8", "authorized", "identified", "enable", List.of("ident_info")));
         assertThatThrownBy(() -> service.verifiedFddId(8L)).hasMessageContaining("授权关联尚未确认");
+    }
+
+    @Test
+    void documentedOpenUserIdProofDoesNotRequireTheOptionalMemberFddId() {
+        var saved = identity("VERIFIED"); saved.setOpenUserId("open-user-8");
+        when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(saved);
+        when(gateway.getUser("tradepass-user-8", null)).thenReturn(new FadadaUserGateway.UserAccountResult(
+                "tradepass-user-8", "open-user-8", "authorized", "identified", "enable", List.of("ident_info")));
+        when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
+                "open-user-8", "identified", "张三", "face", null, null, null));
+        assertThat(service.verifiedPerson(8L).openUserId()).isEqualTo("open-user-8");
+        assertThatThrownBy(() -> service.verifiedFddId(8L)).hasMessageContaining("可核对的个人标识");
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.tradepass.module.identity.service.company;
 
 import com.tradepass.module.identity.service.permission.RolePermissionServiceImpl;
+import com.tradepass.module.identity.service.permission.AccessControlServiceImpl;
 
 import com.tradepass.module.identity.api.permission.AccessControlOperations;
 import com.tradepass.module.identity.api.permission.AccessControlOperations.*;
@@ -694,6 +695,32 @@ class CompanyServiceTest {
     }
 
     @Test
+    void removalLocksCurrentMembershipAndRejectsAStaleDeleteAfterLegalPromotion() {
+        CompanyMemberDO member = new CompanyMemberDO();
+        member.setId(12L);
+        member.setCompanyId(3L);
+        member.setUserId(8L);
+        member.setRoleCode("ADMIN");
+        member.setIsLegalPerson(false);
+        member.setStatus("ACTIVE");
+        when(memberMapper.selectOne(any(Wrapper.class))).thenAnswer(invocation -> {
+            Wrapper<?> query = invocation.getArgument(0);
+            assertThat(query.getSqlSegment()).contains("FOR UPDATE");
+            return member;
+        });
+        when(memberMapper.delete(any(Wrapper.class))).thenAnswer(invocation -> {
+            var query = (com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<CompanyMemberDO>) invocation.getArgument(0);
+            assertThat(query.getSqlSegment()).contains("role_code <>", "is_legal_person", "IS NULL");
+            assertThat(query.getParamNameValuePairs().values()).contains("LEGAL", false);
+            return 0;
+        });
+
+        assertThatThrownBy(() -> service.removeMember("12", "3"))
+                .hasMessage("成员状态已变化，请刷新后重试");
+        org.mockito.Mockito.verifyNoInteractions(removalNoticeService, auditLogService);
+    }
+
+    @Test
     void changesAdministratorToEmptyCustomRoleAndClearsLegacyGrants() {
         CompanyMemberDO member = new CompanyMemberDO();
         member.setId(12L);
@@ -740,7 +767,7 @@ class CompanyServiceTest {
         service.updateRole("2", new RoleReqVO("3", "销售员", List.of()));
         when(accessControl.hasPermission(3L, "order_create")).thenReturn(false);
         assertThatThrownBy(() -> service.updateRole("2", new RoleReqVO("3", "销售员", List.of("order_create"))))
-                .hasMessage("不能授予当前操作者不具备的权限 order_create");
+                .hasMessage("当前账号未获“order_create”权限，无法授予；请由法人或同时具备管理权限和该权限的成员操作");
         when(permMapper.selectById("unknown")).thenReturn(null);
         assertThatThrownBy(() -> service.updateRole("2", new RoleReqVO("3", "销售员", List.of("unknown"))))
                 .hasMessage("未知权限 unknown");
@@ -802,8 +829,59 @@ class CompanyServiceTest {
                 .hasMessage("角色不存在或不属于当前企业");
         when(accessControl.hasPermission(3L, "invoice_view")).thenReturn(false);
         assertThatThrownBy(() -> service.updateMemberRole("12", request, "3"))
-                .hasMessage("不能授予当前操作者不具备的权限 invoice_view");
+                .hasMessage("当前账号未获“invoice_view”权限，无法授予；请由法人或同时具备管理权限和该权限的成员操作");
         verify(memberMapper, org.mockito.Mockito.times(2)).update(any(Wrapper.class));
+    }
+
+    @Test
+    void administratorCannotGrantNewBusinessRolesButCanSaveAlreadyHeldRoles() {
+        RolePermissionService rolePermissions = new RolePermissionServiceImpl();
+        AccessControlService realAccessControl = new AccessControlServiceImpl(memberMapper, relationMapper,
+                roleMapper, rolePermissions, new com.fasterxml.jackson.databind.ObjectMapper());
+        CompanyService realService = new CompanyServiceImpl(companyMapper, memberMapper, inviteMapper,
+                relationMapper, roleMapper, permMapper, realAccessControl, searchRateLimiter, rolePermissions,
+                auditLogService, removalNoticeService, corpIdentityMapper, applicationMapper, true);
+        CompanyMemberDO member = new CompanyMemberDO();
+        member.setId(12L);
+        member.setCompanyId(3L);
+        member.setUserId(7L);
+        member.setRoleCode("ADMIN");
+        member.setRoleCodes("[\"ADMIN\"]");
+        member.setIsAdministrator(true);
+        member.setIsLegalPerson(false);
+        member.setStatus("ACTIVE");
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(member);
+        when(roleMapper.selectOne(any(Wrapper.class))).thenAnswer(invocation -> {
+            var query = (com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<RoleDefDO>) invocation.getArgument(0);
+            query.getSqlSegment();
+            assertThat(query.getParamNameValuePairs().values()).contains(3L);
+            String code = List.of("ADMIN", "SALES", "PURCHASER", "FINANCE").stream()
+                    .filter(query.getParamNameValuePairs()::containsValue).findFirst().orElseThrow();
+            RoleDefDO role = new RoleDefDO();
+            role.setCompanyId(3L);
+            role.setCode(code);
+            role.setName(rolePermissions.roleText(code));
+            role.setPermissions(new com.fasterxml.jackson.databind.ObjectMapper()
+                    .writeValueAsString(rolePermissions.role(code).permissions()));
+            return role;
+        });
+        PermDefDO supplierPermission = new PermDefDO();
+        supplierPermission.setCode("supplier_view");
+        supplierPermission.setLabel("供方首页");
+        when(permMapper.selectById("supplier_view")).thenReturn(supplierPermission);
+        var request = new ApproveReqVO(null, List.of(), List.of("ADMIN", "SALES", "PURCHASER", "FINANCE"));
+
+        assertThatThrownBy(() -> realService.updateMemberRole("12", request, "3"))
+                .hasMessage("当前账号未获“供方首页”权限，无法授予；请由法人或同时具备管理权限和该权限的成员操作");
+        verify(memberMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        assertThat(realAccessControl.hasPermission(3L, "all")).isFalse();
+        assertThat(realAccessControl.hasPermission(3L, "contract_sign")).isFalse();
+
+        member.setRoleCodes("[\"ADMIN\",\"SALES\",\"PURCHASER\",\"FINANCE\"]");
+        realService.updateMemberRole("12", request, "3");
+        verify(memberMapper).update(any(Wrapper.class));
+        assertThat(realAccessControl.hasPermission(3L, "all")).isFalse();
+        assertThatThrownBy(() -> realAccessControl.requireLegal(3L)).hasMessage("无权操作：仅法人可执行");
     }
 
     private CompanyDO company(long id, String name) {

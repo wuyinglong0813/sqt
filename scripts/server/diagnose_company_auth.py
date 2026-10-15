@@ -125,12 +125,17 @@ class Provider:
         self.app_id, self.secret = app_id, secret
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
-    def call(self, path, body=None, token=None):
-        if path not in ("/service/get-access-token", "/corp/get-identity-info"):
+    def call(self, path, body=None, token=None, legacy_identity=False):
+        if path not in ("/service/get-access-token", "/corp/get-identity-info", "/user/get", "/user/get-identity-info"):
             raise DiagnosticError("诊断禁止调用业务写入接口")
-        headers = {"X-FASC-App-Id": self.app_id, "X-FASC-Api-SubVersion": "5.1",
+        if legacy_identity and path != "/corp/get-identity-info":
+            raise DiagnosticError("旧版兼容查询仅限企业实名信息")
+        headers = {"X-FASC-App-Id": self.app_id,
                    "X-FASC-Sign-Type": "HMAC-SHA256", "X-FASC-Timestamp": str(int(time.time() * 1000)),
                    "X-FASC-Nonce": uuid.uuid4().hex}
+        # The official 5.0 request omits this header, including it in neither request nor signature.
+        if not legacy_identity:
+            headers["X-FASC-Api-SubVersion"] = "5.1"
         headers["X-FASC-AccessToken" if token else "X-FASC-Grant-Type"] = token or "client_credential"
         form = {} if body is None else {"bizContent": json.dumps(body, ensure_ascii=False, separators=(",", ":"))}
         headers["X-FASC-Sign"] = signature(headers, form, self.secret)
@@ -143,7 +148,8 @@ class Provider:
             request_id = response.headers.get("X-FASC-Request-Id", "")
         # Never print response messages/bodies: they can contain personal data or credentials.
         code = str(result.get("code", ""))
-        emit("PROVIDER_REQUEST", {"path": path, "code": code if re.fullmatch(r"[0-9]{1,10}", code) else "unknown",
+        emit("PROVIDER_REQUEST", {"path": path, "version": "5.0-default" if legacy_identity else "5.1",
+                                  "code": code if re.fullmatch(r"[0-9]{1,10}", code) else "unknown",
                                   "requestId": request_id if re.fullmatch(r"[A-Za-z0-9-]{1,100}", request_id) else "unavailable"})
         if code != "100000" or not isinstance(result.get("data"), dict):
             raise DiagnosticError("法大大查询未成功，请按上方 code/requestId 核查")
@@ -179,6 +185,78 @@ def identity_report(data, local):
     }
 
 
+def require_current_personal_account(data, local):
+    # Resolve by clientUserId first: a stale local openUserId must not select another person.
+    if not local.get("clientUserId") or not local.get("openUserId"):
+        raise DiagnosticError("个人实名账号关联缺失，未查询个人实名资料")
+    if data.get("clientUserId") != local["clientUserId"] or data.get("openUserId") != local["openUserId"]:
+        raise DiagnosticError("个人实名账号关联不一致，未查询个人实名资料")
+    scopes = data.get("authScope")
+    if isinstance(scopes, str):
+        scopes = scopes.split(",")
+    if (data.get("availableStatus") != "enable" or data.get("bindingStatus") != "authorized"
+            or not isinstance(scopes, list) or "ident_info" not in scopes):
+        raise DiagnosticError("个人电子签账号未启用或未授权身份信息，未查询个人实名资料")
+
+
+def certificate_number_state(info):
+    value = info.get("identNo")
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return "missing"
+    if not isinstance(value, str):
+        return "invalid_or_unknown"
+    # Do not echo the value, even on malformed or unrecognised provider responses.
+    if re.search(r"[*＊#＃●•×…]|[xX]{2,}", value):
+        return "masked"
+    if info.get("identType") == "id_card" and re.fullmatch(r"(?:[0-9]{15}|[0-9]{17}[0-9Xx])", value):
+        # This is a format classification, not an assertion that the number passed a new check.
+        return "full_format"
+    return "invalid_or_unknown"
+
+
+def personal_identity_report(data, local, company_data):
+    if not local.get("openUserId") or data.get("openUserId") != local["openUserId"]:
+        raise DiagnosticError("个人实名响应主体不一致，未生成个人身份取证结果")
+    if data.get("identStatus") != "identified":
+        raise DiagnosticError("个人实名尚未通过或已失效，未生成个人身份取证结果")
+    if not local.get("openCorpId") or company_data.get("openCorpId") != local["openCorpId"]:
+        raise DiagnosticError("企业实名响应主体不一致，未比对个人与企业身份")
+    if company_data.get("corpIdentStatus") != "identified":
+        raise DiagnosticError("企业实名尚未通过或已失效，未比对个人与企业身份")
+    info = data.get("userIdentInfo")
+    company_info = company_data.get("corpIdentInfo")
+    if not isinstance(info, dict) or not isinstance(company_info, dict):
+        raise DiagnosticError("实名身份信息结构缺失，未生成个人身份取证结果")
+    # A matching name is diagnostic context only; it must never confer legal-representative rights.
+    user_name, legal_name = info.get("userName"), company_info.get("legalRepName")
+    names_present = (isinstance(user_name, str) and bool(user_name.strip())
+                     and isinstance(legal_name, str) and bool(legal_name.strip()))
+    number_state = certificate_number_state(info)
+    return {
+        "identified": True,
+        "personalBindingMatches": True,
+        "companyBindingMatches": True,
+        "nameFieldsPresent": names_present,
+        "verifiedNameEqualsLegalRepName": names_present and user_name.strip() == legal_name.strip(),
+        "identityCardType": info.get("identType") == "id_card",
+        "certificateNumberState": number_state,
+        "certificateNumberHasFullIdentityCardFormat": number_state == "full_format",
+        "certificateNumberMasked": number_state == "masked",
+        "certificateNumberMissing": number_state == "missing",
+        "fddIdPresent": field_state(data, "fddId") == "present",
+        "nameMatchProvesLegalRepresentative": False,
+    }
+
+
+def collect_personal_evidence(provider, token, local, company_data):
+    if not local.get("clientUserId") or not local.get("openUserId"):
+        raise DiagnosticError("个人实名账号关联缺失，未查询个人实名资料")
+    account = provider.call("/user/get", {"clientUserId": local["clientUserId"]}, token)
+    require_current_personal_account(account, local)
+    data = provider.call("/user/get-identity-info", {"openUserId": local["openUserId"]}, token)
+    return personal_identity_report(data, local, company_data)
+
+
 def read_company(database, company_id):
     if not re.fullmatch(r"[A-Za-z0-9_]+", database) or not re.fullmatch(r"[1-9][0-9]{0,18}", company_id):
         raise DiagnosticError("数据库名或企业 ID 无效")
@@ -201,6 +279,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--company-id", required=True)
     parser.add_argument("--identity-database", help="identity 库名；无法从运行配置识别时使用")
+    parser.add_argument("--include-personal-evidence", action="store_true",
+                        help="额外只读核对申请人的当前实名关联；仅输出证件完整/脱敏/缺失及姓名比对状态，不输出身份值")
+    parser.add_argument("--legacy-identity", action="store_true",
+                        help="企业实名查询按官方5.0请求省略子版本头，仅读取字段兼容性，不修改应用版本或企业身份")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[1-9][0-9]{0,18}", args.company_id):
         raise DiagnosticError("企业 ID 必须为正整数")
@@ -235,8 +317,11 @@ def main(argv=None):
     token = provider.call("/service/get-access-token").get("accessToken")
     if not isinstance(token, str) or not token.strip():
         raise DiagnosticError("法大大未返回查询令牌")
-    data = provider.call("/corp/get-identity-info", {"openCorpId": local["openCorpId"]}, token)
+    identity_args = {"legacy_identity": True} if args.legacy_identity else {}
+    data = provider.call("/corp/get-identity-info", {"openCorpId": local["openCorpId"]}, token, **identity_args)
     emit("IDENTITY_EVIDENCE", identity_report(data, local))
+    if args.include_personal_evidence:
+        emit("PERSONAL_IDENTITY_EVIDENCE", collect_personal_evidence(provider, token, local, data))
     print("DIAGNOSTIC_COMPLETE（仅完成取证，不代表企业已开通）")
     return 0
 

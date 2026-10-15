@@ -40,6 +40,7 @@ import com.tradepass.module.identity.dal.dataobject.company.CompanyInviteDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
 import com.tradepass.module.identity.api.fadada.dto.PersonalIdentityRespDTO;
 import com.tradepass.module.identity.dal.dataobject.counterparty.CounterpartyRelationEntityDO;
+import com.tradepass.module.identity.dal.dataobject.permission.PermDefDO;
 import com.tradepass.module.identity.dal.dataobject.permission.RoleDefDO;
 import com.tradepass.module.identity.dal.mysql.certification.CompanyCertificationApplicationMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyInviteMapper;
@@ -520,7 +521,7 @@ public class CompanyServiceImpl implements CompanyService {
         CompanyMemberDO target = companyMemberMapper.selectOne(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getId, memberId)
                 .eq(CompanyMemberDO::getCompanyId, cid)
-                .last("LIMIT 1"));
+                .last("LIMIT 1 FOR UPDATE"));
         if (target == null) {
             throw new BusinessException("成员不存在");
         }
@@ -533,7 +534,9 @@ public class CompanyServiceImpl implements CompanyService {
         int deleted = companyMemberMapper.delete(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getId, memberId)
                 .eq(CompanyMemberDO::getCompanyId, cid)
-                .eq(CompanyMemberDO::getStatus, "ACTIVE"));
+                .eq(CompanyMemberDO::getStatus, "ACTIVE")
+                .ne(CompanyMemberDO::getRoleCode, "LEGAL")
+                .and(q -> q.eq(CompanyMemberDO::getIsLegalPerson, false).or().isNull(CompanyMemberDO::getIsLegalPerson)));
         if (deleted != 1) {
             throw new BusinessException("成员状态已变化，请刷新后重试");
         }
@@ -738,11 +741,15 @@ public class CompanyServiceImpl implements CompanyService {
             if (!unique.add(code)) {
                 throw new BusinessException("权限配置存在重复项 " + code);
             }
-            if (permDefMapper.selectById(code) == null) {
+            PermDefDO permissionDef = permDefMapper.selectById(code);
+            if (permissionDef == null) {
                 throw new BusinessException("未知权限 " + code);
             }
             if (!accessControlService.hasPermission(companyId, code)) {
-                throw new BusinessException("不能授予当前操作者不具备的权限 " + code);
+                String label = permissionDef.getLabel();
+                String displayName = label == null || label.isBlank() ? code : label.trim();
+                throw new BusinessException("当前账号未获“" + displayName
+                        + "”权限，无法授予；请由法人或同时具备管理权限和该权限的成员操作");
             }
         }
     }

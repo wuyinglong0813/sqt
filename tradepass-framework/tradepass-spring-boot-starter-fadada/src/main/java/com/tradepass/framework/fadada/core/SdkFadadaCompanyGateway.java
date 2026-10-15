@@ -26,8 +26,10 @@ import com.tradepass.framework.fadada.config.FadadaProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.List;
+import java.util.Objects;
 
 @Component
 public class SdkFadadaCompanyGateway implements FadadaCompanyGateway {
@@ -36,14 +38,22 @@ public class SdkFadadaCompanyGateway implements FadadaCompanyGateway {
     private final SealClient sealClient;
     private final OrgClient orgClient;
     private final FadadaAccessTokenProvider tokenProvider;
+    private final LegacyFadadaCompanyIdentityClient legacyIdentityClient;
 
+    @Autowired
     public SdkFadadaCompanyGateway(FadadaProperties properties, FadadaAccessTokenProvider tokenProvider) {
+        this(properties, tokenProvider, new LegacyFadadaCompanyIdentityClient(properties, tokenProvider));
+    }
+
+    SdkFadadaCompanyGateway(FadadaProperties properties, FadadaAccessTokenProvider tokenProvider,
+                           LegacyFadadaCompanyIdentityClient legacyIdentityClient) {
         OpenApiClient client = new OpenApiClient(
                 properties.getAppId(), properties.getAppSecret(), properties.getServerUrl());
         this.corpClient = new CorpClient(client);
         this.sealClient = new SealClient(client);
         this.orgClient = new OrgClient(client);
         this.tokenProvider = tokenProvider;
+        this.legacyIdentityClient = legacyIdentityClient;
     }
 
     @Override
@@ -96,7 +106,34 @@ public class SdkFadadaCompanyGateway implements FadadaCompanyGateway {
         request.setAccessToken(tokenProvider.get());
         request.setOpenCorpId(openCorpId);
         CorpIdentityInfoRes response = invoke(request, () -> corpClient.getIdentityInfo(request), "查询企业认证信息");
-        return toCompanyIdentity(response);
+        CompanyIdentity primary = toCompanyIdentity(response);
+        if (hasText(primary.operatorId()) && hasText(primary.operatorType())) return primary;
+        try {
+            CompanyIdentity legacy = legacyIdentityClient.getIdentity(openCorpId);
+            if (matchesIdentityVersion(openCorpId, primary, legacy)) return legacy;
+            log.warn("Legacy enterprise identity lookup did not match the current identity version");
+        } catch (RuntimeException exception) {
+            log.warn("Legacy enterprise identity lookup unavailable; retaining current identity result");
+        }
+        return primary;
+    }
+
+    private static boolean matchesIdentityVersion(String requested, CompanyIdentity primary, CompanyIdentity legacy) {
+        return legacy != null && legacy.operatorOpenUserIdDocumented()
+                && Objects.equals(requested, primary.openCorpId()) && Objects.equals(requested, legacy.openCorpId())
+                && "identified".equalsIgnoreCase(primary.identStatus()) && "identified".equalsIgnoreCase(legacy.identStatus())
+                && sameNonBlank(primary.companyName(), legacy.companyName())
+                && sameNonBlank(primary.creditCode(), legacy.creditCode())
+                && sameNonBlank(primary.legalRepName(), legacy.legalRepName())
+                && sameNonBlank(primary.identMethod(), legacy.identMethod())
+                && sameNonBlank(primary.verifiedAt(), legacy.verifiedAt())
+                && hasText(legacy.operatorId()) && hasText(legacy.operatorType())
+                && (!hasText(primary.operatorId()) || primary.operatorId().equals(legacy.operatorId()))
+                && (!hasText(primary.operatorType()) || primary.operatorType().equals(legacy.operatorType()));
+    }
+
+    private static boolean sameNonBlank(String first, String second) {
+        return hasText(first) && hasText(second) && first.trim().equals(second.trim());
     }
 
     static CompanyIdentity toCompanyIdentity(CorpIdentityInfoRes response) {

@@ -106,21 +106,29 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
 
     /** Compare the provider person to the enterprise member without persisting contact data. */
     public String verifiedFddId(long userId) {
+        String fddId = verifiedPerson(userId).fddId();
+        if (fddId == null || fddId.isBlank()) {
+            throw new BusinessException("认证服务尚未返回可核对的个人标识，请联系管理员核验");
+        }
+        return fddId;
+    }
+
+    public VerifiedPerson verifiedPerson(long userId) {
         String openUserId = verifiedOpenUserId(userId);
         String clientUserId = "tradepass-user-" + userId;
         var account = gateway.getUser(clientUserId, null);
         if (account == null || !clientUserId.equals(account.clientUserId())
                 || !openUserId.equals(account.openUserId())
                 || !"enable".equals(account.availableStatus()) || !"authorized".equals(account.bindingStatus())
+                || !"identified".equals(account.identStatus())
                 || account.authScopes() == null || !account.authScopes().contains(AUTH_SCOPE)) {
             throw new BusinessException("个人账号授权关联尚未确认，请重新同步个人认证");
         }
         var detail = gateway.getIdentityInfo(openUserId);
-        if (detail == null || !openUserId.equals(detail.openUserId()) || !"identified".equals(detail.identStatus())
-                || detail.fddId() == null || detail.fddId().isBlank()) {
+        if (detail == null || !openUserId.equals(detail.openUserId()) || !"identified".equals(detail.identStatus())) {
             throw new BusinessException("认证服务尚未返回可核对的个人标识，请联系管理员核验");
         }
-        return detail.fddId();
+        return new VerifiedPerson(openUserId, detail.fddId(), detail.userName());
     }
 
     @Transactional

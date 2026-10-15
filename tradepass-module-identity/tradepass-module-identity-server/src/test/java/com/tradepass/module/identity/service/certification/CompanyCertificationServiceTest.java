@@ -6,6 +6,7 @@ import com.tradepass.module.identity.service.permission.AccessControlService;
 import com.tradepass.framework.audit.core.AuditLogService;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.module.identity.controller.app.certification.vo.CertificationReviewReqVO;
@@ -21,6 +22,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import com.tradepass.module.identity.service.certification.CompanyCertificationService.CertifiedApplicantRole;
+
+import java.time.LocalDateTime;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -149,7 +153,7 @@ class CompanyCertificationServiceTest {
         company.setFaceStatus("VERIFIED");
         when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
         when(memberMapper.update(any(Wrapper.class))).thenReturn(0);
-        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(0L, 1L);
 
         assertThat(service(true, "").submit(3L).status()).isEqualTo("APPROVED");
         verify(tenantBootstrapService).initialize(3L, 7L);
@@ -221,8 +225,9 @@ class CompanyCertificationServiceTest {
     void legalClaimPromotesOnlyTheProvenCurrentActiveMember() {
         when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
         when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L, 0L);
-        CompanyCertificationApplicationDO approved = application("APPROVED");
-        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(approved);
+        CompanyCertificationApplicationDO pending = application("SUBMITTED");
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(pending);
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(activeAdministrator());
         service(false, "").completeLegalClaim(3L, 7L, "corp-3");
         verify(memberMapper).update(org.mockito.ArgumentMatchers.argThat((Wrapper<CompanyMemberDO> wrapper) -> {
             var update = (com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<CompanyMemberDO>) wrapper;
@@ -232,6 +237,250 @@ class CompanyCertificationServiceTest {
                     && update.getParamNameValuePairs().containsValue("ACTIVE")
                     && update.getParamNameValuePairs().containsValue(7L);
         }));
+    }
+
+    @Test
+    void newLegalEvidenceRestoresOriginalAdministratorIdempotentlyWithoutErasingLaterRoleSettings() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        CompanyCertificationApplicationDO original = approvedAdministratorApplication();
+        original.setReviewedAt(LocalDateTime.of(2026, 10, 14, 16, 58, 9));
+        AtomicReference<CompanyCertificationApplicationDO> supplementary = new AtomicReference<>();
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenAnswer(invocation -> {
+            var query = (LambdaQueryWrapper<CompanyCertificationApplicationDO>) invocation.getArgument(0);
+            query.getSqlSegment();
+            return query.getParamNameValuePairs().containsValue("corp-3") ? original : supplementary.get();
+        });
+        doAnswer(invocation -> {
+            CompanyCertificationApplicationDO inserted = invocation.getArgument(0);
+            inserted.setId(19L);
+            supplementary.set(inserted);
+            return 1;
+        }).when(applicationMapper).insert(any(CompanyCertificationApplicationDO.class));
+        when(memberMapper.selectCount(any(Wrapper.class))).thenAnswer(invocation -> {
+            Wrapper<?> query = invocation.getArgument(0);
+            return query.getSqlSegment().contains("user_id <>") ? 0L : 1L;
+        });
+        CompanyMemberDO member = activeAdministrator();
+        member.setRoleCodes("[\"ADMIN\",\"SALES\",\"FINANCE\"]");
+        member.setCustomPermissions("[\"order_create\"]");
+        when(memberMapper.selectOne(any(Wrapper.class))).thenAnswer(invocation -> {
+            Wrapper<?> query = invocation.getArgument(0);
+            assertThat(query.getSqlSegment()).contains("FOR UPDATE");
+            return member;
+        });
+        when(memberMapper.update(any(Wrapper.class))).thenAnswer(invocation -> {
+            var update = (com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<CompanyMemberDO>) invocation.getArgument(0);
+            update.getSqlSegment();
+            assertThat(update.getSqlSet()).doesNotContain("custom_permissions", "is_administrator");
+            assertThat(update.getParamNameValuePairs().values())
+                    .contains(12L, 3L, 7L, "ACTIVE", "ADMIN", "[\"ADMIN\",\"SALES\",\"FINANCE\"]",
+                            "[\"ADMIN\",\"SALES\",\"FINANCE\",\"LEGAL\"]");
+            member.setRoleCode("LEGAL");
+            member.setRoleCodes("[\"ADMIN\",\"SALES\",\"FINANCE\",\"LEGAL\"]");
+            member.setIsLegalPerson(true);
+            return 1;
+        });
+        CompanyCertificationService service = service(false, "");
+
+        service.completeProviderCertification(3L, 7L, "corp-3", "本次已明确核实法人本人", CertifiedApplicantRole.LEGAL);
+        service.completeProviderCertification(3L, 7L, "corp-3", "重复同步", CertifiedApplicantRole.LEGAL);
+        service.completeLegalClaim(3L, 7L, "FDD-LEGAL-3-7");
+
+        verify(memberMapper).update(any(Wrapper.class));
+        verify(applicationMapper).insert(any(CompanyCertificationApplicationDO.class));
+        verify(applicationMapper).update(org.mockito.ArgumentMatchers.argThat((Wrapper<CompanyCertificationApplicationDO> wrapper) -> {
+            var update = (com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<CompanyCertificationApplicationDO>) wrapper;
+            update.getSqlSegment();
+            assertThat(update.getParamNameValuePairs().values()).contains(19L).doesNotContain(18L);
+            return true;
+        }));
+        assertThat(original.getReviewReason()).isEqualTo("企业授权已确认，开通管理员身份；法人身份需单独核验");
+        assertThat(original.getReviewedAt()).isEqualTo(LocalDateTime.of(2026, 10, 14, 16, 58, 9));
+        assertThat(supplementary.get().getProviderRequestId()).isEqualTo("FDD-LEGAL-3-7");
+        assertThat(supplementary.get().getStatus()).isEqualTo("APPROVED");
+        assertThat(member.getCustomPermissions()).isEqualTo("[\"order_create\"]");
+        assertThat(member.getIsAdministrator()).isTrue();
+        verify(auditLogService).logAs(3L, 7L, "COMPANY_CERTIFICATION", 19L,
+                "LEGAL_CLAIM", "认证服务已核实法人身份及本人账号；保留既有角色和自定义权限");
+        org.mockito.Mockito.verifyNoInteractions(tenantBootstrapService);
+
+        member.setRoleCode("ADMIN"); member.setRoleCodes("[\"ADMIN\",\"SALES\",\"FINANCE\"]");
+        member.setIsLegalPerson(false);
+        assertThatThrownBy(() -> service.completeLegalClaim(3L, 7L, "FDD-LEGAL-3-7"))
+                .hasMessageContaining("成员身份已变更");
+        assertThatThrownBy(() -> service.completeProviderCertification(3L, 7L, "corp-3", "再次自动同步", CertifiedApplicantRole.LEGAL))
+                .hasMessageContaining("成员身份已变更");
+        verify(memberMapper).update(any(Wrapper.class));
+    }
+
+    @Test
+    void arbitraryApprovedApplicationDoesNotRegrantLegalRole() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        CompanyCertificationApplicationDO approved = application("APPROVED");
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(approved);
+
+        service(false, "").completeProviderCertification(3L, 7L, "corp-3", "新结果", CertifiedApplicantRole.LEGAL);
+        approved.setReviewReason("历史审核原因不明");
+        service(false, "").completeProviderCertification(3L, 7L, "corp-3", "再次同步", CertifiedApplicantRole.LEGAL);
+
+        org.mockito.Mockito.verifyNoInteractions(memberMapper, tenantBootstrapService);
+        verify(applicationMapper, org.mockito.Mockito.never()).insert(any(CompanyCertificationApplicationDO.class));
+    }
+
+    @Test
+    void originalAdministratorEvidenceAloneDoesNotGrantLegalRole() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(approvedAdministratorApplication());
+
+        service(false, "").completeProviderCertification(3L, 7L, "corp-3", "管理员同步", CertifiedApplicantRole.ADMIN);
+
+        org.mockito.Mockito.verifyNoInteractions(memberMapper, tenantBootstrapService);
+    }
+
+    @Test
+    void originalAdministratorApprovalCannotRestoreRemovedMemberOrReplaceOtherLegalMember() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(approvedAdministratorApplication());
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+
+        assertThatThrownBy(() -> service(false, "").completeProviderCertification(3L, 7L,
+                "corp-3", "法人本人证据", CertifiedApplicantRole.LEGAL)).hasMessageContaining("成员邀请");
+
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L, 1L);
+        assertThatThrownBy(() -> service(false, "").completeProviderCertification(3L, 7L,
+                "corp-3", "法人本人证据", CertifiedApplicantRole.LEGAL)).hasMessageContaining("本企业已有法人");
+        verify(memberMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        verify(memberMapper, org.mockito.Mockito.never()).insert(any(CompanyMemberDO.class));
+        verify(applicationMapper, org.mockito.Mockito.never()).insert(any(CompanyCertificationApplicationDO.class));
+    }
+
+    @Test
+    void legalClaimPreservesRolesAndCustomPermissionsInSeparateSupplementaryApplication() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L, 0L);
+        CompanyMemberDO member = activeAdministrator();
+        member.setRoleCode("FINANCE");
+        member.setRoleCodes("[\"FINANCE\",\"CUSTOM_AUDIT\"]");
+        member.setCustomPermissions("[\"order_view\"]");
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(member);
+
+        service(false, "").completeLegalClaim(3L, 7L, "FDD-LEGAL-corp-3-7");
+
+        verify(memberMapper).update(org.mockito.ArgumentMatchers.argThat((Wrapper<CompanyMemberDO> wrapper) -> {
+            var update = (com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<CompanyMemberDO>) wrapper;
+            update.getSqlSegment();
+            assertThat(update.getSqlSet()).doesNotContain("custom_permissions", "is_administrator");
+            assertThat(update.getParamNameValuePairs().values()).contains("[\"FINANCE\",\"CUSTOM_AUDIT\",\"LEGAL\"]");
+            return true;
+        }));
+        verify(applicationMapper).insert(org.mockito.ArgumentMatchers.argThat((CompanyCertificationApplicationDO app) ->
+                "FDD-LEGAL-corp-3-7".equals(app.getProviderRequestId()) && "APPROVED".equals(app.getStatus())));
+        org.mockito.Mockito.verifyNoInteractions(tenantBootstrapService);
+    }
+
+    @Test
+    void promotionFailsWhenLockedMembershipDisappearsOrCompareAndSetLoses() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L, 0L, 1L, 0L);
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+
+        assertThatThrownBy(() -> service(false, "").completeLegalClaim(3L, 7L, "legal-3"))
+                .hasMessageContaining("成员状态已变化");
+
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(activeAdministrator());
+        when(memberMapper.update(any(Wrapper.class))).thenReturn(0);
+        assertThatThrownBy(() -> service(false, "").completeLegalClaim(3L, 7L, "legal-3"))
+                .hasMessageContaining("成员状态已变化");
+        verify(applicationMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        org.mockito.Mockito.verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void approvedSupplementaryRequestCannotRegrantLaterRevokedLegalMembership() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L, 0L);
+        CompanyCertificationApplicationDO approved = application("APPROVED");
+        approved.setProviderRequestId("FDD-LEGAL-corp-3-7");
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(approved);
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(activeAdministrator());
+
+        assertThatThrownBy(() -> service(false, "").completeLegalClaim(3L, 7L, "FDD-LEGAL-corp-3-7"))
+                .hasMessageContaining("该次法人核验已完成，但成员身份已变更");
+
+        verify(memberMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        verify(applicationMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        org.mockito.Mockito.verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void malformedExistingRoleConfigurationIsNeverReplacedDuringLegalClaim() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L, 0L);
+        CompanyMemberDO member = activeAdministrator();
+        member.setRoleCodes("not-json");
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(member);
+
+        assertThatThrownBy(() -> service(false, "").completeLegalClaim(3L, 7L, "legal-3"))
+                .hasMessageContaining("成员角色配置格式错误");
+
+        verify(memberMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        verify(applicationMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+    }
+
+    @Test
+    void providerRequestCannotOverflowTheApplicationColumn() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L, 0L);
+
+        assertThatThrownBy(() -> service(false, "").completeLegalClaim(3L, 7L, "a".repeat(65)))
+                .hasMessageContaining("申请标识无效");
+
+        org.mockito.Mockito.verifyNoInteractions(applicationMapper, auditLogService);
+        verify(memberMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+    }
+
+    @Test
+    void pendingLegalApprovalCannotCreateSecondLegalRepresentative() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        assertThatThrownBy(() -> service(false, "").completeProviderCertification(3L, 7L,
+                "corp-3", "法人本人证据", CertifiedApplicantRole.LEGAL)).hasMessageContaining("本企业已有法人");
+
+        verify(memberMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        org.mockito.Mockito.verifyNoInteractions(tenantBootstrapService);
+    }
+
+    @Test
+    void supplementaryRequestMustStillBelongToTheSameCompanyApplicantAndRequest() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L, 0L);
+        CompanyCertificationApplicationDO other = application("APPROVED");
+        other.setProviderRequestId("different-request");
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(other);
+
+        assertThatThrownBy(() -> service(false, "").completeLegalClaim(3L, 7L, "legal-3"))
+                .hasMessageContaining("经办人不一致");
+        verify(memberMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+    }
+
+    private CompanyCertificationApplicationDO approvedAdministratorApplication() {
+        CompanyCertificationApplicationDO application = application("APPROVED");
+        application.setReviewReason("企业授权已确认，开通管理员身份；法人身份需单独核验");
+        return application;
+    }
+
+    private CompanyMemberDO activeAdministrator() {
+        CompanyMemberDO member = new CompanyMemberDO();
+        member.setId(12L);
+        member.setCompanyId(3L);
+        member.setUserId(7L);
+        member.setRoleCode("ADMIN");
+        member.setRoleCodes("[\"ADMIN\"]");
+        member.setIsAdministrator(true);
+        member.setIsLegalPerson(false);
+        member.setStatus("ACTIVE");
+        return member;
     }
 
     private CompanyCertificationApplicationDO application(String status) {

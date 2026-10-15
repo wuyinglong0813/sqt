@@ -19,7 +19,15 @@ public interface FadadaCompanyGateway {
                           String identStatus, String availableStatus, List<String> authScopes) {}
     record CompanyIdentity(String openCorpId, String identStatus, String companyName,
                            String creditCode, String legalRepName, String identMethod,
-                           String submittedAt, String verifiedAt, String operatorType, String operatorId) {}
+                           String submittedAt, String verifiedAt, String operatorType, String operatorId,
+                           boolean operatorOpenUserIdDocumented) {
+        public CompanyIdentity(String openCorpId, String identStatus, String companyName,
+                               String creditCode, String legalRepName, String identMethod,
+                               String submittedAt, String verifiedAt, String operatorType, String operatorId) {
+            this(openCorpId, identStatus, companyName, creditCode, legalRepName, identMethod,
+                    submittedAt, verifiedAt, operatorType, operatorId, false);
+        }
+    }
     record SealInfo(String sealId, String sealName, String categoryType, String status) {}
     record CompanyMember(Long memberId, String memberStatus, List<String> roleTypes, String fddId) {}
 }

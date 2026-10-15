@@ -30,6 +30,87 @@ import static org.mockito.Mockito.*;
 
 class FadadaCompanyVerificationTest {
     @Test
+    void historicalLocalLegalMarkerCannotReplaceMissingLiveCertificationOperatorEvidence() {
+        var f = new Fixture(false); f.detailWithoutOperator("legal_rep");
+        f.identity.setOperatorType("legal_rep"); f.identity.setOperatorId("open-user-7");
+        f.identity.setVerifiedAt(java.time.LocalDateTime.now()); f.identity.setIdentMethod("legal_rep");
+        assertThat(f.service.sync(3L).status()).isEqualTo("IN_PROGRESS");
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void documentedLegacyOperatorProvesTheActualLegalPersonWithoutAnOptInOrPaidVerification() {
+        var f = new Fixture(false); f.superAdmin();
+        f.documentedOperator("legal_rep", "open-user-7");
+        assertThat(f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-7")).status())
+                .isEqualTo("VERIFIED");
+        verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(),
+                eq(CertifiedApplicantRole.LEGAL));
+        assertThat(f.identity.getOperatorType()).isEqualTo("legal_rep");
+        assertThat(f.identity.getOperatorId()).isEqualTo("open-user-7");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"deputy_auth,identified,open-user-7,VERIFIED", "unknown,identified,open-user-7,IN_PROGRESS",
+            "legal_rep,ident_invalid,open-user-7,IN_PROGRESS", "legal_rep,identified,'',IN_PROGRESS"})
+    void documentedSourceDoesNotOverrideTheActualOperatorTypeIdentityStatusOrMissingIdentifier(
+            String type, String status, String operator, String expected) {
+        var f = new Fixture(false); f.superAdmin();
+        when(f.gateway.getIdentity("corp-3")).thenReturn(new FadadaCompanyGateway.CompanyIdentity(
+                "corp-3", status, "认证企业", "TEST-CREDIT", "张三", "legal_rep", null,
+                "2024-01-01T10:00:00", type, operator, true));
+        assertThat(f.service.sync(3L).status()).isEqualTo(expected);
+        verify(f.certifications, never()).completeProviderCertification(anyLong(), anyLong(), anyString(), anyString(),
+                eq(CertifiedApplicantRole.LEGAL));
+        if ("VERIFIED".equals(expected)) {
+            verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(),
+                    eq(CertifiedApplicantRole.ADMIN));
+        }
+    }
+
+    @Test
+    void anExistingAdministratorCanRecoverLegalIdentityFromTheDocumentedOriginalOperator() {
+        var f = new Fixture(false); f.superAdmin();
+        f.identity.setLocalStatus("VERIFIED"); f.identity.setOpenCorpId("corp-3");
+        f.identity.setOperatorType("member_super_admin"); f.identity.setOperatorId("tradepass-user-7");
+        f.identity.setVerifiedAt(java.time.LocalDateTime.now()); f.identity.setIdentMethod("legal_rep");
+        f.documentedOperator("legal_rep", "open-user-7");
+        AuthContext.set(7L, 3L);
+        try {
+            assertThat(f.service.syncLegalRepresentative(3L).status()).isEqualTo("VERIFIED");
+            verify(f.certifications).completeLegalClaim(3L, 7L, "FDD-LEGAL-3-7");
+            assertThat(f.identity.getOperatorType()).isEqualTo("legal_rep");
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void anotherOriginalLegalPersonDoesNotMakeTheCurrentAuthorizedSuperAdminLegalOrBlockAdministration() {
+        var f = new Fixture(false); f.superAdmin();
+        f.documentedOperator("legal_rep", "someone-elses-open-user");
+        assertThat(f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-7")).status())
+                .isEqualTo("VERIFIED");
+        verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(),
+                eq(CertifiedApplicantRole.ADMIN));
+        AuthContext.set(7L, 3L);
+        try {
+            assertThat(f.service.syncLegalRepresentative(3L).status()).isEqualTo("REVIEW_REQUIRED");
+            verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
+        } finally { AuthContext.clear(); }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"other-open-user,张三", "open-user-7,另一个人"})
+    void documentedOperatorStillRequiresTheCurrentVerifiedPersonalBindingAndConsistentName(String openUserId, String name) {
+        var f = new Fixture(false); f.superAdmin();
+        f.documentedOperator("legal_rep", "open-user-7");
+        when(f.personal.verifiedPerson(7L)).thenReturn(new FadadaPersonalIdentityService.VerifiedPerson(
+                openUserId, "fdd-user-7", name));
+        assertThat(f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-7")).status())
+                .isEqualTo("IN_PROGRESS");
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
     void undocumentedSdkOperatorExtensionCannotGrantPermissionsWithoutProviderConfirmation() {
         var f = new Fixture(false); f.detail("legal_rep", "open-user-7", "identified");
         assertThat(f.service.sync(3L).status()).isEqualTo("IN_PROGRESS");
@@ -485,10 +566,33 @@ class FadadaCompanyVerificationTest {
         when(f.personal.verifiedOpenUserId(9L)).thenReturn("open-user-9");
         com.tradepass.framework.common.core.AuthContext.set(9L, 3L);
         try {
-            assertThat(f.service.syncLegalRepresentative(3L).status()).isEqualTo("IN_PROGRESS");
+            var result = f.service.syncLegalRepresentative(3L);
+            assertThat(result.status()).isEqualTo("deputy_auth".equals(type) ? "REVIEW_REQUIRED" : "IN_PROGRESS");
             verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
             assertThat(f.identity.getApplicantUserId()).isEqualTo(7L);
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
+    }
+
+    @Test
+    void verifiedSuperAdminNeedsSupplementalLegalEvidenceInsteadOfBeingToldToRepeatFaceVerification() {
+        var f = new Fixture(false);
+        f.detailWithoutOperator("legal_rep");
+        f.superAdmin();
+        assertThat(f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-7")).status())
+                .isEqualTo("VERIFIED");
+        assertThat(f.identity.getOperatorType()).isEqualTo("member_super_admin");
+        AuthContext.set(7L, 3L);
+        try {
+            var result = f.service.syncLegalRepresentative(3L);
+            assertThat(result.status()).isEqualTo("REVIEW_REQUIRED");
+            assertThat(result.message()).contains("企业管理身份已确认", "尚无可确认", "联系平台支持")
+                    .doesNotContain("当前认证记录为授权经办人", "选择法人本人认证");
+            verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
+            verify(f.gateway, never()).createAuthUrl(any());
+            verify(f.gateway, never()).createIdentityChangeUrl(any(), any(), any());
+            assertThat(f.identity.getLocalStatus()).isEqualTo("VERIFIED");
+            assertThat(f.identity.getApplicantUserId()).isEqualTo(7L);
+        } finally { AuthContext.clear(); }
     }
 
     @Test
@@ -500,10 +604,10 @@ class FadadaCompanyVerificationTest {
         com.tradepass.framework.common.core.AuthContext.set(9L, 3L);
         try {
             assertThat(f.service.syncLegalRepresentative(3L).status()).isEqualTo("VERIFIED");
-            verify(f.certifications).completeLegalClaim(3L, 9L, "FDD-LEGAL-local-3-9");
+            verify(f.certifications).completeLegalClaim(3L, 9L, "FDD-LEGAL-3-9");
             assertThat(f.identity.getApplicantUserId()).isEqualTo(9L);
             assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
-            verify(f.certifications).completeProviderCertification(eq(3L), eq(9L), eq("FDD-LEGAL-local-3-9"), anyString(), eq(CertifiedApplicantRole.LEGAL));
+            verify(f.certifications).completeProviderCertification(eq(3L), eq(9L), eq("FDD-LEGAL-3-9"), anyString(), eq(CertifiedApplicantRole.LEGAL));
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
     }
 
@@ -531,7 +635,7 @@ class FadadaCompanyVerificationTest {
         f.detailWithoutOperator("legal_rep");
         com.tradepass.framework.common.core.AuthContext.set(7L, 3L);
         try {
-            assertThatThrownBy(() -> f.service.createLegalRepresentativeUrl(3L)).hasMessageContaining("工商信息变更");
+            assertThatThrownBy(() -> f.service.createLegalRepresentativeUrl(3L)).hasMessageContaining("尚未返回经办人身份");
             verify(f.gateway, never()).createIdentityChangeUrl(any(), any(), any());
             verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
@@ -612,6 +716,7 @@ class FadadaCompanyVerificationTest {
         final FadadaCompanyGateway gateway = mock(FadadaCompanyGateway.class);
         final FadadaCorpIdentityDO identity = new FadadaCorpIdentityDO();
         final CompanyDO company = new CompanyDO();
+        final FadadaProperties properties = new FadadaProperties();
         final FadadaCompanyService service;
         Fixture() { this(true); }
         Fixture(boolean providerConfirmed) {
@@ -626,7 +731,6 @@ class FadadaCompanyVerificationTest {
             when(personal.verifiedOpenUserId(7L)).thenReturn("open-user-7");
             when(gateway.getCompany(anyString(), any())).thenReturn(new FadadaCompanyGateway.CompanyAccount(
                     "local-3", "corp-3", "authorized", "identified", "enable", SCOPES));
-            var properties = new FadadaProperties();
             properties.setOperatorOpenUserIdConfirmed(providerConfirmed);
             properties.setEnabled(true); properties.setAppId("test-app"); properties.setAppSecret("test-secret");
             properties.setServerUrl("https://example.test"); properties.setCallbackUrl("https://example.test/callback");
@@ -640,6 +744,13 @@ class FadadaCompanyVerificationTest {
             when(gateway.getMember("corp-3", 88L)).thenReturn(new FadadaCompanyGateway.CompanyMember(
                     88L, "activated", List.of("super_admin"), "fdd-user-7"));
             when(personal.verifiedFddId(7L)).thenReturn("fdd-user-7");
+            when(personal.verifiedPerson(7L)).thenReturn(new FadadaPersonalIdentityService.VerifiedPerson(
+                    "open-user-7", "fdd-user-7", "张三"));
+        }
+        void documentedOperator(String type, String operatorId) {
+            when(gateway.getIdentity("corp-3")).thenReturn(new FadadaCompanyGateway.CompanyIdentity(
+                    "corp-3", "identified", "认证企业", "TEST-CREDIT", "张三", "legal_rep", null,
+                    "2024-01-01T10:00:00", type, operatorId, true));
         }
         void detail(String type, String operatorId, String status) {
             when(gateway.getIdentity("corp-3")).thenReturn(new FadadaCompanyGateway.CompanyIdentity(

@@ -176,7 +176,93 @@ class SdkFadadaCompanyGatewayTest {
         var result = SdkFadadaCompanyGateway.toCompanyIdentity(response);
         assertThat(result.operatorType()).isEqualTo("deputy_auth");
         assertThat(result.operatorId()).isEqualTo("open-user-7");
+        assertThat(result.operatorOpenUserIdDocumented()).isFalse();
     }
+
+    @Test
+    void missingModernOperatorUsesOneCompleteMatchingDocumentedLegacyIdentity() throws Exception {
+        var primary = identifiedResponse();
+        var legacy = legacyIdentity();
+        var client = org.mockito.Mockito.mock(LegacyFadadaCompanyIdentityClient.class);
+        org.mockito.Mockito.when(client.getIdentity("corp-3")).thenReturn(legacy);
+        var gateway = identityGateway(primary, client);
+
+        assertThat(gateway.getIdentity("corp-3")).isSameAs(legacy);
+        org.mockito.Mockito.verify(client).getIdentity("corp-3");
+    }
+
+    @Test
+    void completeModernOperatorDoesNotUseLegacyOrChangeTheSdkSourceContract() throws Exception {
+        var primary = identifiedResponse();
+        primary.setOperatorType("deputy_auth"); primary.setOperatorId("open-user-8");
+        var client = org.mockito.Mockito.mock(LegacyFadadaCompanyIdentityClient.class);
+
+        var result = identityGateway(primary, client).getIdentity("corp-3");
+
+        assertThat(result.operatorId()).isEqualTo("open-user-8");
+        assertThat(result.operatorOpenUserIdDocumented()).isFalse();
+        org.mockito.Mockito.verifyNoInteractions(client);
+    }
+
+    @Test
+    void legacyFailureOrMissingFieldsLeavesTheModernResultUnchanged() throws Exception {
+        var primary = identifiedResponse();
+        var client = org.mockito.Mockito.mock(LegacyFadadaCompanyIdentityClient.class);
+        var gateway = identityGateway(primary, client);
+        assertThat(gateway.getIdentity("corp-3")).isEqualTo(SdkFadadaCompanyGateway.toCompanyIdentity(primary));
+        org.mockito.Mockito.when(client.getIdentity("corp-3")).thenThrow(new IllegalStateException("private response"));
+        assertThat(gateway.getIdentity("corp-3")).isEqualTo(SdkFadadaCompanyGateway.toCompanyIdentity(primary));
+    }
+
+    @Test
+    void legacyAuthorityMustMatchTheRequestedEnterpriseAndTheEntireCurrentIdentityVersion() throws Exception {
+        java.util.List<java.util.function.Consumer<com.fasc.open.api.v5_1.res.corp.CorpIdentityInfoRes>> changes = java.util.List.of(
+                value -> value.setOpenCorpId("different-corp"),
+                value -> value.setCorpIdentStatus("unidentified"),
+                value -> value.getCorpIdentInfo().setCorpName("另一企业"),
+                value -> value.getCorpIdentInfo().setCorpIdentNo("OTHER-CREDIT"),
+                value -> value.getCorpIdentInfo().setLegalRepName("另一法人"),
+                value -> value.setCorpIdentMethod("deputy_auth"),
+                value -> value.setIdentSuccessTime("1700000000001"),
+                value -> value.setIdentSuccessTime(null),
+                value -> value.setOperatorId("different-operator"),
+                value -> value.setOperatorType("deputy_auth"));
+        for (var change : changes) {
+            var primary = identifiedResponse();
+            change.accept(primary);
+            var client = org.mockito.Mockito.mock(LegacyFadadaCompanyIdentityClient.class);
+            org.mockito.Mockito.when(client.getIdentity("corp-3")).thenReturn(legacyIdentity());
+            assertThat(identityGateway(primary, client).getIdentity("corp-3"))
+                    .isEqualTo(SdkFadadaCompanyGateway.toCompanyIdentity(primary));
+        }
+    }
+
+    private com.fasc.open.api.v5_1.res.corp.CorpIdentityInfoRes identifiedResponse() {
+        var response = new com.fasc.open.api.v5_1.res.corp.CorpIdentityInfoRes();
+        var company = new com.fasc.open.api.bean.common.CorpIdentInfo();
+        company.setCorpName("测试企业"); company.setCorpIdentNo("TEST-CREDIT"); company.setLegalRepName("测试法人");
+        response.setOpenCorpId("corp-3"); response.setCorpIdentStatus("identified"); response.setCorpIdentInfo(company);
+        response.setCorpIdentMethod("legal_rep"); response.setIdentSubmitTime("1699999900000");
+        response.setIdentSuccessTime("1700000000000");
+        return response;
+    }
+
+    private FadadaCompanyGateway.CompanyIdentity legacyIdentity() {
+        return new FadadaCompanyGateway.CompanyIdentity("corp-3", "identified", "测试企业", "TEST-CREDIT", "测试法人",
+                "legal_rep", "1699999900000", "1700000000000", "legal_rep", "open-user-7", true);
+    }
+
+    private SdkFadadaCompanyGateway identityGateway(com.fasc.open.api.v5_1.res.corp.CorpIdentityInfoRes response,
+                                                  LegacyFadadaCompanyIdentityClient legacy) throws Exception {
+        var properties = LegacyFadadaCompanyIdentityClientTest.properties();
+        var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class), legacy);
+        var corpClient = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.CorpClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "corpClient", corpClient);
+        org.mockito.Mockito.when(corpClient.getIdentityInfo(org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(invocation -> successful(response));
+        return gateway;
+    }
+
     @Test
     void sendsExactlyOneCompanyIdentifier() {
         GetCorpReq known = new GetCorpReq();

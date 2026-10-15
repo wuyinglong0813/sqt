@@ -34,7 +34,13 @@ public interface FadadaPersonalIdentityService {
     PersonalIdentityRespDTO requireCurrentVerified();
     String verifiedOpenUserId(long userId);
     String verifiedFddId(long userId);
+    VerifiedPerson verifiedPerson(long userId);
     FadadaAuthUrlRespDTO createAuthUrl();
     PersonalIdentityRespDTO syncByClientUserId(String clientUserId);
     PersonalIdentityRespDTO syncCallback(String clientUserId, JsonNode data);
+
+    /** Used transiently on the server; must never be logged or returned to the client. */
+    record VerifiedPerson(String openUserId, String fddId, String name) {
+        @Override public String toString() { return "VerifiedPerson[REDACTED]"; }
+    }
 }

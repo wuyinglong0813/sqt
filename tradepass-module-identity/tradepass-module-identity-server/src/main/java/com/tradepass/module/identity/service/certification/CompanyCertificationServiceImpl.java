@@ -7,6 +7,8 @@ import com.tradepass.framework.audit.core.AuditLogService;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.module.identity.controller.app.certification.vo.CertificationReviewReqVO;
@@ -25,10 +27,17 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.UUID;
 
 @Service
 public class CompanyCertificationServiceImpl implements CompanyCertificationService {
+    // Historical applications have no structured granted-role field. These server-written
+    // reasons identify the original ADMIN grant; they never prove the applicant is LEGAL.
+    private static final List<String> ADMIN_APPROVAL_REASONS = List.of(
+            "企业授权已确认，开通管理员身份；法人身份需单独核验",
+            "企业认证已完成，经办人为授权代理人，开通管理员身份");
+    private final ObjectMapper objectMapper = new ObjectMapper();
     
     private final CompanyMapper companyMapper;
     private final CompanyMemberMapper companyMemberMapper;
@@ -126,6 +135,32 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
                                               String providerRequestId, String reason, CertifiedApplicantRole role) {
         if (role == null) throw new BusinessException("企业认证经办人身份尚未确认");
         CompanyDO company = requireCompany(companyId);
+        CompanyCertificationApplicationDO application = requireProviderApplication(companyId, applicantUserId, providerRequestId);
+        if ("APPROVED".equals(application.getStatus())) {
+            // Only the original, explicitly recorded ADMIN approval may be supplemented by
+            // newly proven LEGAL evidence. Preserve its history and all later role settings.
+            if (role == CertifiedApplicantRole.LEGAL && application.getReviewReason() != null
+                    && ADMIN_APPROVAL_REASONS.contains(application.getReviewReason())) {
+                // Both automatic recovery and the explicit sync page share one claim ID.
+                // Switching entry points must not bypass a later revocation of that claim.
+                completeLegalClaim(companyId, applicantUserId, "FDD-LEGAL-" + companyId + "-" + applicantUserId);
+                return;
+            }
+            // A current provider result can restore certification after a failed renewal.
+            // Never re-create a membership removed after the original approval.
+            markCompanyVerified(companyId);
+        } else if ("SUBMITTED".equals(application.getStatus()) || "REJECTED".equals(application.getStatus())) {
+            approve(application, company, reason, role);
+        } else {
+            throw new BusinessException("企业认证申请状态无效，请联系管理员核验");
+        }
+    }
+
+    private CompanyCertificationApplicationDO requireProviderApplication(long companyId, long applicantUserId,
+                                                                         String providerRequestId) {
+        if (providerRequestId == null || providerRequestId.isBlank() || providerRequestId.length() > 64) {
+            throw new BusinessException("企业认证申请标识无效，请联系管理员核验");
+        }
         CompanyCertificationApplicationDO application = applicationMapper.selectOne(
                 new LambdaQueryWrapper<CompanyCertificationApplicationDO>()
                         .eq(CompanyCertificationApplicationDO::getProviderRequestId, providerRequestId)
@@ -139,18 +174,11 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
             application.setSubmittedAt(LocalDateTime.now());
             applicationMapper.insert(application);
         }
-        if (application.getCompanyId() != companyId || application.getApplicantUserId() != applicantUserId) {
+        if (application.getCompanyId() != companyId || application.getApplicantUserId() != applicantUserId
+                || !providerRequestId.equals(application.getProviderRequestId())) {
             throw new BusinessException("企业认证申请与本次经办人不一致");
         }
-        if ("APPROVED".equals(application.getStatus())) {
-            // A current provider result can restore certification after a failed renewal.
-            // Do not re-create removed memberships or overwrite subsequently assigned roles.
-            markCompanyVerified(companyId);
-        } else if ("SUBMITTED".equals(application.getStatus()) || "REJECTED".equals(application.getStatus())) {
-            approve(application, company, reason, role);
-        } else {
-            throw new BusinessException("企业认证申请状态无效，请联系管理员核验");
-        }
+        return application;
     }
 
     /** The caller must hold the company lock for the check and the subsequent provider-backed promotion. */
@@ -161,29 +189,76 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
                 .eq(CompanyMemberDO::getStatus, "ACTIVE")) != 1) {
             throw new BusinessException("请先通过企业成员邀请加入本企业，并等待管理员审批");
         }
+        requireVacantLegalPosition(companyId, userId);
+    }
+
+    private void requireVacantLegalPosition(long companyId, long userId) {
         if (companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, companyId).ne(CompanyMemberDO::getUserId, userId)
                 .eq(CompanyMemberDO::getStatus, "ACTIVE")
-                .and(q -> q.eq(CompanyMemberDO::getRoleCode, "LEGAL").or().eq(CompanyMemberDO::getIsLegalPerson, true))) > 0) {
+                .and(q -> q.eq(CompanyMemberDO::getRoleCode, "LEGAL").or().eq(CompanyMemberDO::getIsLegalPerson, true)
+                        .or().apply("JSON_CONTAINS(role_codes, JSON_QUOTE({0}))", "LEGAL"))) > 0) {
             throw new BusinessException("本企业已有法人，请联系现法人办理变更，不能通过补充核验替换");
         }
     }
 
-    /** Called only after provider legal_rep + openUserId evidence has been checked. */
+    /** Called only after current provider evidence uniquely links this account to the legal representative. */
     @Transactional
     public void completeLegalClaim(long companyId, long userId, String providerRequestId) {
         requireLegalClaim(companyId, userId);
+        CompanyCertificationApplicationDO application = requireProviderApplication(companyId, userId, providerRequestId);
+        if (!List.of("SUBMITTED", "REJECTED", "APPROVED").contains(application.getStatus())) {
+            throw new BusinessException("企业认证申请状态无效，请联系管理员核验");
+        }
+        boolean newlyApproved = !"APPROVED".equals(application.getStatus());
+        boolean promoted = promoteActiveLegalMember(companyId, userId, newlyApproved);
+        markCompanyVerified(companyId);
+        if (newlyApproved) {
+            finish(application, "APPROVED", "企业法人本人已通过认证服务核验并接手企业");
+        }
+        if (promoted || newlyApproved) {
+            auditLogService.logAs(companyId, userId, "COMPANY_CERTIFICATION", application.getId(),
+                    "LEGAL_CLAIM", "认证服务已核实法人身份及本人账号；保留既有角色和自定义权限");
+        }
+    }
+
+    private boolean promoteActiveLegalMember(long companyId, long userId, boolean allowPromotion) {
+        CompanyMemberDO member = companyMemberMapper.selectOne(new LambdaQueryWrapper<CompanyMemberDO>()
+                .eq(CompanyMemberDO::getCompanyId, companyId).eq(CompanyMemberDO::getUserId, userId)
+                .eq(CompanyMemberDO::getStatus, "ACTIVE").last("LIMIT 1 FOR UPDATE"));
+        if (member == null) throw new BusinessException("成员状态已变化，请刷新后重新核验");
+        if ("LEGAL".equals(member.getRoleCode()) && Boolean.TRUE.equals(member.getIsLegalPerson())) return false;
+        if (!allowPromotion) {
+            throw new BusinessException("该次法人核验已完成，但成员身份已变更，请联系管理员复核");
+        }
+        LinkedHashSet<String> roles = new LinkedHashSet<>();
+        if (member.getRoleCode() != null && !member.getRoleCode().isBlank()) roles.add(member.getRoleCode());
+        try {
+            if (member.getRoleCodes() != null && !member.getRoleCodes().isBlank()) {
+                List<String> existing = objectMapper.readValue(member.getRoleCodes(), new TypeReference<>() { });
+                if (existing == null || existing.stream().anyMatch(code -> code == null || code.isBlank())) {
+                    throw new IllegalArgumentException();
+                }
+                roles.addAll(existing);
+            }
+            roles.add("LEGAL");
+        } catch (Exception exception) {
+            throw new BusinessException("成员角色配置格式错误，请联系管理员核验");
+        }
+        String roleCodes;
+        try { roleCodes = objectMapper.writeValueAsString(roles); }
+        catch (Exception exception) { throw new BusinessException("成员角色配置格式错误，请联系管理员核验"); }
         int changed = companyMemberMapper.update(new LambdaUpdateWrapper<CompanyMemberDO>()
+                .eq(CompanyMemberDO::getId, member.getId())
                 .eq(CompanyMemberDO::getCompanyId, companyId).eq(CompanyMemberDO::getUserId, userId)
                 .eq(CompanyMemberDO::getStatus, "ACTIVE")
-                .set(CompanyMemberDO::getRoleCode, "LEGAL").set(CompanyMemberDO::getRoleCodes, "[\"LEGAL\"]")
-                .set(CompanyMemberDO::getIsLegalPerson, true).set(CompanyMemberDO::getIsAdministrator, false)
-                .set(CompanyMemberDO::getCustomPermissions, null));
+                .eq(CompanyMemberDO::getRoleCode, member.getRoleCode())
+                .apply("COALESCE(role_codes, JSON_ARRAY()) = CAST({0} AS JSON)",
+                        member.getRoleCodes() == null ? "[]" : member.getRoleCodes())
+                .set(CompanyMemberDO::getRoleCode, "LEGAL").set(CompanyMemberDO::getRoleCodes, roleCodes)
+                .set(CompanyMemberDO::getIsLegalPerson, true));
         if (changed != 1) throw new BusinessException("成员状态已变化，请刷新后重新核验");
-        completeProviderCertification(companyId, userId, providerRequestId,
-                "企业法人本人已通过认证服务核验并接手企业", CertifiedApplicantRole.LEGAL);
-        auditLogService.logAs(companyId, userId, "COMPANY_CERTIFICATION", companyId,
-                "LEGAL_CLAIM", "认证服务已核实法人身份及本人账号");
+        return true;
     }
 
     @Transactional
@@ -221,6 +296,7 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
                          CertifiedApplicantRole role) {
         long companyId = company.getId();
         boolean legal = role == CertifiedApplicantRole.LEGAL;
+        if (legal) requireVacantLegalPosition(companyId, application.getApplicantUserId());
         int memberUpdated = companyMemberMapper.update(new LambdaUpdateWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, companyId)
                 .eq(CompanyMemberDO::getUserId, application.getApplicantUserId())

@@ -8,6 +8,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SdkFadadaUserGatewayTest {
     @Test
+    void identityDiagnosticStringsRedactSubjectAndName() {
+        var result = new FadadaUserGateway.UserIdentityResult(
+                "open-user-8", "identified", "张三", "face", null, null, "fdd-user-8");
+        assertThat(result.toString()).doesNotContain("open-user-8", "fdd-user-8", "张三").contains("REDACTED");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void accountQueryPreservesTheDocumentedAvailableStatus() throws Exception {
         var properties = new FadadaProperties();

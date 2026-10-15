@@ -38,5 +38,8 @@ public interface FadadaUserGateway {
                                   String identMethod, String identSubmitTime, String identSuccessTime) {
             this(openUserId, identStatus, userName, identMethod, identSubmitTime, identSuccessTime, null);
         }
+        @Override public String toString() {
+            return "UserIdentityResult[identStatus=" + identStatus + ", identity=REDACTED]";
+        }
     }
 }

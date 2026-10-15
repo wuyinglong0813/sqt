@@ -167,16 +167,11 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
 
     @Transactional
     public ServiceUrlPayload createLegalRepresentativeUrl(long companyId) {
-        requireReady();
-        long userId = AuthContext.userId();
-        certificationService.requireLegalClaim(companyId, userId);
-        personalIdentityService.requireCurrentVerified();
-        requireVerified(companyId);
         var result = syncLegalRepresentative(companyId);
         if ("VERIFIED".equals(result.status())) return new ServiceUrlPayload(null, "legal", "VERIFIED");
         // /corp/change-identity-info is a PC-only business-information change for super admins.
         // It is not a mobile verification challenge and must not be exposed as one.
-        throw new BusinessException("当前尚无可确认的本人法人身份，请联系平台管理员核验；不能通过企业工商信息变更页面办理手机法人核验");
+        throw new BusinessException(result.message());
     }
 
     @Transactional
@@ -193,17 +188,21 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         FadadaCompanyGateway.CompanyAccount account = gateway.getCompany(identity.getClientCorpId(), identity.getOpenCorpId());
         FadadaCompanyGateway.CompanyIdentity detail = gateway.getIdentity(identity.getOpenCorpId());
         verifyMatches(company, detail);
-        ApplicantRole resolved;
+        verifyAccount(identity, account, detail);
+        ApplicantRole resolved = null;
+        String requestId = "FDD-LEGAL-" + companyId + "-" + userId;
+        String operatorIssue = null;
         try {
             resolved = resolveApplicantRole(identity, account, detail, userId, OperatorEvidence.NONE);
-            if (resolved.role() != CertifiedApplicantRole.LEGAL) {
-                return new LegalRepresentativeRespDTO(String.valueOf(companyId), "IN_PROGRESS",
-                        "当前认证记录为授权经办人，请由法人本人进入核验并选择法人本人认证");
-            }
         } catch (BusinessException exception) {
-            return new LegalRepresentativeRespDTO(String.valueOf(companyId), "IN_PROGRESS", exception.getMessage());
+            operatorIssue = exception.getMessage();
         }
-        String requestId = "FDD-LEGAL-" + identity.getClientCorpId() + "-" + userId;
+        if (resolved == null || resolved.role() != CertifiedApplicantRole.LEGAL) {
+            return new LegalRepresentativeRespDTO(String.valueOf(companyId),
+                    operatorIssue == null ? "REVIEW_REQUIRED" : "IN_PROGRESS",
+                    operatorIssue != null ? operatorIssue
+                            : "企业管理身份已确认，但尚无可确认的本人法人身份记录。请联系平台支持补充核验；本页仅同步已有记录，重复刷新不会发起法人刷脸。");
+        }
         certificationService.completeLegalClaim(companyId, userId, requestId);
         // Adopt the proven current operator only after legal membership was granted in this transaction.
         // The original application remains in the audit history; future callbacks follow this operator.
@@ -341,8 +340,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             // for company matching and the operator's role; do not repeat the account lookup.
             return applyAccount(company, identity, new FadadaCompanyGateway.CompanyAccount(
                     identity.getClientCorpId(), openCorpId, "authorized", "identified", "enable",
-                    FadadaAuthorizationCallback.scopes(data)), new OperatorEvidence(
-                    FadadaAuthorizationCallback.clientUserIds(data), callbackText(data, "corpIdentMethod"), callbackMemberId(data)));
+                    FadadaAuthorizationCallback.scopes(data)), operatorEvidence(data));
         }
         if (hasText(openCorpId)) identity.setOpenCorpId(openCorpId);
         String authResult = callbackText(data, "authResult");
@@ -386,7 +384,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                 && eventTime != null && identity.getSubmittedAt() != null
                 && !eventTime.isBefore(identity.getSubmittedAt().withNano(0));
         return sync(identity.getCompanyId(), currentAuthorization
-                ? new OperatorEvidence(FadadaAuthorizationCallback.clientUserIds(data), callbackText(data, "corpIdentMethod"), callbackMemberId(data))
+                ? operatorEvidence(data)
                 : OperatorEvidence.NONE);
     }
 
@@ -575,6 +573,65 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                                                FadadaCompanyGateway.CompanyAccount account,
                                                FadadaCompanyGateway.CompanyIdentity detail, long applicantUserId,
                                                OperatorEvidence evidence) {
+        verifyAccount(identity, account, detail);
+        String applicantOpenUserId = personalIdentityService.verifiedOpenUserId(applicantUserId);
+        if (hasText(detail.operatorId())
+                && (detail.operatorOpenUserIdDocumented() || properties.isOperatorOpenUserIdConfirmed())) {
+            if (applicantOpenUserId.equals(detail.operatorId())) {
+                CertifiedApplicantRole role = roleOf(detail.operatorType());
+                if (detail.operatorOpenUserIdDocumented()) {
+                    // Official 5.0 binds the certification operator to a personal openUserId.
+                    // Revalidate the current local account's live personal mapping before using it.
+                    var person = personalIdentityService.verifiedPerson(applicantUserId);
+                    if (person == null || !applicantOpenUserId.equals(person.openUserId())
+                            || (role == CertifiedApplicantRole.LEGAL && (!hasText(person.name())
+                            || !normalize(person.name()).equals(normalize(detail.legalRepName()))))) {
+                        throw operatorMismatch();
+                    }
+                }
+                return new ApplicantRole(role, detail.operatorType(), detail.operatorId());
+            }
+            // A different original certification operator does not disprove the current
+            // applicant's independently verified administrator authorization.
+            if (!detail.operatorOpenUserIdDocumented()) throw operatorMismatch();
+        }
+        // Login account mappings and historical certification methods do not prove legal identity.
+        String applicantClientUserId = clientUserId(applicantUserId);
+        String identMethod = detail.identMethod();
+        if (!evidence.clientUserIds().isEmpty()) {
+            if (hasText(evidence.identMethod()) && !evidence.identMethod().equals(identMethod)) {
+                throw new BusinessException("企业认证方式与授权通知不一致，暂未开通企业权限。请刷新认证状态或联系管理员核验");
+            }
+            if (!evidence.clientUserIds().contains(applicantClientUserId)) throw operatorMismatch();
+            if (evidence.memberId() == null || !account.authScopes().contains("organization")) {
+                throw new BusinessException("企业实名已通过，但尚未取得当前经办人的企业管理权限证据，请由企业超管重新授权或联系管理员核验");
+            }
+            var member = gateway.getMember(account.openCorpId(), evidence.memberId());
+            var person = personalIdentityService.verifiedPerson(applicantUserId);
+            String fddId = person == null ? null : person.fddId();
+            if (member == null || !evidence.memberId().equals(member.memberId())
+                    || !"activated".equals(member.memberStatus()) || member.roleTypes() == null
+                    || !member.roleTypes().contains("super_admin") || !hasText(fddId) || !fddId.equals(member.fddId())
+                    || !applicantOpenUserId.equals(person.openUserId())) {
+                throw new BusinessException("当前经办人未核验为该企业的有效超管，暂未开通企业权限，请联系企业超管或平台管理员");
+            }
+            return new ApplicantRole(CertifiedApplicantRole.ADMIN, AUTHORIZATION_ADMIN, applicantClientUserId);
+        }
+        // Reuse only administrator evidence. Granting LEGAL always needs a live operator proof;
+        // an old local legal_rep marker must not substitute for missing provider fields.
+        if (identity.getVerifiedAt() != null && hasText(identMethod) && identMethod.equals(identity.getIdentMethod())
+                && hasText(identity.getOperatorId())) {
+            if (!identity.getOperatorId().equals(applicantClientUserId)
+                    && !identity.getOperatorId().equals(applicantOpenUserId)) throw operatorMismatch();
+            if (roleOf(identity.getOperatorType()) == CertifiedApplicantRole.ADMIN) {
+                return new ApplicantRole(CertifiedApplicantRole.ADMIN, identity.getOperatorType(), identity.getOperatorId());
+            }
+        }
+        throw new BusinessException("企业实名已通过，但认证服务尚未返回经办人身份，暂未开通企业权限。请稍后重新同步，仍未恢复请联系管理员核验");
+    }
+
+    private void verifyAccount(FadadaCorpIdentityDO identity, FadadaCompanyGateway.CompanyAccount account,
+                               FadadaCompanyGateway.CompanyIdentity detail) {
         if (!"identified".equalsIgnoreCase(detail.identStatus())
                 || !hasText(account.openCorpId()) || !account.openCorpId().equals(detail.openCorpId())) {
             throw new BusinessException("企业认证结果尚未确认，请刷新认证状态");
@@ -589,39 +646,11 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         if (!"enable".equalsIgnoreCase(account.availableStatus())) {
             throw new BusinessException("企业电子签账号未启用，暂未开通企业权限。请联系企业超管核对账号状态");
         }
-        String applicantOpenUserId = personalIdentityService.verifiedOpenUserId(applicantUserId);
-        if (hasText(detail.operatorId()) && properties.isOperatorOpenUserIdConfirmed()) {
-            if (!applicantOpenUserId.equals(detail.operatorId())) throw operatorMismatch();
-            return new ApplicantRole(roleOf(detail.operatorType()), detail.operatorType(), detail.operatorId());
-        }
-        // Login account mappings and historical certification methods do not prove management rights.
-        String applicantClientUserId = clientUserId(applicantUserId);
-        String identMethod = detail.identMethod();
-        if (!evidence.clientUserIds().isEmpty()) {
-            if (hasText(evidence.identMethod()) && !evidence.identMethod().equals(identMethod)) {
-                throw new BusinessException("企业认证方式与授权通知不一致，暂未开通企业权限。请刷新认证状态或联系管理员核验");
-            }
-            if (!evidence.clientUserIds().contains(applicantClientUserId)) throw operatorMismatch();
-            if (evidence.memberId() == null || !account.authScopes().contains("organization")) {
-                throw new BusinessException("企业实名已通过，但尚未取得当前经办人的企业管理权限证据，请由企业超管重新授权或联系管理员核验");
-            }
-            var member = gateway.getMember(account.openCorpId(), evidence.memberId());
-            String fddId = personalIdentityService.verifiedFddId(applicantUserId);
-            if (member == null || !evidence.memberId().equals(member.memberId())
-                    || !"activated".equals(member.memberStatus()) || member.roleTypes() == null
-                    || !member.roleTypes().contains("super_admin") || !hasText(fddId) || !fddId.equals(member.fddId())) {
-                throw new BusinessException("当前经办人未核验为该企业的有效超管，暂未开通企业权限，请联系企业超管或平台管理员");
-            }
-            return new ApplicantRole(CertifiedApplicantRole.ADMIN, AUTHORIZATION_ADMIN, applicantClientUserId);
-        }
-        // Later queries reuse the operator proven for this record while the certification method is unchanged.
-        if (identity.getVerifiedAt() != null && hasText(identMethod) && identMethod.equals(identity.getIdentMethod())
-                && hasText(identity.getOperatorId())) {
-            if (!identity.getOperatorId().equals(applicantClientUserId)
-                    && !identity.getOperatorId().equals(applicantOpenUserId)) throw operatorMismatch();
-            return new ApplicantRole(roleOf(identity.getOperatorType()), identity.getOperatorType(), identity.getOperatorId());
-        }
-        throw new BusinessException("企业实名已通过，但认证服务尚未返回经办人身份，暂未开通企业权限。请稍后重新同步，仍未恢复请联系管理员核验");
+    }
+
+    private OperatorEvidence operatorEvidence(JsonNode data) {
+        return new OperatorEvidence(FadadaAuthorizationCallback.clientUserIds(data),
+                callbackText(data, "corpIdentMethod"), callbackMemberId(data));
     }
 
     private Long callbackMemberId(JsonNode data) {
