@@ -575,6 +575,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                                                OperatorEvidence evidence) {
         verifyAccount(identity, account, detail);
         String applicantOpenUserId = personalIdentityService.verifiedOpenUserId(applicantUserId);
+        boolean anotherOriginalOperator = false;
         if (hasText(detail.operatorId())
                 && (detail.operatorOpenUserIdDocumented() || properties.isOperatorOpenUserIdConfirmed())) {
             if (applicantOpenUserId.equals(detail.operatorId())) {
@@ -594,6 +595,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             // A different original certification operator does not disprove the current
             // applicant's independently verified administrator authorization.
             if (!detail.operatorOpenUserIdDocumented()) throw operatorMismatch();
+            anotherOriginalOperator = true;
         }
         // Login account mappings and historical certification methods do not prove legal identity.
         String applicantClientUserId = clientUserId(applicantUserId);
@@ -602,7 +604,9 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             if (hasText(evidence.identMethod()) && !evidence.identMethod().equals(identMethod)) {
                 throw new BusinessException("企业认证方式与授权通知不一致，暂未开通企业权限。请刷新认证状态或联系管理员核验");
             }
-            if (!evidence.clientUserIds().contains(applicantClientUserId)) throw operatorMismatch();
+            if (!evidence.clientUserIds().contains(applicantClientUserId)) {
+                throw new BusinessException("企业授权已完成，但本次授权经办人与当前小程序账号不一致，尚未确认本账号的企业管理权限。请按法大大页面提示申请超管权限后，以当前账号重新完成企业授权；仍未通过请联系平台支持核验");
+            }
             if (evidence.memberId() == null || !account.authScopes().contains("organization")) {
                 throw new BusinessException("企业实名已通过，但尚未取得当前经办人的企业管理权限证据，请由企业超管重新授权或联系管理员核验");
             }
@@ -626,6 +630,9 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             if (roleOf(identity.getOperatorType()) == CertifiedApplicantRole.ADMIN) {
                 return new ApplicantRole(CertifiedApplicantRole.ADMIN, identity.getOperatorType(), identity.getOperatorId());
             }
+        }
+        if (anotherOriginalOperator) {
+            throw new BusinessException("该企业已在法大大实名，但原认证经办人不是当前账号，尚未确认本账号的企业管理权限。请按法大大页面提示申请超管权限后，以当前账号重新完成企业授权；仍未通过请联系平台支持核验");
         }
         throw new BusinessException("企业实名已通过，但认证服务尚未返回经办人身份，暂未开通企业权限。请稍后重新同步，仍未恢复请联系管理员核验");
     }

@@ -98,6 +98,20 @@ class FadadaCompanyVerificationTest {
         } finally { AuthContext.clear(); }
     }
 
+    @Test
+    void anExistingCompanyWithAnotherOriginalOperatorExplainsTheRequiredCurrentAccountAuthorization() {
+        var f = new Fixture(false);
+        f.documentedOperator("legal_rep", "someone-elses-open-user");
+        var result = f.service.syncCurrent(3L);
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.failureReason()).contains("已在法大大实名", "原认证经办人不是当前账号",
+                "申请超管权限", "以当前账号重新完成企业授权", "联系平台支持核验")
+                .doesNotContain("尚未返回经办人身份", "稍后重新同步");
+        verifyNoInteractions(f.certifications);
+        verify(f.gateway, never()).getMember(anyString(), anyLong());
+        verify(f.gateway, never()).createAuthUrl(any());
+    }
+
     @ParameterizedTest
     @CsvSource({"other-open-user,张三", "open-user-7,另一个人"})
     void documentedOperatorStillRequiresTheCurrentVerifiedPersonalBindingAndConsistentName(String openUserId, String name) {
@@ -217,8 +231,10 @@ class FadadaCompanyVerificationTest {
         var f = new Fixture(); f.detailWithoutOperator("legal_rep");
         var result = f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-9"));
         assertThat(result.status()).isEqualTo("IN_PROGRESS");
-        assertThat(result.failureReason()).contains("标识不一致");
+        assertThat(result.failureReason()).contains("本次授权经办人与当前小程序账号不一致", "申请超管权限",
+                "以当前账号重新完成企业授权");
         verifyNoInteractions(f.certifications);
+        verify(f.gateway, never()).getMember(anyString(), anyLong());
     }
 
     @Test
