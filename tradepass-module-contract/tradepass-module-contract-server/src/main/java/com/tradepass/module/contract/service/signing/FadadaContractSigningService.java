@@ -50,5 +50,7 @@ public interface FadadaContractSigningService {
     ContractSigningRespDTO syncCurrent(Long contractId);
     SignedPreview signedPreview(Long contractId);
     void syncBySignTaskId(String signTaskId);
+    void requireCallbackSettled(String signTaskId, String eventType);
+    ServiceUrlPayload memberSealGrantUrl(Long contractId, long userId);
     ServiceUrlPayload abolishUrl(Long contractId, String reason);
 }

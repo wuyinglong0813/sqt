@@ -10,13 +10,25 @@ public interface FadadaSigningGateway {
     byte[] downloadSignedPreviewPage(String signTaskId, String ownerOpenCorpId);
     void cancel(String signTaskId, String reason);
     String abolish(String signTaskId, String actorId, String reason, String callbackUrl);
+    default List<String> actorSealIds(String signTaskId, String actorId) {
+        throw new UnsupportedOperationException("签署任务印章查询尚未实现");
+    }
 
     record CreateTaskCommand(byte[] pdf, String fileName, String subject, String contractReference,
                              String initiatorOpenCorpId, String initiatorActorId,
                              String initiatorName, String initiatorSealId,
                              String counterpartyOpenCorpId, String counterpartyActorId,
                              String counterpartyName, String counterpartySealId,
-                             String supplierActorId, String buyerActorId, String callbackUrl) {
+                             String supplierActorId, String buyerActorId, String callbackUrl,
+                             SealPosition supplierSealPosition, SealPosition buyerSealPosition) {
+        public CreateTaskCommand(byte[] pdf, String fileName, String subject, String contractReference,
+                                 String initiatorOpenCorpId, String initiatorActorId, String initiatorName, String initiatorSealId,
+                                 String counterpartyOpenCorpId, String counterpartyActorId, String counterpartyName, String counterpartySealId,
+                                 String supplierActorId, String buyerActorId, String callbackUrl) {
+            this(pdf, fileName, subject, contractReference, initiatorOpenCorpId, initiatorActorId, initiatorName, initiatorSealId,
+                    counterpartyOpenCorpId, counterpartyActorId, counterpartyName, counterpartySealId,
+                    supplierActorId, buyerActorId, callbackUrl, null, null);
+        }
         public void validate() {
             if (pdf == null || pdf.length == 0 || pdf.length > 50 * 1024 * 1024) {
                 throw new com.tradepass.framework.common.exception.BusinessException("签署合同文件必须非空且不超过50MB");
@@ -41,11 +53,27 @@ public interface FadadaSigningGateway {
                     throw new com.tradepass.framework.common.exception.BusinessException("企业电子印章标识无效");
                 }
             }
+            if (supplierSealPosition == null || buyerSealPosition == null) {
+                throw new com.tradepass.framework.common.exception.BusinessException("签署文件缺少实际签章位置");
+            }
+            supplierSealPosition.validate(); buyerSealPosition.validate();
         }
 
         private static void required(String value, int max, String name) {
             if (value == null || value.isBlank() || value.length() > max) {
                 throw new com.tradepass.framework.common.exception.BusinessException(name + "为空或超过服务商长度限制");
+            }
+        }
+    }
+    /** Official 96-DPI coordinates measured from the PDF page's top-left corner. */
+    record SealPosition(int pageNo, String x, String y) {
+        public void validate() {
+            try {
+                if (pageNo < 1 || new java.math.BigDecimal(x).signum() < 0 || new java.math.BigDecimal(y).signum() < 0) {
+                    throw new IllegalArgumentException();
+                }
+            } catch (RuntimeException invalid) {
+                throw new com.tradepass.framework.common.exception.BusinessException("签署文件签章位置无效");
             }
         }
     }

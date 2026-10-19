@@ -13,8 +13,22 @@ public record FadadaCompanyIdentityRespDTO(
         int enabledSealCount,
         List<SealPayload> seals,
         String lastSyncAt,
-        String sealSyncWarning
+        String sealSyncWarning,
+        boolean callbackObsolete
 ) {
+    public FadadaCompanyIdentityRespDTO(boolean enabled, String companyId, String status, String statusText,
+                                       String verifiedName, String verifiedCreditCode, String failureReason,
+                                       int enabledSealCount, List<SealPayload> seals, String lastSyncAt,
+                                       String sealSyncWarning) {
+        this(enabled, companyId, status, statusText, verifiedName, verifiedCreditCode, failureReason,
+                enabledSealCount, seals, lastSyncAt, sealSyncWarning, false);
+    }
+
+    public FadadaCompanyIdentityRespDTO withCallbackObsolete(boolean value) {
+        return new FadadaCompanyIdentityRespDTO(enabled, companyId, status, statusText, verifiedName,
+                verifiedCreditCode, failureReason, enabledSealCount, seals, lastSyncAt, sealSyncWarning, value);
+    }
+
     public FadadaCompanyIdentityRespDTO(boolean enabled, String companyId, String status, String statusText,
                                        String verifiedName, String verifiedCreditCode, String failureReason,
                                        int enabledSealCount, List<SealPayload> seals, String lastSyncAt) {

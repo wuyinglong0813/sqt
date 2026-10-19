@@ -6,13 +6,20 @@ import com.tradepass.module.identity.api.fadada.dto.LegalRepresentativeRespDTO;
 import com.tradepass.framework.common.pojo.ServiceUrlPayload;
 import com.tradepass.module.identity.api.fadada.dto.FadadaCorpIdentityRespDTO;
 import com.tradepass.module.identity.service.fadada.FadadaCompanyService;
+import com.tradepass.module.identity.service.fadada.FadadaSigningMemberService;
+import com.tradepass.module.identity.service.fadada.FadadaSigningAuthorizationService;
 import com.tradepass.module.identity.convert.fadada.FadadaCorpIdentityConvert;
 import org.springframework.stereotype.Service;
 
 @Service
 public class FadadaCompanyOperationsImpl implements FadadaCompanyOperations {
     private final FadadaCompanyService delegate;
-    public FadadaCompanyOperationsImpl(FadadaCompanyService delegate) { this.delegate = delegate; }
+    private final FadadaSigningMemberService signingMembers;
+    private final FadadaSigningAuthorizationService signingAuthorization;
+    public FadadaCompanyOperationsImpl(FadadaCompanyService delegate, FadadaSigningMemberService signingMembers,
+                                      FadadaSigningAuthorizationService signingAuthorization) {
+        this.delegate = delegate; this.signingMembers = signingMembers; this.signingAuthorization = signingAuthorization;
+    }
     @Override public FadadaCompanyIdentityRespDTO current(long companyId) { return delegate.current(companyId); }
     @Override public ServiceUrlPayload createAuthUrl(long companyId) { return delegate.createAuthUrl(companyId); }
     @Override public FadadaCompanyIdentityRespDTO syncCurrent(long companyId) { return delegate.syncCurrent(companyId); }
@@ -25,4 +32,7 @@ public class FadadaCompanyOperationsImpl implements FadadaCompanyOperations {
     @Override public ServiceUrlPayload createSealManageUrl(long companyId) { return delegate.createSealManageUrl(companyId); }
     @Override public FadadaCorpIdentityRespDTO requireVerified(long companyId) { return FadadaCorpIdentityConvert.INSTANCE.toDTO(delegate.requireVerified(companyId)); }
     @Override public String enabledSealId(long companyId) { return delegate.enabledSealId(companyId); }
+    @Override public void requireCurrentSigningMember(long companyId) { signingMembers.requireCurrentSigningMember(companyId); }
+    @Override public void requireCurrentSigningAuthorization(long companyId) { signingAuthorization.requireCurrentSigningAuthorization(companyId); }
+    @Override public ServiceUrlPayload memberSealGrantUrl(long companyId, long userId, String sealId) { return signingAuthorization.memberSealGrantUrl(companyId, userId, sealId); }
 }

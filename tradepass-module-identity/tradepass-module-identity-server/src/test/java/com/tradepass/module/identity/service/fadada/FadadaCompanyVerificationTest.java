@@ -30,6 +30,141 @@ import static org.mockito.Mockito.*;
 
 class FadadaCompanyVerificationTest {
     @Test
+    void corporateRevocationWinsOverSameTimeSuccessAndStaleAccountReadsThenQueriesRecover() {
+        var f = new Fixture(); f.superAdmin(); f.documentedOperator("legal_rep", "open-user-7");
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
+        f.identity.setVerifiedAt(java.time.LocalDateTime.now().minusYears(1));
+        long eventTime = System.currentTimeMillis();
+        var cancel = new ObjectMapper().createObjectNode().put("_verifiedEvent", "corp-cancel-authorization")
+                .put("eventTime", String.valueOf(eventTime));
+        assertThat(f.service.syncCallback("local-3", "corp-3", cancel).status()).isEqualTo("IN_PROGRESS");
+        verifyNoInteractions(f.gateway);
+        var obsolete = f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-7")
+                .put("eventTime", String.valueOf(eventTime)));
+        assertThat(obsolete.status()).isEqualTo("IN_PROGRESS");
+        assertThat(obsolete.callbackObsolete()).isTrue();
+        assertThat(f.identity.getBindingStatus()).isEqualTo("unauthorized");
+        assertThat(f.identity.getAuthorizationEventType()).isEqualTo("corp-cancel-authorization");
+        verify(f.gateway, never()).getIdentity(anyString());
+        verifyNoInteractions(f.certifications);
+        f.identity.setAuthorizationRevokedAt(java.time.LocalDateTime.now().minusMinutes(1));
+        assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
+        assertThat(f.service.syncCallback("local-3", "corp-3", cancel).status()).isEqualTo("VERIFIED");
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void olderCorporateRevocationCannotOverrideNewerAuthorizationWatermark() {
+        var f = new Fixture(); f.identity.setLocalStatus("VERIFIED");
+        f.identity.setAuthorizationEventAt(java.time.LocalDateTime.now());
+        var cancel = new ObjectMapper().createObjectNode().put("_verifiedEvent", "corp-cancel-authorization")
+                .put("eventTime", String.valueOf(System.currentTimeMillis() - 2000));
+        var obsolete = f.service.syncCallback("local-3", "corp-3", cancel);
+        assertThat(obsolete.status()).isEqualTo("VERIFIED");
+        assertThat(obsolete.callbackObsolete()).isTrue();
+        verifyNoInteractions(f.gateway, f.certifications);
+    }
+
+    @Test
+    void duplicateCorporateSuccessPersistsItsAuthorizationWatermarkBeforeReturning() {
+        var f = new Fixture(); f.identity.setLocalStatus("VERIFIED");
+        f.identity.setVerifiedAt(java.time.LocalDateTime.now().plusMinutes(1));
+        assertThat(f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-7")).status())
+                .isEqualTo("VERIFIED");
+        assertThat(f.identity.getAuthorizationEventAt()).isNotNull();
+        assertThat(f.identity.getAuthorizationEventType()).isEqualTo("corp-authorize");
+        verify(f.identities).updateById(f.identity);
+        verifyNoInteractions(f.gateway);
+    }
+
+    @Test
+    void establishedCompanyRenewalNeverReapprovesItsHistoricalApplicationEvenForTheSameOperator() {
+        var f = new Fixture(); f.company.setCertificationStatus("VERIFIED");
+        f.identity.setLocalStatus("VERIFIED"); f.superAdmin(); f.documentedOperator("legal_rep", "open-user-7");
+        // Legacy company records can be certified before their provider verified_at was stored.
+        assertThat(f.identity.getVerifiedAt()).isNull();
+        assertThat(f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-7")).status())
+                .isEqualTo("VERIFIED");
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void changedAuthorizationOperatorDoesNotRewriteOrReapproveTheHistoricalApplicant() {
+        var f = new Fixture(false);
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
+        f.identity.setVerifiedAt(java.time.LocalDateTime.now().minusYears(1));
+        f.identity.setApplicantUserId(99L); f.identity.setProviderRequestId("original-application-99");
+        f.identity.setOperatorType("legal_rep"); f.identity.setOperatorId("open-user-99");
+        f.documentedOperator("legal_rep", "open-user-99");
+        when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/organization-consent");
+        AuthContext.set(7L, 3L);
+        try {
+            assertThat(f.service.createAuthUrl(3L).url()).isNotNull();
+            assertThat(f.identity.getAuthorizationUserId()).isEqualTo(7L);
+            f.superAdmin();
+            assertThat(f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-7")).status())
+                    .isEqualTo("VERIFIED");
+            assertThat(f.identity.getApplicantUserId()).isEqualTo(99L);
+            assertThat(f.identity.getProviderRequestId()).isEqualTo("original-application-99");
+            assertThat(f.identity.getOperatorId()).isEqualTo("tradepass-user-7");
+            assertThat(f.identity.getOperatorType()).isEqualTo("member_super_admin");
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void aDifferentPersonsAuthorizationCallbackCannotConfirmTheCurrentOperator() {
+        var f = new Fixture(false); f.superAdmin(); f.documentedOperator("legal_rep", "open-user-99");
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setVerifiedAt(java.time.LocalDateTime.now().minusYears(1));
+        f.identity.setApplicantUserId(99L); f.identity.setAuthorizationUserId(7L);
+        assertThat(f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-99")).status())
+                .isEqualTo("IN_PROGRESS");
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void resourceRefreshDoesNotDependOnTheFormerOperatorsMembershipAndRetriesSealFailures() {
+        var f = new Fixture(false);
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
+        f.identity.setVerifiedAt(java.time.LocalDateTime.now().minusYears(1));
+        f.identity.setApplicantUserId(99L); f.documentedOperator("legal_rep", "open-user-99");
+        when(f.gateway.listSeals("corp-3")).thenThrow(new BusinessException("temporary failure"))
+                .thenReturn(List.of(new FadadaCompanyGateway.SealInfo("912", "合同章", "corp", "enable")));
+        assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
+        assertThat(f.identity.getSealSyncWarning()).contains("暂未同步");
+        assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
+        assertThat(f.identity.getSealSyncWarning()).isEmpty();
+        verifyNoInteractions(f.personal, f.certifications);
+        verify(f.gateway, times(2)).listSeals("corp-3");
+    }
+
+    @Test
+    void aVerifiedLegacyEnterpriseCanAddOrganizationConsentWithoutReplacingItsCertificationApplicant() {
+        var f = new Fixture(); f.detail("legal_rep", "open-user-99", "identified");
+        f.identity.setApplicantUserId(99L);
+        when(f.personal.verifiedOpenUserId(99L)).thenReturn("open-user-99");
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
+        when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/add-organization-consent");
+        AuthContext.set(7L, 3L);
+        try {
+            assertThat(f.service.createAuthUrl(3L).url()).isEqualTo("https://example.test/add-organization-consent");
+            verify(f.gateway).createAuthUrl(argThat(command -> command.authScopes().contains("organization")));
+            assertThat(f.identity.getApplicantUserId()).isEqualTo(99L);
+            assertThat(f.identity.getLocalStatus()).isEqualTo("IN_PROGRESS");
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void verifiedEnterpriseWithOrganizationConsentDoesNotStartAnotherAuthorization() {
+        var f = new Fixture(); f.superAdmin(); f.detail("legal_rep", "open-user-7", "identified");
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
+        AuthContext.set(7L, 3L);
+        try {
+            assertThat(f.service.createAuthUrl(3L).url()).isNull();
+            verify(f.gateway, never()).createAuthUrl(any());
+        } finally { AuthContext.clear(); }
+    }
+    @Test
     void historicalLocalLegalMarkerCannotReplaceMissingLiveCertificationOperatorEvidence() {
         var f = new Fixture(false); f.detailWithoutOperator("legal_rep");
         f.identity.setOperatorType("legal_rep"); f.identity.setOperatorId("open-user-7");
@@ -621,9 +756,10 @@ class FadadaCompanyVerificationTest {
         try {
             assertThat(f.service.syncLegalRepresentative(3L).status()).isEqualTo("VERIFIED");
             verify(f.certifications).completeLegalClaim(3L, 9L, "FDD-LEGAL-3-9");
-            assertThat(f.identity.getApplicantUserId()).isEqualTo(9L);
+            assertThat(f.identity.getApplicantUserId()).isEqualTo(7L);
+            assertThat(f.identity.getAuthorizationUserId()).isEqualTo(9L);
             assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
-            verify(f.certifications).completeProviderCertification(eq(3L), eq(9L), eq("FDD-LEGAL-3-9"), anyString(), eq(CertifiedApplicantRole.LEGAL));
+            verify(f.certifications, never()).completeProviderCertification(anyLong(), anyLong(), anyString(), anyString(), any());
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
     }
 

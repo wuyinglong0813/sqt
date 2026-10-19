@@ -64,7 +64,6 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         requireReady();
         FadadaUserIdentityDO identity = findByUserIdForUpdate(AuthContext.userId());
         if (identity == null) return toPayload(null);
-        if ("VERIFIED".equals(identity.getLocalStatus())) return toPayload(identity);
         if (identity.getLastSyncAt() != null
                 && identity.getLastSyncAt().isAfter(LocalDateTime.now().minusSeconds(30))) {
             return toPayload(identity);
@@ -85,7 +84,8 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
     public PersonalIdentityRespDTO requireCurrentVerified() {
         requireReady();
         FadadaUserIdentityDO identity = findByUserIdForUpdate(AuthContext.userId());
-        if (identity != null && !"VERIFIED".equals(identity.getLocalStatus())) {
+        if (identity != null && (!"VERIFIED".equals(identity.getLocalStatus()) || identity.getLastSyncAt() == null
+                || identity.getLastSyncAt().isBefore(LocalDateTime.now().minusSeconds(30)))) {
             identity = sync(identity);
         }
         if (identity == null || !"VERIFIED".equals(identity.getLocalStatus())) {
@@ -99,7 +99,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         FadadaUserIdentityDO identity = findByUserId(userId);
         if (identity == null || !"VERIFIED".equals(identity.getLocalStatus())
                 || identity.getOpenUserId() == null || identity.getOpenUserId().isBlank()) {
-            throw new BusinessException("企业认证申请人的实名身份尚未确认，请先完成个人认证");
+            throw new BusinessException("该账号的个人实名身份尚未确认，请先在“我的 → 个人认证”完成认证后重试");
         }
         return identity.getOpenUserId();
     }
@@ -128,7 +128,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         if (detail == null || !openUserId.equals(detail.openUserId()) || !"identified".equals(detail.identStatus())) {
             throw new BusinessException("认证服务尚未返回可核对的个人标识，请联系管理员核验");
         }
-        return new VerifiedPerson(openUserId, detail.fddId(), detail.userName());
+        return new VerifiedPerson(openUserId, detail.fddId(), detail.userName(), detail.accountName());
     }
 
     @Transactional
@@ -142,7 +142,8 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         }
         FadadaUserIdentityDO identity = ensureIdentity(userId);
         if ("VERIFIED".equals(identity.getLocalStatus())) {
-            return new FadadaAuthUrlRespDTO(null, toPayload(identity));
+            identity = sync(identity);
+            if ("VERIFIED".equals(identity.getLocalStatus())) return new FadadaAuthUrlRespDTO(null, toPayload(identity));
         }
         // redirectMiniAppUrl accepts an encoded native, non-tabBar page (FASC 5.1).
         // The return page confirms server state and restores the originating company flow.
@@ -188,11 +189,35 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
             throw new BusinessException("认证回调用户标识与当前账号不一致");
         }
         LocalDateTime eventTime = FadadaAuthorizationCallback.time(data);
+        String event = callbackText(data, "_verifiedEvent");
+        boolean authorizationEvent = "user-authorize".equals(event) || "user-cancel-authorization".equals(event);
+        boolean tiedWithRevocation = eventTime != null && eventTime.equals(identity.getAuthorizationEventAt())
+                && "user-cancel-authorization".equals(identity.getAuthorizationEventType());
+        if (authorizationEvent && eventTime != null) {
+            if (identity.getAuthorizationEventAt() != null && eventTime.isBefore(identity.getAuthorizationEventAt())) {
+                return toPayload(identity).withCallbackObsolete(true);
+            }
+            if (!tiedWithRevocation || "user-cancel-authorization".equals(event)) {
+                identity.setAuthorizationEventAt(eventTime);
+                identity.setAuthorizationEventType(event);
+            }
+        }
+        if ("user-cancel-authorization".equals(event) && eventTime != null) {
+            if (tiedWithRevocation && "VERIFIED".equals(identity.getLocalStatus())) return toPayload(identity);
+            if (!tiedWithRevocation) identity.setAuthorizationRevokedAt(LocalDateTime.now());
+            markRevoked(identity);
+            identityMapper.updateById(identity);
+            return toPayload(identity);
+        }
+        if (tiedWithRevocation && "user-authorize".equals(event)) {
+            return toPayload(identity).withCallbackObsolete(true);
+        }
         // Repeated success must not query again. Other late events use current provider
         // evidence: processing time is not the event order (a newer revocation may arrive late).
         if ("VERIFIED".equals(identity.getLocalStatus()) && "success".equals(authResult)
                 && eventTime != null && identity.getIdentVerifiedAt() != null
                 && !eventTime.isAfter(identity.getIdentVerifiedAt())) {
+            identityMapper.updateById(identity);
             return toPayload(identity);
         }
         boolean firstCompletion = "IN_PROGRESS".equals(identity.getLocalStatus())
@@ -236,8 +261,28 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
     }
 
     private FadadaUserIdentityDO sync(FadadaUserIdentityDO identity) {
-        FadadaUserGateway.UserAccountResult account = gateway.getUser(
-                identity.getClientUserId(), identity.getOpenUserId());
+        // A signed revocation wins over briefly stale provider reads. The scheduled current
+        // query can confirm later consent even when its authorization callback was missed.
+        if ("user-cancel-authorization".equals(identity.getAuthorizationEventType())
+                && identity.getAuthorizationRevokedAt() != null
+                && identity.getAuthorizationRevokedAt().isAfter(LocalDateTime.now().minusSeconds(30))) {
+            markRevoked(identity);
+            identityMapper.updateById(identity);
+            return identity;
+        }
+        FadadaUserGateway.UserAccountResult account;
+        try {
+            account = gateway.getUser(identity.getClientUserId(), identity.getOpenUserId());
+        } catch (FadadaUserQueryException exception) {
+            if (!"210022".equals(exception.providerCode())) throw exception;
+            identity.setLocalStatus("IN_PROGRESS");
+            identity.setBindingStatus("unauthorized");
+            identity.setAuthScopes("[]");
+            identity.setFailureReason(exception.getMessage());
+            identity.setLastSyncAt(LocalDateTime.now());
+            identityMapper.updateById(identity);
+            return identity;
+        }
         if (java.util.List.of(
                 new com.tradepass.framework.fadada.core.FadadaUserQueryException("210022").getMessage(),
                 new com.tradepass.framework.fadada.core.FadadaUserQueryException("100020").getMessage())
@@ -288,6 +333,14 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         identity.setLastSyncAt(LocalDateTime.now());
         identityMapper.updateById(identity);
         return identity;
+    }
+
+    private void markRevoked(FadadaUserIdentityDO identity) {
+        identity.setBindingStatus("unauthorized");
+        identity.setAuthScopes("[]");
+        identity.setLocalStatus("IN_PROGRESS");
+        identity.setFailureReason("个人授权已解除，请重新办理授权；状态将在后台继续核对");
+        identity.setLastSyncAt(LocalDateTime.now());
     }
 
     private FadadaUserIdentityDO ensureIdentity(long userId) {

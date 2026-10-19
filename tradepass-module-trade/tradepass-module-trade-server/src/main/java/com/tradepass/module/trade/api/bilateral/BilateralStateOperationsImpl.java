@@ -10,6 +10,7 @@ public class BilateralStateOperationsImpl implements BilateralStateOperations {
     private final BilateralStateService delegate;
     public BilateralStateOperationsImpl(@Lazy BilateralStateService delegate) { this.delegate = delegate; }
     @Override public List<Long> approvedVoids(Long contractId, boolean lock) { return delegate.approvedVoids(contractId, lock); }
+    @Override public List<Long> approvedVoidContracts(List<Long> contractIds) { return delegate.approvedVoidContracts(contractIds); }
     @Override public List<Long> pendingResumes(Long contractId, boolean contractOnly, boolean lock) { return delegate.pendingResumes(contractId, contractOnly, lock); }
     @Override public int cancelApprovedVoids(Long contractId) { return delegate.cancelApprovedVoids(contractId); }
 }

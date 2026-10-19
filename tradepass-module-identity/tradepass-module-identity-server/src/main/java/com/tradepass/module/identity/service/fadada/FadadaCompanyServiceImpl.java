@@ -112,7 +112,13 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         // Native completion redirect plus client polling; the return page verifies server state.
         if ("VERIFIED".equals(identity.getLocalStatus())) {
             var result = syncCurrent(companyId);
-            return new ServiceUrlPayload(null, "company", result.status());
+            identity = findForUpdate(companyId);
+            // Older enterprises may have authorized signing before organization was
+            // requested. They still need a real provider authorization flow to add it.
+            if ("VERIFIED".equals(result.status()) && hasText(identity.getAuthScopes())
+                    && identity.getAuthScopes().contains("\"organization\"")) {
+                return new ServiceUrlPayload(null, "company", result.status());
+            }
         }
         SysUserDO currentUser = userMapper.selectById(userId);
         String url;
@@ -130,9 +136,11 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             return new ServiceUrlPayload(null, "company", result.status());
         }
         validateUrl(url);
+        identity.setAuthorizationUserId(userId);
+        identity.setAuthorizationSubmittedAt(attemptStartedAt);
         identity.setLocalStatus("IN_PROGRESS");
         identity.setFailureReason("");
-        identity.setSubmittedAt(attemptStartedAt);
+        if (identity.getSubmittedAt() == null) identity.setSubmittedAt(attemptStartedAt);
         identityMapper.updateById(identity);
         if (!"VERIFIED".equals(company.getCertificationStatus())) {
             companyMapper.update(new LambdaUpdateWrapper<CompanyDO>().eq(CompanyDO::getId, companyId)
@@ -185,6 +193,11 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         if (identity == null || !hasText(identity.getOpenCorpId())) {
             throw new BusinessException("请先完成企业认证");
         }
+        if ("corp-cancel-authorization".equals(identity.getAuthorizationEventType())
+                && identity.getAuthorizationRevokedAt() != null
+                && identity.getAuthorizationRevokedAt().isAfter(LocalDateTime.now().minusSeconds(30))) {
+            throw new BusinessException("企业授权已解除，请重新办理企业授权后核验法人身份");
+        }
         FadadaCompanyGateway.CompanyAccount account = gateway.getCompany(identity.getClientCorpId(), identity.getOpenCorpId());
         FadadaCompanyGateway.CompanyIdentity detail = gateway.getIdentity(identity.getOpenCorpId());
         verifyMatches(company, detail);
@@ -206,8 +219,9 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         certificationService.completeLegalClaim(companyId, userId, requestId);
         // Adopt the proven current operator only after legal membership was granted in this transaction.
         // The original application remains in the audit history; future callbacks follow this operator.
-        identity.setApplicantUserId(userId);
-        identity.setProviderRequestId(requestId);
+        identity.setAuthorizationUserId(userId);
+        identity.setAuthorizationConfirmedAt(LocalDateTime.now());
+        company.setCertificationStatus("VERIFIED");
         storeVerifiedIdentity(company, identity, account, detail, resolved);
         syncSealsBestEffort(identity);
         identity.setLastSyncAt(LocalDateTime.now());
@@ -241,6 +255,13 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                                                        FadadaCompanyGateway.CompanyAccount account,
                                                        OperatorEvidence evidence) {
         long companyId = company.getId();
+        if ("corp-cancel-authorization".equals(identity.getAuthorizationEventType())
+                && identity.getAuthorizationRevokedAt() != null
+                && identity.getAuthorizationRevokedAt().isAfter(LocalDateTime.now().minusSeconds(30))) {
+            markRevoked(identity);
+            identityMapper.updateById(identity);
+            return payload(companyId, identity);
+        }
         if (hasText(account.openCorpId())) identity.setOpenCorpId(account.openCorpId());
         if (hasText(account.bindingStatus())) identity.setBindingStatus(account.bindingStatus());
         if (hasText(account.identStatus())) identity.setIdentStatus(account.identStatus());
@@ -262,9 +283,36 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         if ("identified".equalsIgnoreCase(account.identStatus()) && hasText(account.openCorpId())) {
             FadadaCompanyGateway.CompanyIdentity detail = gateway.getIdentity(identity.getOpenCorpId());
             verifyMatches(company, detail);
+            long operatorUserId = authorizationUserId(identity);
+            boolean established = "VERIFIED".equals(company.getCertificationStatus());
+            if (established) {
+                // Renewing application consent does not re-approve the historical certification
+                // application. Ordinary resource callbacks must not depend on its former operator.
+                verifyAccount(identity, account, detail);
+                ApplicantRole current;
+                try {
+                    current = evidence.clientUserIds().isEmpty() ? null
+                            : resolveApplicantRole(identity, account, detail, operatorUserId, evidence);
+                } catch (BusinessException exception) {
+                    identity.setLocalStatus("IN_PROGRESS");
+                    identity.setFailureReason(exception.getMessage());
+                    identity.setLastSyncAt(LocalDateTime.now());
+                    identityMapper.updateById(identity);
+                    return payload(companyId, identity);
+                }
+                storeVerifiedIdentity(company, identity, account, detail, current);
+                identity.setAuthorizationConfirmedAt(LocalDateTime.now());
+                syncSealsBestEffort(identity);
+                identity.setLastSyncAt(LocalDateTime.now());
+                identityMapper.updateById(identity);
+                return payload(companyId, identity);
+            }
             ApplicantRole resolved;
             try {
-                resolved = resolveApplicantRole(identity, account, detail, identity.getApplicantUserId(), evidence);
+                if (operatorUserId != identity.getApplicantUserId()) {
+                    throw new BusinessException("原企业认证申请尚未完成，请由原申请人完成认证；其他经办人不能代替原申请取得企业权限");
+                }
+                resolved = resolveApplicantRole(identity, account, detail, operatorUserId, evidence);
             } catch (BusinessException exception) {
                 identity.setLocalStatus("IN_PROGRESS");
                 identity.setFailureReason(exception.getMessage());
@@ -273,6 +321,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                 return payload(companyId, identity);
             }
             storeVerifiedIdentity(company, identity, account, detail, resolved);
+            identity.setAuthorizationConfirmedAt(LocalDateTime.now());
             CertifiedApplicantRole role = resolved.role();
             certificationService.completeProviderCertification(companyId, identity.getApplicantUserId(),
                     hasText(identity.getProviderRequestId()) ? identity.getProviderRequestId() : "FDD-CORP-" + identity.getClientCorpId(),
@@ -323,15 +372,38 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             throw new BusinessException("认证回调企业标识与当前企业不一致");
         }
         LocalDateTime eventTime = FadadaAuthorizationCallback.time(data);
+        String event = callbackText(data, "_verifiedEvent");
+        boolean tiedWithRevocation = eventTime != null && eventTime.equals(identity.getAuthorizationEventAt())
+                && "corp-cancel-authorization".equals(identity.getAuthorizationEventType());
+        if (("corp-authorize".equals(event) || "corp-cancel-authorization".equals(event)) && eventTime != null) {
+            if (identity.getAuthorizationEventAt() != null && eventTime.isBefore(identity.getAuthorizationEventAt())) {
+                return payload(companyId, identity).withCallbackObsolete(true);
+            }
+            if (!tiedWithRevocation || "corp-cancel-authorization".equals(event)) {
+                identity.setAuthorizationEventAt(eventTime);
+                identity.setAuthorizationEventType(event);
+            }
+        }
+        if ("corp-cancel-authorization".equals(event) && eventTime != null) {
+            if (tiedWithRevocation && "VERIFIED".equals(identity.getLocalStatus())) return payload(companyId, identity);
+            if (!tiedWithRevocation) identity.setAuthorizationRevokedAt(LocalDateTime.now());
+            markRevoked(identity);
+            identityMapper.updateById(identity);
+            return payload(companyId, identity);
+        }
+        if (tiedWithRevocation && "corp-authorize".equals(event)) {
+            return payload(companyId, identity).withCallbackObsolete(true);
+        }
         if ("VERIFIED".equals(identity.getLocalStatus()) && "success".equals(callbackText(data, "authResult"))
                 && eventTime != null && identity.getVerifiedAt() != null
                 && !eventTime.isAfter(identity.getVerifiedAt())) {
+            identityMapper.updateById(identity);
             return payload(companyId, identity);
         }
         boolean firstCompletion = "IN_PROGRESS".equals(identity.getLocalStatus()) && identity.getVerifiedAt() == null;
         if (FadadaAuthorizationCallback.completed(data, "corp-authorize", "corpIdentProcessStatus", AUTH_SCOPES)
                 && identity.getClientCorpId().equals(callbackText(data, "clientCorpId"))
-                && identity.getSubmittedAt() != null && !eventTime.isBefore(identity.getSubmittedAt().withNano(0))
+                && authorizationSubmittedAt(identity) != null && !eventTime.isBefore(authorizationSubmittedAt(identity).withNano(0))
                 && (firstCompletion || identity.getLastSyncAt() == null || eventTime.isAfter(identity.getLastSyncAt()))
                 && hasText(openCorpId) && openCorpId.equals(callbackText(data, "openCorpId"))
                 && normalize(company.getCreditCode()).equals(normalize(callbackText(data, "corpIdentNo")))
@@ -381,8 +453,8 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                 && "success".equalsIgnoreCase(authResult)
                 && "enable".equals(callbackText(data, "availableStatus"))
                 && identity.getClientCorpId().equals(callbackText(data, "clientCorpId"))
-                && eventTime != null && identity.getSubmittedAt() != null
-                && !eventTime.isBefore(identity.getSubmittedAt().withNano(0));
+                && eventTime != null && authorizationSubmittedAt(identity) != null
+                && !eventTime.isBefore(authorizationSubmittedAt(identity).withNano(0));
         return sync(identity.getCompanyId(), currentAuthorization
                 ? operatorEvidence(data)
                 : OperatorEvidence.NONE);
@@ -550,8 +622,10 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         identity.setVerifiedCreditCode(detail.creditCode());
         identity.setVerifiedLegalRepName(detail.legalRepName());
         identity.setIdentMethod(detail.identMethod());
-        identity.setOperatorType(resolved.operatorType());
-        identity.setOperatorId(resolved.operatorId());
+        if (resolved != null) {
+            identity.setOperatorType(resolved.operatorType());
+            identity.setOperatorId(resolved.operatorId());
+        }
         identity.setVerifiedAt(parseTime(detail.verifiedAt(), LocalDateTime.now()));
         identity.setLocalStatus("VERIFIED");
         identity.setFailureReason("");
@@ -678,6 +752,22 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
     }
 
     private static String clientUserId(long userId) { return "tradepass-user-" + userId; }
+
+    private void markRevoked(FadadaCorpIdentityDO identity) {
+        identity.setBindingStatus("unauthorized");
+        identity.setAuthScopes("[]");
+        identity.setLocalStatus("IN_PROGRESS");
+        identity.setFailureReason("企业授权已解除，请重新办理授权；状态将在后台继续核对");
+        identity.setLastSyncAt(LocalDateTime.now());
+    }
+
+    private long authorizationUserId(FadadaCorpIdentityDO identity) {
+        return identity.getAuthorizationUserId() == null ? identity.getApplicantUserId() : identity.getAuthorizationUserId();
+    }
+
+    private LocalDateTime authorizationSubmittedAt(FadadaCorpIdentityDO identity) {
+        return identity.getAuthorizationSubmittedAt() == null ? identity.getSubmittedAt() : identity.getAuthorizationSubmittedAt();
+    }
 
     private void requireCompanyFields(CompanyDO company) {
         if (!hasText(company.getName()) || !hasText(company.getCreditCode())) {

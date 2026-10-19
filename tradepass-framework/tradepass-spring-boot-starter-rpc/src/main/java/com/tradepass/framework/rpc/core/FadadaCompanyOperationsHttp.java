@@ -30,6 +30,9 @@ public class FadadaCompanyOperationsHttp {
     public record CreateSealManageUrl1Request(long companyId) {}
     public record RequireVerified1Request(long companyId) {}
     public record EnabledSealId1Request(long companyId) {}
+    public record RequireCurrentSigningMember1Request(long companyId) {}
+    public record RequireCurrentSigningAuthorization1Request(long companyId) {}
+    public record MemberSealGrantUrl3Request(long companyId, long userId, String sealId) {}
 
     @FeignClient(name = "${tradepass.services.identity-name:tradepass-identity}", contextId = "FadadaCompanyOperationsHttp",
             url = "${tradepass.services.identity-url:}", configuration = DomainFeignConfiguration.class)
@@ -58,6 +61,12 @@ public class FadadaCompanyOperationsHttp {
         FadadaCorpIdentityRespDTO requireVerified1(@RequestBody RequireVerified1Request request);
         @PostMapping("/internal/domain/FadadaCompanyOperations/enabledSealId1")
         String enabledSealId1(@RequestBody EnabledSealId1Request request);
+        @PostMapping("/internal/domain/FadadaCompanyOperations/requireCurrentSigningMember1")
+        void requireCurrentSigningMember1(@RequestBody RequireCurrentSigningMember1Request request);
+        @PostMapping("/internal/domain/FadadaCompanyOperations/requireCurrentSigningAuthorization1")
+        void requireCurrentSigningAuthorization1(@RequestBody RequireCurrentSigningAuthorization1Request request);
+        @PostMapping("/internal/domain/FadadaCompanyOperations/memberSealGrantUrl3")
+        ServiceUrlPayload memberSealGrantUrl3(@RequestBody MemberSealGrantUrl3Request request);
     }
 
     @Bean
@@ -76,6 +85,9 @@ public class FadadaCompanyOperationsHttp {
             @Override public ServiceUrlPayload createSealManageUrl(long companyId) { return client.createSealManageUrl1(new CreateSealManageUrl1Request(companyId)); }
             @Override public FadadaCorpIdentityRespDTO requireVerified(long companyId) { return client.requireVerified1(new RequireVerified1Request(companyId)); }
             @Override public String enabledSealId(long companyId) { return client.enabledSealId1(new EnabledSealId1Request(companyId)); }
+            @Override public void requireCurrentSigningMember(long companyId) { client.requireCurrentSigningMember1(new RequireCurrentSigningMember1Request(companyId)); }
+            @Override public void requireCurrentSigningAuthorization(long companyId) { client.requireCurrentSigningAuthorization1(new RequireCurrentSigningAuthorization1Request(companyId)); }
+            @Override public ServiceUrlPayload memberSealGrantUrl(long companyId, long userId, String sealId) { return client.memberSealGrantUrl3(new MemberSealGrantUrl3Request(companyId, userId, sealId)); }
         };
     }
 
@@ -108,5 +120,11 @@ public class FadadaCompanyOperationsHttp {
         public FadadaCorpIdentityRespDTO requireVerified1(@RequestBody RequireVerified1Request request) { return operations.requireVerified(request.companyId()); }
         @PostMapping("/internal/domain/FadadaCompanyOperations/enabledSealId1")
         public String enabledSealId1(@RequestBody EnabledSealId1Request request) { return operations.enabledSealId(request.companyId()); }
+        @PostMapping("/internal/domain/FadadaCompanyOperations/requireCurrentSigningMember1")
+        public void requireCurrentSigningMember1(@RequestBody RequireCurrentSigningMember1Request request) { operations.requireCurrentSigningMember(request.companyId()); }
+        @PostMapping("/internal/domain/FadadaCompanyOperations/requireCurrentSigningAuthorization1")
+        public void requireCurrentSigningAuthorization1(@RequestBody RequireCurrentSigningAuthorization1Request request) { operations.requireCurrentSigningAuthorization(request.companyId()); }
+        @PostMapping("/internal/domain/FadadaCompanyOperations/memberSealGrantUrl3")
+        public ServiceUrlPayload memberSealGrantUrl3(@RequestBody MemberSealGrantUrl3Request request) { return operations.memberSealGrantUrl(request.companyId(), request.userId(), request.sealId()); }
     }
 }

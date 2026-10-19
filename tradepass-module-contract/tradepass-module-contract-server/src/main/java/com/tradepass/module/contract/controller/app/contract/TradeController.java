@@ -225,6 +225,11 @@ public class TradeController {
         return ApiResponse.ok(signingService.signUrl(id));
     }
 
+    @PostMapping("/contracts/{id}/members/{userId}/seal-grant-url")
+    public ApiResponse<ServiceUrlPayload> contractMemberSealGrantUrl(@PathVariable Long id, @PathVariable long userId) {
+        return ApiResponse.ok(signingService.memberSealGrantUrl(id, userId));
+    }
+
     @GetMapping("/contracts/{id}/signing/quote")
     public ApiResponse<Map<String, Object>> contractSigningQuote(@PathVariable Long id) {
         return ApiResponse.ok(signingService.signingQuote(id));

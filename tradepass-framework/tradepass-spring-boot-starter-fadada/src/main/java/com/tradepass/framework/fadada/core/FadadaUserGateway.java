@@ -33,10 +33,15 @@ public interface FadadaUserGateway {
                               String identMethod,
                               String identSubmitTime,
                               String identSuccessTime,
-                              String fddId) {
+                              String fddId,
+                              String accountName) {
+        public UserIdentityResult(String openUserId, String identStatus, String userName,
+                                  String identMethod, String identSubmitTime, String identSuccessTime, String fddId) {
+            this(openUserId, identStatus, userName, identMethod, identSubmitTime, identSuccessTime, fddId, null);
+        }
         public UserIdentityResult(String openUserId, String identStatus, String userName,
                                   String identMethod, String identSubmitTime, String identSuccessTime) {
-            this(openUserId, identStatus, userName, identMethod, identSubmitTime, identSuccessTime, null);
+            this(openUserId, identStatus, userName, identMethod, identSubmitTime, identSuccessTime, null, null);
         }
         @Override public String toString() {
             return "UserIdentityResult[identStatus=" + identStatus + ", identity=REDACTED]";

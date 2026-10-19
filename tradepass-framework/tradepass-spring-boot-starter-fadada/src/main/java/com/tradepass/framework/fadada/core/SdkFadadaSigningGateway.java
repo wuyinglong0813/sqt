@@ -76,36 +76,44 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
 
     @Override
     public CreatedTask createTask(CreateTaskCommand command) {
-        command.validate();
-        String fileId = uploadAndProcess(command.pdf(), command.fileName());
+        String fileId;
         String docId = "contract-doc";
         CreateSignTaskReq request = new CreateSignTaskReq();
-        request.setAccessToken(tokenProvider.get());
-        request.setInitiator(OpenId.getInstance("corp", command.initiatorOpenCorpId()));
-        request.setSignTaskSubject(command.subject());
-        request.setSignDocType("contract");
-        request.setAutoStart(true);
-        request.setAutoFinish(true);
-        request.setAutoFillFinalize(true);
-        request.setSignInOrder(true);
-        request.setFileFormat("pdf");
-        request.setTransReferenceId(command.contractReference());
-        request.setCallbackUrl(command.callbackUrl());
+        try {
+            command.validate();
+            fileId = uploadAndProcess(command.pdf(), command.fileName());
+            request.setAccessToken(tokenProvider.get());
+            request.setInitiator(OpenId.getInstance("corp", command.initiatorOpenCorpId()));
+            request.setSignTaskSubject(command.subject());
+            request.setSignDocType("contract");
+            request.setAutoStart(true);
+            request.setAutoFinish(true);
+            request.setAutoFillFinalize(true);
+            request.setSignInOrder(true);
+            request.setFileFormat("pdf");
+            request.setTransReferenceId(command.contractReference());
+            request.setCallbackUrl(command.callbackUrl());
 
-        AddDocInfo document = new AddDocInfo();
-        document.setDocId(docId);
-        document.setDocName(command.fileName());
-        document.setDocFileId(fileId);
-        document.setDocFields(List.of(sealField("supplier-seal", "供方盖章"),
-                sealField("buyer-seal", "需方盖章")));
-        request.setDocs(List.of(document));
-        request.setActors(List.of(
-                actor(command.initiatorActorId(), command.initiatorName(), command.initiatorOpenCorpId(),
-                        command.initiatorSealId(), docId, command.initiatorActorId().equals(command.supplierActorId())
-                                ? "supplier-seal" : "buyer-seal", 1),
-                actor(command.counterpartyActorId(), command.counterpartyName(), command.counterpartyOpenCorpId(),
-                        command.counterpartySealId(), docId, command.counterpartyActorId().equals(command.supplierActorId())
-                                ? "supplier-seal" : "buyer-seal", 2)));
+            AddDocInfo document = new AddDocInfo();
+            document.setDocId(docId);
+            document.setDocName(command.fileName());
+            document.setDocFileId(fileId);
+            document.setDocFields(List.of(sealField("supplier-seal", "供方盖章", command.supplierSealPosition()),
+                    sealField("buyer-seal", "需方盖章", command.buyerSealPosition())));
+            request.setDocs(List.of(document));
+            request.setActors(List.of(
+                    actor(command.initiatorActorId(), command.initiatorName(), command.initiatorOpenCorpId(),
+                            command.initiatorSealId(), docId, command.initiatorActorId().equals(command.supplierActorId())
+                                    ? "supplier-seal" : "buyer-seal", 1),
+                    actor(command.counterpartyActorId(), command.counterpartyName(), command.counterpartyOpenCorpId(),
+                            command.counterpartySealId(), docId, command.counterpartyActorId().equals(command.supplierActorId())
+                                    ? "supplier-seal" : "buyer-seal", 2)));
+        } catch (RuntimeException beforeCreate) {
+            throw new FadadaTaskPreparationException(hasText(beforeCreate.getMessage())
+                    ? beforeCreate.getMessage() : "合同签署文件准备失败，请重试");
+        }
+        // From this point onward the provider can have created a task even if its
+        // response is lost. Never classify create/response errors as preparation.
         CreateSignTaskRes response = invoke(request, () -> signTaskClient.create(request), "创建合同签署任务");
         if (!hasText(response.getSignTaskId())) throw new BusinessException("合同签署任务创建失败，请稍后重试");
         return new CreatedTask(response.getSignTaskId(), fileId, docId);
@@ -147,6 +155,31 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         return new TaskStatus(signTaskId, detail.getSignTaskStatus(), actors == null ? List.of() : actors.stream()
                 .map(value -> new ActorStatus(value.getActorId(), value.getSignStatus())).toList(),
                 detail.getOriginalSignTaskId(), detail.getAbolishedSignTaskId());
+    }
+
+    @Override
+    public List<String> actorSealIds(String signTaskId, String actorId) {
+        var request = new com.fasc.open.api.v5_1.req.signtask.ListSignTaskFieldReq();
+        request.setAccessToken(tokenProvider.get());
+        request.setSignTaskId(signTaskId);
+        var fields = invoke(request, () -> signTaskClient.listSignTaskField(request), "查询合同实际用章");
+        if (fields.getSignTaskId() == null || !signTaskId.equals(String.valueOf(fields.getSignTaskId()))) {
+            throw new BusinessException("签署控件任务标识不一致，请重新同步合同");
+        }
+        if (fields.getSignFields() == null) return List.of();
+        var result = new java.util.LinkedHashSet<String>();
+        for (var field : fields.getSignFields()) {
+            if (field == null || !actorId.equals(field.getActorId())
+                    || !("corp_seal".equals(field.getFieldType()) || "corp_seal_cross_page".equals(field.getFieldType()))) continue;
+            try {
+                long seal = Long.parseLong(field.getSealId());
+                if (seal <= 0) throw new NumberFormatException();
+                result.add(String.valueOf(seal));
+            } catch (RuntimeException invalid) {
+                throw new BusinessException("本合同未指定可核对的印章，请由印章管理员在法大大用印管理页面核对办理");
+            }
+        }
+        return List.copyOf(result);
     }
 
     @Override
@@ -257,17 +290,17 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         return result;
     }
 
-    private Field sealField(String fieldId, String keyword) {
+    private Field sealField(String fieldId, String label, SealPosition actualPosition) {
         FieldPosition position = new FieldPosition();
-        position.setPositionMode("keyword");
-        position.setPositionKeyword(keyword);
-        position.setKeywordOffsetX("0");
-        position.setKeywordOffsetY("0");
+        position.setPositionMode("pixel");
+        position.setPositionPageNo(actualPosition.pageNo());
+        position.setPositionX(actualPosition.x());
+        position.setPositionY(actualPosition.y());
         FieldCorpSeal seal = new FieldCorpSeal();
         seal.setFollowSignSize(true);
         Field field = new Field();
         field.setFieldId(fieldId);
-        field.setFieldName(keyword);
+        field.setFieldName(label);
         field.setPosition(position);
         field.setFieldType("corp_seal");
         field.setFieldCorpSeal(seal);

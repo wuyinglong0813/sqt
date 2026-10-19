@@ -11,6 +11,14 @@ import java.util.List;
 public class BilateralStateServiceImpl implements BilateralStateService {
     private final JdbcTemplate jdbc;
     public BilateralStateServiceImpl(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    public List<Long> approvedVoidContracts(List<Long> contractIds) {
+        if (contractIds == null || contractIds.isEmpty()) return List.of();
+        return new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbc).queryForList("""
+                SELECT DISTINCT contract_id FROM bilateral_action_request
+                WHERE contract_id IN (:ids) AND biz_type = 'CONTRACT' AND action_type = 'VOID'
+                  AND status = 'APPROVED'
+                """, java.util.Map.of("ids", contractIds), Long.class);
+    }
     @Transactional
     public List<Long> approvedVoids(Long contractId, boolean lock) {
         if (lock) jdbc.update("""

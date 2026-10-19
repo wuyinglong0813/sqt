@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 @Import(BilateralStateOperationsHttp.Endpoint.class)
 public class BilateralStateOperationsHttp {
     public record ApprovedVoids2Request(Long contractId, boolean lock) {}
+    public record ApprovedVoidContracts1Request(List<Long> contractIds) {}
     public record PendingResumes3Request(Long contractId, boolean contractOnly, boolean lock) {}
     public record CancelApprovedVoids1Request(Long contractId) {}
 
@@ -23,6 +24,8 @@ public class BilateralStateOperationsHttp {
     public interface Client {
         @PostMapping("/internal/domain/BilateralStateOperations/approvedVoids2")
         List<Long> approvedVoids2(@RequestBody ApprovedVoids2Request request);
+        @PostMapping("/internal/domain/BilateralStateOperations/approvedVoidContracts1")
+        List<Long> approvedVoidContracts1(@RequestBody ApprovedVoidContracts1Request request);
         @PostMapping("/internal/domain/BilateralStateOperations/pendingResumes3")
         List<Long> pendingResumes3(@RequestBody PendingResumes3Request request);
         @PostMapping("/internal/domain/BilateralStateOperations/cancelApprovedVoids1")
@@ -34,6 +37,7 @@ public class BilateralStateOperationsHttp {
     BilateralStateOperations remoteBilateralStateOperations(Client client) {
         return new BilateralStateOperations() {
             @Override public List<Long> approvedVoids(Long contractId, boolean lock) { return client.approvedVoids2(new ApprovedVoids2Request(contractId, lock)); }
+            @Override public List<Long> approvedVoidContracts(List<Long> contractIds) { return client.approvedVoidContracts1(new ApprovedVoidContracts1Request(contractIds)); }
             @Override public List<Long> pendingResumes(Long contractId, boolean contractOnly, boolean lock) { return client.pendingResumes3(new PendingResumes3Request(contractId, contractOnly, lock)); }
             @Override public int cancelApprovedVoids(Long contractId) { return client.cancelApprovedVoids1(new CancelApprovedVoids1Request(contractId)); }
         };
@@ -46,6 +50,8 @@ public class BilateralStateOperationsHttp {
         public Endpoint(BilateralStateOperations operations) { this.operations = operations; }
         @PostMapping("/internal/domain/BilateralStateOperations/approvedVoids2")
         public List<Long> approvedVoids2(@RequestBody ApprovedVoids2Request request) { return operations.approvedVoids(request.contractId(), request.lock()); }
+        @PostMapping("/internal/domain/BilateralStateOperations/approvedVoidContracts1")
+        public List<Long> approvedVoidContracts1(@RequestBody ApprovedVoidContracts1Request request) { return operations.approvedVoidContracts(request.contractIds()); }
         @PostMapping("/internal/domain/BilateralStateOperations/pendingResumes3")
         public List<Long> pendingResumes3(@RequestBody PendingResumes3Request request) { return operations.pendingResumes(request.contractId(), request.contractOnly(), request.lock()); }
         @PostMapping("/internal/domain/BilateralStateOperations/cancelApprovedVoids1")

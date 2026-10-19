@@ -147,6 +147,27 @@ class MysqlMembershipTest {
         assertThat(service.status(company(3)).used()).isEqualTo(1);
         assertThat(service.status(company(3)).reserved()).isZero();
     }
+
+    @Test void definitePreparationFailureReleasesExactlyOnceAndTheSameVersionCanRetry() {
+        quota(1); var first=reserve(1);
+        assertThat(service.status(company(3)).reserved()).isEqualTo(1);
+        service.releaseBeforeTaskCreation(first.id()); service.releaseBeforeTaskCreation(first.id());
+        assertThat(service.status(company(3)).reserved()).isZero();
+        assertThat(service.status(company(3)).remaining()).isEqualTo(1);
+        var retry=reserve(1); assertThat(retry.createAllowed()).isTrue();
+        service.confirm(retry.id(),new FadadaSigningGateway.CreatedTask("retried","file","doc"));
+        assertThat(service.status(company(3)).used()).isEqualTo(1);
+        assertThat(service.status(company(3)).reserved()).isZero();
+    }
+
+    @Test void preparationReleaseCannotEraseAnUncertainOrConfirmedCreation() {
+        quota(2); var uncertain=reserve(1); service.uncertain(uncertain.id());
+        assertThatThrownBy(()->service.releaseBeforeTaskCreation(uncertain.id())).isInstanceOf(IllegalStateException.class);
+        var confirmed=reserve(2); service.confirm(confirmed.id(),new FadadaSigningGateway.CreatedTask("confirmed","file","doc"));
+        assertThatThrownBy(()->service.releaseBeforeTaskCreation(confirmed.id())).isInstanceOf(IllegalStateException.class);
+        assertThat(service.status(company(3)).reserved()).isEqualTo(1);
+        assertThat(service.status(company(3)).used()).isEqualTo(1);
+    }
     @Test void independentWhitelistExpiryAndInvalidConfigAreHandledWithoutErasingPolicy() {
         configure("    trial: {enabled: false}\n    whitelist: [{company-id: '3', mode: UNLIMITED, valid-until: '2026-11-30 23:59:59'}]\n");
         assertThat(service.status(company(3)).unlimited()).isTrue();

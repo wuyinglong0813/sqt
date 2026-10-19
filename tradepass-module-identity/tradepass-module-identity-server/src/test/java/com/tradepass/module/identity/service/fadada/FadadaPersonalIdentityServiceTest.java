@@ -34,19 +34,123 @@ import static org.mockito.Mockito.when;
 
 class FadadaPersonalIdentityServiceTest {
     @Test
+    void verifiedIdentityCanRefreshRevokedConsentAndOpenANewAuthorization() {
+        var saved = prepareAuth("VERIFIED"); saved.setOpenUserId("open-user-8");
+        saved.setLastSyncAt(LocalDateTime.now().minusMinutes(1));
+        when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                "tradepass-user-8", "open-user-8", "unauthorized", "identified", "enable", List.of()));
+        when(gateway.createAuthUrl(any())).thenReturn(new FadadaUserGateway.AuthUrlResult("https://example.test/new-consent"));
+        assertThat(service.syncCurrent().status()).isEqualTo("IN_PROGRESS");
+        assertThat(service.createAuthUrl().authUrl()).isEqualTo("https://example.test/new-consent");
+        verify(gateway).getUser(any(), any());
+    }
+
+    @Test
+    void firstAuthorizationSuccessDeliveredAfterItsRevocationCannotRestoreVerification() {
+        var saved = prepareAuth("IN_PROGRESS"); saved.setOpenUserId("open-user-8");
+        long now = System.currentTimeMillis();
+        when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                "tradepass-user-8", "open-user-8", "unauthorized", "identified", "enable", List.of()));
+        var cancel = new ObjectMapper().createObjectNode().put("_verifiedEvent", "user-cancel-authorization")
+                .put("openUserId", "open-user-8").put("eventTime", String.valueOf(now - 1000));
+        assertThat(service.syncCallback("tradepass-user-8", cancel).status()).isEqualTo("IN_PROGRESS");
+        var obsolete = service.syncCallback("tradepass-user-8", successCallback()
+                .put("eventTime", String.valueOf(now - 2000)));
+        assertThat(obsolete.status()).isEqualTo("IN_PROGRESS");
+        assertThat(obsolete.callbackObsolete()).isTrue();
+        assertThat(saved.getIdentVerifiedAt()).isNull();
+        verifyNoInteractions(gateway);
+    }
+
+    @Test
+    void authenticatedRevocationIsRetainedWhenItsCurrentProviderQueryIsUnavailable() {
+        var saved = prepareAuth("VERIFIED"); saved.setOpenUserId("open-user-8");
+        when(gateway.getUser(any(), any())).thenThrow(new BusinessException("temporarily unavailable"));
+        var cancel = new ObjectMapper().createObjectNode().put("_verifiedEvent", "user-cancel-authorization")
+                .put("openUserId", "open-user-8").put("eventTime", String.valueOf(System.currentTimeMillis()));
+        assertThat(service.syncCallback("tradepass-user-8", cancel).status()).isEqualTo("IN_PROGRESS");
+        assertThat(saved.getBindingStatus()).isEqualTo("unauthorized");
+        assertThat(saved.getAuthScopes()).isEqualTo("[]");
+        assertThat(saved.getAuthorizationEventAt()).isNotNull();
+        verify(identityMapper).updateById(saved);
+    }
+
+    @Test
+    void aLateRevocationCannotReplaceANewerConfirmedAuthorizationEvent() {
+        var saved = prepareAuth("VERIFIED");
+        saved.setAuthorizationEventAt(LocalDateTime.now());
+        var cancel = new ObjectMapper().createObjectNode().put("_verifiedEvent", "user-cancel-authorization")
+                .put("eventTime", String.valueOf(System.currentTimeMillis() - 2000));
+        var obsolete = service.syncCallback("tradepass-user-8", cancel);
+        assertThat(obsolete.status()).isEqualTo("VERIFIED");
+        assertThat(obsolete.callbackObsolete()).isTrue();
+        verifyNoInteractions(gateway);
+    }
+
+    @Test
+    void sameTimeSuccessAndImmediateStaleReadsCannotUndoAuthenticatedRevocation() {
+        var saved = prepareAuth("VERIFIED"); saved.setOpenUserId("open-user-8");
+        long eventTime = System.currentTimeMillis();
+        var cancel = new ObjectMapper().createObjectNode().put("_verifiedEvent", "user-cancel-authorization")
+                .put("openUserId", "open-user-8").put("eventTime", String.valueOf(eventTime));
+        service.syncCallback("tradepass-user-8", cancel);
+        var obsolete = service.syncCallback("tradepass-user-8", successCallback()
+                .put("eventTime", String.valueOf(eventTime)));
+        assertThat(obsolete.status()).isEqualTo("IN_PROGRESS");
+        assertThat(obsolete.callbackObsolete()).isTrue();
+        assertThat(service.syncByClientUserId("tradepass-user-8").status()).isEqualTo("IN_PROGRESS");
+        assertThat(saved.getAuthorizationEventType()).isEqualTo("user-cancel-authorization");
+        verifyNoInteractions(gateway);
+        // Once the provider has had time to converge, queries recover even when the newer
+        // authorization callback was missed. Explicit current account+identity proof is required.
+        saved.setAuthorizationRevokedAt(LocalDateTime.now().minusMinutes(1));
+        when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                "tradepass-user-8", "open-user-8", "authorized", "identified", "enable", List.of("ident_info")));
+        when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
+                "open-user-8", "identified", "张三", "face", null, null));
+        assertThat(service.syncByClientUserId("tradepass-user-8").status()).isEqualTo("VERIFIED");
+        assertThat(service.syncCallback("tradepass-user-8", cancel).status()).isEqualTo("VERIFIED");
+    }
+
+    @Test
+    void newerSuccessfulAuthorizationCanRecoverImmediatelyAfterRevocation() {
+        var saved = prepareAuth("IN_PROGRESS"); saved.setOpenUserId("open-user-8");
+        long eventTime = System.currentTimeMillis();
+        var cancel = new ObjectMapper().createObjectNode().put("_verifiedEvent", "user-cancel-authorization")
+                .put("openUserId", "open-user-8").put("eventTime", String.valueOf(eventTime));
+        service.syncCallback("tradepass-user-8", cancel);
+        var current = service.syncCallback("tradepass-user-8", successCallback()
+                .put("eventTime", String.valueOf(eventTime + 1000)));
+        assertThat(current.status()).isEqualTo("VERIFIED");
+        assertThat(current.callbackObsolete()).isFalse();
+        assertThat(saved.getAuthorizationEventType()).isEqualTo("user-authorize");
+        verifyNoInteractions(gateway);
+    }
+
+    @Test
+    void missingPreviouslyVerifiedAccountCannotRemainVerifiedDuringScheduledReconciliation() {
+        var saved = prepareAuth("VERIFIED"); saved.setOpenUserId("open-user-8");
+        when(gateway.getUser(any(), any())).thenThrow(new FadadaUserQueryException("210022"));
+        assertThat(service.syncByClientUserId("tradepass-user-8").status()).isEqualTo("IN_PROGRESS");
+        assertThat(saved.getBindingStatus()).isEqualTo("unauthorized");
+        assertThat(saved.getAuthScopes()).isEqualTo("[]");
+    }
+
+    @Test
     void memberPersonComparisonRequiresFreshClientBindingAndTheSameIdentifiedPerson() {
         var saved = identity("VERIFIED"); saved.setOpenUserId("open-user-8");
         when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(saved);
         when(gateway.getUser("tradepass-user-8", null)).thenReturn(new FadadaUserGateway.UserAccountResult(
                 "tradepass-user-8", "open-user-8", "authorized", "identified", "enable", List.of("ident_info")));
         when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
-                "open-user-8", "identified", "张三", "face", null, null, "fdd-user-8"));
+                "open-user-8", "identified", "张三", "face", null, null, "fdd-user-8", "actual-fdd-user@example.test"));
         assertThat(service.verifiedFddId(8L)).isEqualTo("fdd-user-8");
         var person = service.verifiedPerson(8L);
         assertThat(person.openUserId()).isEqualTo("open-user-8");
         assertThat(person.fddId()).isEqualTo("fdd-user-8");
-        assertThat(person.toString()).doesNotContain("open-user-8", "fdd-user-8", "张三");
+        assertThat(person.toString()).doesNotContain("open-user-8", "fdd-user-8", "张三", "actual-fdd-user@example.test");
         assertThat(person.name()).isEqualTo("张三");
+        assertThat(person.accountName()).isEqualTo("actual-fdd-user@example.test");
         when(gateway.getUser("tradepass-user-8", null)).thenReturn(new FadadaUserGateway.UserAccountResult(
                 "other-client", "open-user-8", "authorized", "identified", "enable", List.of("ident_info")));
         assertThatThrownBy(() -> service.verifiedFddId(8L)).hasMessageContaining("授权关联尚未确认");
@@ -259,9 +363,10 @@ class FadadaPersonalIdentityServiceTest {
     }
 
     @Test
-    void treatsCompletedPersonalIdentityAsTerminalWhenUserRefreshes() {
+    void recentlyQueriedPersonalIdentityUsesABoundedCooldownWhenUserRefreshes() {
         FadadaUserIdentityDO verified = identity("VERIFIED");
         verified.setBindingStatus("authorized");
+        verified.setLastSyncAt(LocalDateTime.now());
         verified.setIdentStatus("identified");
         verified.setIdentVerifiedAt(LocalDateTime.of(2026, 8, 25, 13, 13, 35));
         when(identityMapper.selectOne(any(Wrapper.class))).thenReturn(verified);
@@ -338,11 +443,15 @@ class FadadaPersonalIdentityServiceTest {
 
     @Test
     void verifiedPersonalIdentityDoesNotOpenEnrollmentOrLoseVerification() {
-        prepareAuth("VERIFIED");
+        var saved = prepareAuth("VERIFIED");
+        when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
+                "tradepass-user-8", "open-user-8", "authorized", "identified", "enable", List.of("ident_info")));
+        when(gateway.getIdentityInfo("open-user-8")).thenReturn(new FadadaUserGateway.UserIdentityResult(
+                "open-user-8", "identified", "张三", "face", null, null));
         var result = service.createAuthUrl();
         assertThat(result.authUrl()).isNull();
         assertThat(result.identity().status()).isEqualTo("VERIFIED");
-        verifyNoInteractions(gateway);
+        org.mockito.Mockito.verify(gateway, org.mockito.Mockito.never()).createAuthUrl(any());
     }
 
     @Test
@@ -404,7 +513,8 @@ class FadadaPersonalIdentityServiceTest {
             when(gateway.getUser(any(), any())).thenReturn(new FadadaUserGateway.UserAccountResult(
                     "tradepass-user-8", "open-user-8", "unauthorized", "unidentified", "enable", List.of()));
             assertThat(service.syncCallback("tradepass-user-8", callback).status()).isEqualTo("IN_PROGRESS");
-            verify(gateway).getUser(any(), any());
+            if ("user-cancel-authorization".equals(change[1])) verifyNoInteractions(gateway);
+            else verify(gateway).getUser(any(), any());
         }
     }
 
@@ -449,8 +559,9 @@ class FadadaPersonalIdentityServiceTest {
         assertThat(service.syncCallback("tradepass-user-8", callback).status()).isEqualTo("VERIFIED");
         identity.setVerifiedName("后续资料");
         assertThat(service.syncCallback("tradepass-user-8", callback).verifiedName()).isEqualTo("后续资料");
+        assertThat(identity.getAuthorizationEventAt()).isNotNull();
         verifyNoInteractions(gateway);
-        verify(identityMapper).updateById(identity);
+        verify(identityMapper, org.mockito.Mockito.times(2)).updateById(identity);
     }
 
     private com.fasterxml.jackson.databind.node.ObjectNode successCallback() {
@@ -477,6 +588,7 @@ class FadadaPersonalIdentityServiceTest {
         identity.setUserId(8L);
         identity.setClientUserId("tradepass-user-8");
         identity.setLocalStatus(localStatus);
+        if ("VERIFIED".equals(localStatus)) identity.setLastSyncAt(LocalDateTime.now());
         identity.setBindingStatus("unauthorized");
         identity.setIdentStatus("unidentified");
         identity.setIdentProcessStatus("identifying");

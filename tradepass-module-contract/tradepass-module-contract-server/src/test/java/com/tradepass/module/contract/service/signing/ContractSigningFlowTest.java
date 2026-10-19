@@ -23,6 +23,8 @@ import com.tradepass.support.MybatisTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 
@@ -67,6 +69,122 @@ class ContractSigningFlowTest {
     }
 
     @AfterEach void clear() { AuthContext.clear(); }
+
+    @Test void approvedRequestStillRequiresElectronicAbolishAndExplainsTheNextStep() {
+        contract.setStatus("ACTIVE"); task.setProviderStatus("task_finished");
+        when(jdbc.queryForObject(contains("action_type = 'VOID'"), eq(Long.class), eq(12L))).thenReturn(1L);
+        assertThat(service.current(12L).statusText()).isEqualTo("待签署作废协议");
+        assertThat(service.current(12L).canSign()).isTrue();
+        assertThat(contract.getStatus()).isEqualTo("ACTIVE");
+        verifyNoInteractions(trade, gateway);
+    }
+
+    @Test void revokedOriginalSynchronizesTheLocalContractEvenWithoutAChildRecord() {
+        contract.setStatus("ACTIVE"); task.setProviderStatus("task_finished");
+        when(gateway.status("original")).thenReturn(new FadadaSigningGateway.TaskStatus("original", "revoked", List.of()));
+        var result = service.syncCurrent(12L);
+        verify(trade).voidAfterElectronicAbolish(12L, 1, 7L);
+        assertThat(contract.getStatus()).isEqualTo("VOIDED");
+        assertThat(result.statusText()).isEqualTo("已作废");
+        assertThat(result.canSign()).isFalse();
+        assertThat(task.getFinishedAt()).isNotNull();
+    }
+
+    @Test void parentCallbackRecoversAndCompletesItsPreviouslyUnrecordedChild() {
+        contract.setStatus("ACTIVE"); task.setArchivedAt(java.time.LocalDateTime.now());
+        when(gateway.status("original")).thenReturn(new FadadaSigningGateway.TaskStatus("original", "task_finished", List.of(), null, "child"));
+        when(gateway.status("child")).thenReturn(new FadadaSigningGateway.TaskStatus("child", "task_finished", List.of(), "original", null));
+        service.syncBySignTaskId("original");
+        assertThat(task.getAbolishedSignTaskId()).isEqualTo("child");
+        assertThat(task.getProviderStatus()).isEqualTo("revoked");
+        verify(trade).voidAfterElectronicAbolish(12L, 1, 7L);
+        verify(gateway, never()).abolish(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test void childCompletionCallbackVoidsTheCurrentContract() {
+        contract.setStatus("ACTIVE"); task.setAbolishedSignTaskId("child");
+        when(gateway.status("child")).thenReturn(new FadadaSigningGateway.TaskStatus("child", "task_finished", List.of(), "original", null));
+        service.syncBySignTaskId("child");
+        verify(trade).voidAfterElectronicAbolish(12L, 1, 7L);
+        assertThat(task.getProviderStatus()).isEqualTo("revoked");
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"task_terminated", "expired", "task_expired"})
+    void resumedContractDoesNotReattachItsRetiredStoppedChild(String status) {
+        resumedContractWithRetiredChild(status);
+        var result = service.syncCurrent(12L);
+        assertThat(contract.getStatus()).isEqualTo("ACTIVE");
+        assertThat(task.getAbolishedSignTaskId()).isNull();
+        assertThat(task.getProviderStatus()).isEqualTo("task_finished");
+        assertThat(task.getInitiatorSignStatus()).isEqualTo("signed");
+        assertThat(task.getCounterpartySignStatus()).isEqualTo("signed");
+        assertThat(result.abolishApproved()).isFalse();
+        assertThat(result.statusText()).isEqualTo("已签署并归档");
+        verifyNoInteractions(trade);
+        verify(gateway, never()).abolish(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"task_finished", "revoked"})
+    void retiredChildRealCompletionStillVoidsTheResumedContract(String status) {
+        resumedContractWithRetiredChild(status);
+        var result = service.syncCurrent(12L);
+        verify(trade).voidAfterElectronicAbolish(12L, 1, 7L);
+        assertThat(contract.getStatus()).isEqualTo("VOIDED");
+        assertThat(task.getAbolishedSignTaskId()).isNull();
+        assertThat(result.status()).isEqualTo("revoked");
+        assertThat(result.statusText()).isEqualTo("已作废");
+    }
+
+    @ParameterizedTest @ValueSource(strings = {"sign_progress", "sign_completed"})
+    void retiredChildUnexpectedRemoteProgressRequiresReviewInsteadOfReattaching(String status) {
+        resumedContractWithRetiredChild(status);
+        assertThatThrownBy(() -> service.syncCurrent(12L)).hasMessageContaining("需要核实处理");
+        assertThat(task.getAbolishedSignTaskId()).isNull();
+        assertThat(contract.getStatus()).isEqualTo("ACTIVE");
+        verifyNoInteractions(trade);
+        verify(tasks, never()).updateById(any(FadadaContractSignTaskDO.class));
+    }
+
+    @Test void alreadyRevokedOriginalCannotCreateAnotherAbolishTask() {
+        contract.setStatus("ACTIVE"); task.setProviderStatus("task_finished");
+        when(gateway.status("original")).thenReturn(new FadadaSigningGateway.TaskStatus("original", "revoked", List.of()));
+        assertThatThrownBy(() -> service.abolishUrl(12L, "双方同意作废")).hasMessageContaining("已完成作废");
+        assertThat(contract.getStatus()).isEqualTo("VOIDED");
+        assertThat(task.getProviderStatus()).isEqualTo("revoked");
+        verify(trade).voidAfterElectronicAbolish(12L, 1, 7L);
+        verify(tasks).updateById(task);
+        verify(intents, never()).begin(any());
+        verify(gateway, never()).abolish(anyString(), anyString(), anyString(), anyString());
+        verify(gateway, never()).actorUrl(anyString(), anyString(), anyString(), anyString());
+    }
+
+    private void resumedContractWithRetiredChild(String childStatus) {
+        contract.setStatus("ACTIVE"); task.setArchivedAt(java.time.LocalDateTime.now());
+        task.setProviderStatus("task_finished");
+        task.setInitiatorSignStatus("signed"); task.setCounterpartySignStatus("signed");
+        when(gateway.status("original")).thenReturn(new FadadaSigningGateway.TaskStatus("original", "task_finished", List.of(), null, "retired"));
+        when(gateway.status("retired")).thenReturn(new FadadaSigningGateway.TaskStatus("retired", childStatus, List.of(), "original", null));
+        when(jdbc.queryForList(contains("SELECT sign_task_id FROM fadada_cancelled_abolish_task"),
+                eq(String.class), eq("retired"), eq(12L), eq(1), eq("original"))).thenReturn(List.of("retired"));
+    }
+
+    @Test void signedButUnfinishedAbolishDoesNotVoidPrematurely() {
+        contract.setStatus("ACTIVE"); task.setAbolishedSignTaskId("child");
+        when(gateway.status("child")).thenReturn(new FadadaSigningGateway.TaskStatus("child", "sign_completed", List.of(
+                new FadadaSigningGateway.ActorStatus("supplier", "signed"),
+                new FadadaSigningGateway.ActorStatus("buyer", "signed")), "original", null));
+        service.syncCurrent(12L);
+        assertThat(task.getProviderStatus()).isEqualTo("ABOLISH_sign_completed");
+        assertThat(contract.getStatus()).isEqualTo("ACTIVE");
+        verifyNoInteractions(trade);
+    }
+
+    @Test void unrelatedCompletedChildCannotVoidTheContract() {
+        contract.setStatus("ACTIVE"); task.setAbolishedSignTaskId("child");
+        when(gateway.status("child")).thenReturn(new FadadaSigningGateway.TaskStatus("child", "task_finished", List.of(), "unrelated", null));
+        assertThatThrownBy(() -> service.syncCurrent(12L)).hasMessageContaining("对应关系");
+        verifyNoInteractions(trade);
+    }
 
     @Test void invalidAbolishReasonDoesNotOpenAnUncertainCreationIntent() {
         contract.setStatus("ACTIVE");
@@ -197,8 +315,8 @@ class ContractSigningFlowTest {
         contract.setStatus("ACTIVE");
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(null);
         when(jdbc.query(contains("fadada_cancelled_abolish_task"), any(RowMapper.class), eq("retired")))
-                .thenReturn(List.of(new long[]{12L, 1L}));
-        when(gateway.status("retired")).thenReturn(new FadadaSigningGateway.TaskStatus("retired", "task_finished", List.of()));
+                .thenReturn(List.of(new FadadaContractSigningServiceImpl.RetiredAbolishTask(12L, 1, "original")));
+        when(gateway.status("retired")).thenReturn(new FadadaSigningGateway.TaskStatus("retired", "task_finished", List.of(), "original", null));
         service.syncBySignTaskId("retired");
         verify(trade).voidAfterElectronicAbolish(12L, 1, 7L);
     }
@@ -211,11 +329,23 @@ class ContractSigningFlowTest {
         stale.setSignTaskId("original"); stale.setAbolishedSignTaskId("retired");
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(stale, task);
         when(jdbc.query(contains("fadada_cancelled_abolish_task"), any(RowMapper.class), eq("retired")))
-                .thenReturn(List.of(new long[]{12L, 1L}));
-        when(gateway.status("retired")).thenReturn(new FadadaSigningGateway.TaskStatus("retired", "task_finished", List.of()));
+                .thenReturn(List.of(new FadadaContractSigningServiceImpl.RetiredAbolishTask(12L, 1, "original")));
+        when(gateway.status("retired")).thenReturn(new FadadaSigningGateway.TaskStatus("retired", "task_finished", List.of(), "original", null));
         service.syncBySignTaskId("retired");
         verify(gateway).status("retired");
         verify(gateway, never()).status("original");
         verify(trade).voidAfterElectronicAbolish(12L, 1, 7L);
+    }
+
+    @Test @SuppressWarnings("unchecked")
+    void retiredChildMustMatchBothItsOwnIdAndItsRecordedParentBeforeVoiding() {
+        contract.setStatus("ACTIVE"); when(tasks.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(jdbc.query(contains("fadada_cancelled_abolish_task"), any(RowMapper.class), eq("retired")))
+                .thenReturn(List.of(new FadadaContractSigningServiceImpl.RetiredAbolishTask(12L, 1, "original")));
+        when(gateway.status("retired")).thenReturn(new FadadaSigningGateway.TaskStatus("other-child", "task_finished", List.of(), "original", null));
+        assertThatThrownBy(() -> service.syncBySignTaskId("retired")).hasMessageContaining("无法确认");
+        when(gateway.status("retired")).thenReturn(new FadadaSigningGateway.TaskStatus("retired", "task_finished", List.of(), "other-parent", null));
+        assertThatThrownBy(() -> service.syncBySignTaskId("retired")).hasMessageContaining("对应关系");
+        verify(trade, never()).voidAfterElectronicAbolish(anyLong(), anyInt(), anyLong());
     }
 }

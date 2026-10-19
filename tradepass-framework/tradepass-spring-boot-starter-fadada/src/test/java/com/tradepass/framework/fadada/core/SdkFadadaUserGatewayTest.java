@@ -10,8 +10,25 @@ class SdkFadadaUserGatewayTest {
     @Test
     void identityDiagnosticStringsRedactSubjectAndName() {
         var result = new FadadaUserGateway.UserIdentityResult(
-                "open-user-8", "identified", "张三", "face", null, null, "fdd-user-8");
-        assertThat(result.toString()).doesNotContain("open-user-8", "fdd-user-8", "张三").contains("REDACTED");
+                "open-user-8", "identified", "张三", "face", null, null, "fdd-user-8", "real-fdd-account@example.test");
+        assertThat(result.toString()).doesNotContain("open-user-8", "fdd-user-8", "张三", "real-fdd-account@example.test").contains("REDACTED");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void identityQueryRetainsTheActualProviderAccountForMemberSynchronization() throws Exception {
+        var properties = new FadadaProperties(); properties.setAppId("test");
+        properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var gateway = new SdkFadadaUserGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.UserClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "userClient", client);
+        var detail = new com.fasc.open.api.v5_1.res.user.UserIdentityInfoRes();
+        detail.setOpenUserId("open-8"); detail.setIdentStatus("identified");
+        detail.setAccountName("real-fdd-account@example.test"); detail.setFddId("fdd-8");
+        com.fasc.open.api.bean.base.BaseRes<com.fasc.open.api.v5_1.res.user.UserIdentityInfoRes> response = org.mockito.Mockito.mock(com.fasc.open.api.bean.base.BaseRes.class);
+        org.mockito.Mockito.when(response.isSuccess()).thenReturn(true); org.mockito.Mockito.when(response.getData()).thenReturn(detail);
+        org.mockito.Mockito.when(client.getIdentityInfo(org.mockito.ArgumentMatchers.any())).thenReturn(response);
+        assertThat(gateway.getIdentityInfo("open-8").accountName()).isEqualTo("real-fdd-account@example.test");
     }
 
     @Test

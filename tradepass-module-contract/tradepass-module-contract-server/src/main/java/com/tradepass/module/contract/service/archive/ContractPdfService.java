@@ -34,5 +34,9 @@ import java.util.Map;
 
 public interface ContractPdfService {
     byte[] generate(ContractRespDTO contract);
+    SigningDocument generateForSigning(ContractRespDTO contract);
     String fileName(ContractRespDTO contract);
+    record SigningDocument(byte[] pdf,
+            com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition supplierPosition,
+            com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition buyerPosition) {}
 }

@@ -8,6 +8,146 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.*;
 
 class SdkFadadaCompanyGatewayTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"13800138000", "actual-fdd-user@example.test"})
+    void automaticMemberCreationUsesOneVerifiedAccountWithoutAdministrativeRolesOrMerging(String account) throws Exception {
+        var properties = new FadadaProperties(); properties.setAppId("test");
+        properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.OrgClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "orgClient", client);
+        org.mockito.Mockito.when(client.createCorpMember(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+            com.fasc.open.api.v5_1.req.org.CreateCorpMemberReq request = call.getArgument(0);
+            assertThat(request.getOpenCorpId()).isEqualTo("corp-3");
+            assertThat(request.getNotifyActiveByEmail()).isFalse();
+            assertThat(request.getMergeMemberInfo()).isNull();
+            assertThat(request.getRedirectUrl()).isNull();
+            assertThat(request.getEmployeeInfos()).hasSize(1);
+            var value = request.getEmployeeInfos().get(0);
+            assertThat(value.getInternalIdentifier()).isEqualTo("tradepass-user-7");
+            assertThat(value.getMemberName()).isEqualTo("武英龙");
+            assertThat(value.getRoleType()).isNull();
+            assertThat(value.getMemberDeptIds()).isNull();
+            assertThat(value.getAccountNames()).isNull();
+            assertThat(value.getMemberEmail()).isEqualTo(account.contains("@") ? account : null);
+            assertThat(value.getMemberMobile()).isEqualTo(account.contains("@") ? null : account);
+            var created = new com.fasc.open.api.v5_1.res.org.SimpleEmployeeInfo();
+            created.setMemberId(88L); created.setInternalIdentifier("tradepass-user-7"); created.setMemberStatus("activated");
+            return successful(java.util.List.of(created));
+        });
+        var result = gateway.createMember(new FadadaCompanyGateway.MemberCreateCommand("corp-3", "tradepass-user-7", "武英龙", account));
+        assertThat(result.memberId()).isEqualTo(88L);
+        assertThat(result.internalIdentifier()).isEqualTo("tradepass-user-7");
+    }
+
+    @Test
+    void deterministicMemberRecoveryFindsTheSameAssociationWithoutCreatingAnotherMember() throws Exception {
+        var properties = new FadadaProperties(); properties.setAppId("test");
+        properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.OrgClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "orgClient", client);
+        var value = new com.fasc.open.api.v5_1.res.org.EmployeeInfo();
+        value.setMemberId(88L); value.setInternalIdentifier("tradepass-user-7");
+        var page = new com.fasc.open.api.v5_1.res.org.GetMemberListRes(); page.setListPageNo(1);
+        page.setListPageCount(1); page.setTotalCount(1); page.setCountInPage(1); page.setEmployeeInfos(java.util.List.of(value));
+        org.mockito.Mockito.when(client.getMemberList(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> successful(page));
+        var detail = new com.fasc.open.api.v5_1.res.org.GetCorpMemberDetailRes();
+        detail.setMemberId(88L); detail.setInternalIdentifier("tradepass-user-7"); detail.setMemberStatus("activated");
+        detail.setFddId("fdd-user-7");
+        org.mockito.Mockito.when(client.getCorpMemberDetail(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> successful(detail));
+        assertThat(gateway.findMemberByInternalIdentifier("corp-3", "tradepass-user-7").memberId()).isEqualTo(88L);
+        assertThat(gateway.findMemberByInternalIdentifier("corp-3", "tradepass-user-9")).isNull();
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.never()).createCorpMember(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void memberActivationReturnsOnlyTheSameMembersH5EmbedInvitation() throws Exception {
+        var properties = new FadadaProperties(); properties.setAppId("test");
+        properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.OrgClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "orgClient", client);
+        var invitation = new com.fasc.open.api.v5_1.res.org.SimpleEmployeeInfo();
+        invitation.setMemberId(88L); invitation.setMemberActiveUrl("https://example.test/short-link");
+        invitation.setMemberActiveEmbedUrl("https://example.test/h5-embed");
+        org.mockito.Mockito.when(client.getCorpMemberActiveUrl(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+            com.fasc.open.api.v5_1.req.org.GetCorpMemberActiveUrlReq request = call.getArgument(0);
+            assertThat(request.getOpenCorpId()).isEqualTo("corp-3"); assertThat(request.getMemberIds()).containsExactly(88L);
+            assertThat(request.getRedirectUrl()).isNull(); return successful(java.util.List.of(invitation));
+        });
+        assertThat(gateway.createMemberActivationUrl("corp-3", 88L)).isEqualTo("https://example.test/h5-embed");
+        invitation.setMemberId(99L);
+        assertThatThrownBy(() -> gateway.createMemberActivationUrl("corp-3", 88L)).hasMessageContaining("本人加入企业地址");
+    }
+
+    @Test
+    void memberCandidatesUseTheVerifiedNameFilterAndReadEveryDocumentedPage() throws Exception {
+        var properties = new FadadaProperties(); properties.setAppId("test");
+        properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.OrgClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "orgClient", client);
+        org.mockito.Mockito.when(client.getMemberList(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+            com.fasc.open.api.v5_1.req.org.GetMemberListReq request = call.getArgument(0);
+            assertThat(request.getOpenCorpId()).isEqualTo("corp-3");
+            assertThat(request.getOwnerId()).isNull();
+            assertThat(request.getListFilter().getMemberName()).isEqualTo("武英龙");
+            assertThat(request.getListFilter().getRoleType()).isNull();
+            assertThat(request.getListFilter().getMemberMobile()).isNull();
+            assertThat(request.getListPageSize()).isEqualTo(100);
+            var value = new com.fasc.open.api.v5_1.res.org.EmployeeInfo();
+            value.setMemberId(80L + request.getListPageNo());
+            var page = new com.fasc.open.api.v5_1.res.org.GetMemberListRes();
+            page.setEmployeeInfos(java.util.List.of(value)); page.setListPageNo(request.getListPageNo());
+            page.setCountInPage(1); page.setTotalCount(2); page.setListPageCount(2);
+            return successful(page);
+        });
+        assertThat(gateway.listMemberIds("corp-3", "武英龙")).containsExactly(81L, 82L);
+    }
+
+    @Test
+    void missingOrConflictingMemberPagesCannotBeTreatedAsACompleteMembershipResult() throws Exception {
+        for (String malformed : java.util.List.of("empty-page", "duplicate-member", "changed-total")) {
+            var properties = new FadadaProperties(); properties.setAppId("test");
+            properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+            var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+            var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.OrgClient.class);
+            org.springframework.test.util.ReflectionTestUtils.setField(gateway, "orgClient", client);
+            org.mockito.Mockito.when(client.getMemberList(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+                com.fasc.open.api.v5_1.req.org.GetMemberListReq request = call.getArgument(0);
+                var value = new com.fasc.open.api.v5_1.res.org.EmployeeInfo(); value.setMemberId(88L);
+                var page = new com.fasc.open.api.v5_1.res.org.GetMemberListRes();
+                page.setEmployeeInfos("empty-page".equals(malformed) ? java.util.List.of() : java.util.List.of(value));
+                page.setListPageNo(request.getListPageNo()); page.setCountInPage(page.getEmployeeInfos().size());
+                page.setTotalCount("changed-total".equals(malformed) ? request.getListPageNo() : 2); page.setListPageCount(2);
+                return successful(page);
+            });
+            assertThatThrownBy(() -> gateway.listMemberIds("corp-3", "武英龙"))
+                    .isInstanceOf(BusinessException.class).hasMessageContaining("成员列表");
+        }
+    }
+
+    @Test
+    void organizationManagementUsesTheOfficialPcMemberModuleAndCurrentLoginMapping() throws Exception {
+        var properties = new FadadaProperties(); properties.setAppId("test");
+        properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.OrgClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "orgClient", client);
+        org.mockito.Mockito.when(client.getCorpOrgManageUrl(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+            com.fasc.open.api.v5_1.req.org.GetCorpOrgManageUrlReq request = call.getArgument(0);
+            assertThat(request.getOpenCorpId()).isEqualTo("corp-3");
+            assertThat(request.getClientUserId()).isEqualTo("tradepass-user-7");
+            assertThat(request.getModules()).containsExactly("member");
+            assertThat(request.getRedirectUrl()).isNull();
+            var value = new com.fasc.open.api.v5_1.res.org.GetCorpOrgManageUrlRes();
+            value.setResourceUrl("https://example.test/organization"); return successful(value);
+        });
+        assertThat(gateway.createOrganizationManageUrl("corp-3", "tradepass-user-7"))
+                .isEqualTo("https://example.test/organization");
+    }
+
     @Test
     void readsEverySealPageAndOnlyReturnsThePrimaryCompanysSeals() throws Exception {
         var properties = new FadadaProperties(); properties.setAppId("test");
@@ -61,7 +201,7 @@ class SdkFadadaCompanyGatewayTest {
             assertThat(request.getInternalIdentifier()).isNull(); return successful(member);
         });
         assertThat(gateway.getMember("corp-3", 88L)).isEqualTo(new FadadaCompanyGateway.CompanyMember(
-                88L, "activated", java.util.List.of("super_admin"), "fdd-user-7"));
+                88L, "activated", java.util.List.of("super_admin"), "fdd-user-7", null, java.util.List.of("13800138000")));
     }
 
     @SuppressWarnings("unchecked")

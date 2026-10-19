@@ -85,6 +85,59 @@ class FadadaSigningVersionTest {
         verifyNoInteractions(gateway, archive, trade);
     }
 
+    @Test void unfinishedCompletionStaysRetryableAndNeverClaimsAnArchiveExists() {
+        when(contracts.selectById(12L)).thenReturn(contract);
+        task.setProviderStatus("task_finished");
+        assertThatThrownBy(() -> service.requireCallbackSettled("v2", "sign-task-finished"))
+                .hasMessageContaining("后台继续核对");
+        assertThat(service.current(12L).statusText()).isEqualTo("签署结果确认中");
+        task.setArchivedAt(LocalDateTime.now());
+        assertThatCode(() -> service.requireCallbackSettled("v2", "sign-task-finished")).doesNotThrowAnyException();
+    }
+
+    @Test void callbackForPreviousVersionDoesNotKeepRetryingAgainstTheNewContract() {
+        when(contracts.selectById(12L)).thenReturn(contract); task.setVersionNo(1);
+        assertThatCode(() -> service.requireCallbackSettled("v1", "sign-task-finished")).doesNotThrowAnyException();
+    }
+
+    @Test void currentRemoteTerminationSupersedesAnOlderCompletionNotification() {
+        when(contracts.selectById(12L)).thenReturn(contract); task.setProviderStatus("task_terminated");
+        assertThatCode(() -> service.requireCallbackSettled("v2", "sign-task-finished")).doesNotThrowAnyException();
+        verifyNoInteractions(archive, trade);
+    }
+
+    @Test void grantForExistingTaskUsesItsActualPartySealEvenWhenTheDefaultHasChanged() {
+        when(contracts.selectById(12L)).thenReturn(contract);
+        when(gateway.actorSealIds("v2", "supplier")).thenReturn(List.of("801"));
+        when(companies.memberSealGrantUrl(3L, 9L, "801")).thenReturn(
+                new com.tradepass.framework.common.pojo.ServiceUrlPayload("https://example.test/grant", "sealGrant", "AUTHORIZATION_REQUIRED"));
+        assertThat(service.memberSealGrantUrl(12L, 9L).url()).isEqualTo("https://example.test/grant");
+        verify(companies).memberSealGrantUrl(3L, 9L, "801");
+        verify(companies, never()).enabledSealId(anyLong());
+        verify(companies, never()).memberSealGrantUrl(anyLong(), anyLong(), isNull());
+    }
+
+    @Test void unknownTaskSealDoesNotSilentlyGrantTheCurrentDefault() {
+        when(contracts.selectById(12L)).thenReturn(contract);
+        when(gateway.actorSealIds("v2", "supplier")).thenReturn(List.of());
+        assertThatThrownBy(() -> service.memberSealGrantUrl(12L, 9L)).hasMessageContaining("具体印章");
+        verify(companies, never()).memberSealGrantUrl(anyLong(), anyLong(), any());
+    }
+
+    @Test void thirdPartyCannotLookUpAnotherContractsSeals() {
+        when(contracts.selectById(12L)).thenReturn(contract); AuthContext.set(7L, 999L);
+        assertThatThrownBy(() -> service.memberSealGrantUrl(12L, 9L)).hasMessageContaining("合同不存在");
+        verify(gateway, never()).actorSealIds(anyString(), anyString());
+    }
+
+    @Test void endedTaskIsNotQuotedAsSignableAndTheRecipientSeesTheTermination() {
+        when(contracts.selectById(12L)).thenReturn(contract);
+        task.setProviderStatus("expired"); AuthContext.set(8L, 4L);
+        assertThat(service.signingQuote(12L)).containsEntry("canSign", false);
+        assertThat(service.current(12L).statusText()).isEqualTo("签署已过期");
+        assertThat(service.current(12L).canSign()).isFalse();
+    }
+
     @Test void callbackBeforeTaskCommitSignalsRetryInsteadOfDiscardingIt() {
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(null);
         assertThatThrownBy(() -> service.syncBySignTaskId("v2")).hasMessageContaining("尚未就绪");

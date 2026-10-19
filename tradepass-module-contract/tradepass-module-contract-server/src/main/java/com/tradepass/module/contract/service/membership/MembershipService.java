@@ -168,6 +168,30 @@ public class MembershipService {
         });
     }
 
+    /** Used only when no create-sign-task request was issued by the gateway. */
+    public void releaseBeforeTaskCreation(long id) {
+        tx.executeWithoutResult(t -> {
+            policies.current(true);
+            var rows = jdbc.queryForList("SELECT scope_key,subject_key,status,sign_task_id FROM membership_signing_usage WHERE id=? FOR UPDATE", id);
+            if (rows.isEmpty()) throw new IllegalStateException("签署预占记录不存在");
+            var row = rows.get(0);
+            if ("RELEASED".equals(row.get("status"))) return;
+            if (!"RESERVED".equals(row.get("status")) || row.get("sign_task_id") != null) {
+                throw new IllegalStateException("已发起或结果待核实的签署预占不能按文件准备失败释放");
+            }
+            int changed = jdbc.update("""
+                    UPDATE membership_quota_pool SET reserved_amount=reserved_amount-1
+                    WHERE scope_key=? AND subject_key=? AND reserved_amount>0
+                    """, row.get("scope_key"), row.get("subject_key"));
+            if (changed != 1) throw new IllegalStateException("签署额度预占记录不一致");
+            int released = jdbc.update("""
+                    UPDATE membership_signing_usage SET status='RELEASED',last_error='创建签署任务前文件准备失败，已释放预占'
+                    WHERE id=? AND status='RESERVED' AND sign_task_id IS NULL
+                    """, id);
+            if (released != 1) throw new IllegalStateException("签署预占状态已变化");
+        });
+    }
+
     public Reservation existing(long contractId, int version) {
         return jdbc.query("""
                 SELECT id,status,sign_task_id,source_file_id,doc_id,contract_snapshot,source_sha256

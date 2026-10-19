@@ -27,6 +27,11 @@ public class FadadaUserIdentityDO {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
+    private LocalDateTime authorizationEventAt;
+    private String authorizationEventType;
+    private LocalDateTime authorizationRevokedAt;
+    private LocalDateTime lastReconciledAt;
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public Long getUserId() { return userId; }
@@ -61,4 +66,12 @@ public class FadadaUserIdentityDO {
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    public LocalDateTime getAuthorizationEventAt() { return authorizationEventAt; }
+    public void setAuthorizationEventAt(LocalDateTime value) { this.authorizationEventAt = value; }
+    public String getAuthorizationEventType() { return authorizationEventType; }
+    public void setAuthorizationEventType(String value) { this.authorizationEventType = value; }
+    public LocalDateTime getAuthorizationRevokedAt() { return authorizationRevokedAt; }
+    public void setAuthorizationRevokedAt(LocalDateTime value) { this.authorizationRevokedAt = value; }
+    public LocalDateTime getLastReconciledAt() { return lastReconciledAt; }
+    public void setLastReconciledAt(LocalDateTime value) { this.lastReconciledAt = value; }
 }

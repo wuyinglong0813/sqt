@@ -33,6 +33,14 @@ public class FadadaCorpIdentityDO {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
+    private Long authorizationUserId;
+    private LocalDateTime authorizationSubmittedAt;
+    private LocalDateTime authorizationConfirmedAt;
+    private LocalDateTime authorizationEventAt;
+    private String authorizationEventType;
+    private LocalDateTime authorizationRevokedAt;
+    private LocalDateTime lastReconciledAt;
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public Long getCompanyId() { return companyId; }
@@ -79,4 +87,18 @@ public class FadadaCorpIdentityDO {
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    public Long getAuthorizationUserId() { return authorizationUserId; }
+    public void setAuthorizationUserId(Long value) { this.authorizationUserId = value; }
+    public LocalDateTime getAuthorizationSubmittedAt() { return authorizationSubmittedAt; }
+    public void setAuthorizationSubmittedAt(LocalDateTime value) { this.authorizationSubmittedAt = value; }
+    public LocalDateTime getAuthorizationConfirmedAt() { return authorizationConfirmedAt; }
+    public void setAuthorizationConfirmedAt(LocalDateTime value) { this.authorizationConfirmedAt = value; }
+    public LocalDateTime getAuthorizationEventAt() { return authorizationEventAt; }
+    public void setAuthorizationEventAt(LocalDateTime value) { this.authorizationEventAt = value; }
+    public String getAuthorizationEventType() { return authorizationEventType; }
+    public void setAuthorizationEventType(String value) { this.authorizationEventType = value; }
+    public LocalDateTime getAuthorizationRevokedAt() { return authorizationRevokedAt; }
+    public void setAuthorizationRevokedAt(LocalDateTime value) { this.authorizationRevokedAt = value; }
+    public LocalDateTime getLastReconciledAt() { return lastReconciledAt; }
+    public void setLastReconciledAt(LocalDateTime value) { this.lastReconciledAt = value; }
 }

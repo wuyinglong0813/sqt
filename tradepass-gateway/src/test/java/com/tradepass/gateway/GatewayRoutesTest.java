@@ -48,7 +48,9 @@ class GatewayRoutesTest {
                     count++;
                 }
             }
-            assertEquals(180, count, "Update the original HTTP contract deliberately when adding APIs");
+            // Added electronic-sign member sync, organization management, member seal grant,
+            // and the contract-specific seal grant. Every mapping above must retain its owner.
+            assertEquals(184, count, "Update the original HTTP contract deliberately when adding APIs");
             assertNull(owner(routes, "/internal/identity/resolve"));
             assertNull(owner(routes, "/internal/storage/put"));
             assertNull(owner(routes, "/actuator/prometheus"));

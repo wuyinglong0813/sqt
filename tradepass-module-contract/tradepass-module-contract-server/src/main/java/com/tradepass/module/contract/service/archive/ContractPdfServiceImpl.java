@@ -52,6 +52,20 @@ public class ContractPdfServiceImpl implements ContractPdfService {
     }
 
     public byte[] generate(ContractRespDTO contract) {
+        return render(contract, null);
+    }
+
+    public SigningDocument generateForSigning(ContractRespDTO contract) {
+        Map<String, com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition> positions = new LinkedHashMap<>();
+        byte[] pdf = render(contract, positions);
+        if (positions.size() != 2 || !positions.containsKey("supplier") || !positions.containsKey("buyer")) {
+            throw new BusinessException("合同 PDF 签章位置未能确认，请稍后重试");
+        }
+        return new SigningDocument(pdf, positions.get("supplier"), positions.get("buyer"));
+    }
+
+    private byte[] render(ContractRespDTO contract,
+            Map<String, com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition> positions) {
         ContractContent content = parseContent(contract);
         CompanyRespDTO initiator = selectCompany(contract.companyId());
         CompanyRespDTO counterparty = selectCompany(contract.counterpartyCompanyId());
@@ -77,7 +91,7 @@ public class ContractPdfServiceImpl implements ContractPdfService {
             addProducts(document, contract, content.table(), headingFont, tableFont, bodyFont);
             addFees(document, contract, content.fees(), headingFont, tableFont, bodyFont);
             addClauses(document, content.clauses(), contract.terms(), headingFont, bodyFont);
-            addSignatureTable(document, parties, signatureTitleFont, tableFont);
+            addSignatureTable(document, parties, signatureTitleFont, tableFont, writer, positions);
 
             document.close();
             return output.toByteArray();
@@ -146,8 +160,7 @@ public class ContractPdfServiceImpl implements ContractPdfService {
 
     private void addProducts(Document document, ContractRespDTO contract, ProductTable source,
                              Font headingFont, Font tableFont, Font bodyFont) throws DocumentException {
-        Paragraph heading = new Paragraph(
-                "一、产品名称、商标、规格、厂家、数量、金额、供货时间及数量", headingFont);
+        Paragraph heading = new Paragraph(stripNumberPrefix(safe(source.title(), "商品明细")), headingFont);
         heading.setSpacingAfter(3);
         document.add(heading);
 
@@ -210,9 +223,8 @@ public class ContractPdfServiceImpl implements ContractPdfService {
         if (actual.isEmpty() && rawTerms != null && !rawTerms.isBlank() && !looksLikeJson(rawTerms)) {
             actual = List.of(new Clause("合同条款", rawTerms));
         }
-        actual = mergeStandardClauses(actual);
-
-        int sectionNumber = 2;
+        // 合同快照已包含双方确认的完整条款，生成签署文件时不得再补入或重排默认条款。
+        int sectionNumber = 1;
         for (Clause clause : actual) {
             String prefix = chineseNumber(sectionNumber++) + "、";
             String title = stripNumberPrefix(safe(clause.title(), "合同条款"));
@@ -260,7 +272,8 @@ public class ContractPdfServiceImpl implements ContractPdfService {
     }
 
     private void addSignatureTable(Document document, PartyPair parties,
-                                   Font headingFont, Font tableFont) throws DocumentException {
+                                   Font headingFont, Font tableFont, PdfWriter writer,
+            Map<String, com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition> positions) throws DocumentException {
         PdfPTable table = new PdfPTable(2);
         table.setWidthPercentage(100);
         table.setWidths(new float[]{50, 50});
@@ -277,42 +290,32 @@ public class ContractPdfServiceImpl implements ContractPdfService {
             table.addCell(tableCell(label + "：" + buyer.get(label),
                     tableFont, Element.ALIGN_LEFT, Color.WHITE, 17));
         }
-        table.addCell(tableCell("供方盖章", tableFont, Element.ALIGN_CENTER, Color.WHITE, 88));
-        table.addCell(tableCell("需方盖章", tableFont, Element.ALIGN_CENTER, Color.WHITE, 88));
+        table.addCell(signatureCell("供方盖章", "supplier", tableFont, writer, document, positions));
+        table.addCell(signatureCell("需方盖章", "buyer", tableFont, writer, document, positions));
         document.add(table);
     }
 
-    private List<Clause> defaultClauses() {
-        return List.of(
-                new Clause("质量要求、技术标准", "（未约定）"),
-                new Clause("交货时间、地点、方式", "（未约定）"),
-                new Clause("运输方式及费用承担", "（未约定）"),
-                new Clause("包装标准及费用", "（未约定）"),
-                new Clause("验收标准、方法", "（未约定）"),
-                new Clause("结算方式及期限", "（未约定）"),
-                new Clause("违约责任", "（未约定）"),
-                new Clause("合同生效与变更", "（未约定）"),
-                new Clause("合同争议解决方式", "（未约定）"),
-                new Clause("其他约定事项", "（未约定）"));
+    private PdfPCell signatureCell(String label, String actorId, Font font, PdfWriter writer, Document document,
+            Map<String, com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition> positions) {
+        PdfPCell cell = tableCell(label, font, Element.ALIGN_CENTER, Color.WHITE, 88);
+        if (positions != null) cell.setCellEvent((renderedCell, rectangle, canvases) -> {
+            // OpenPDF uses 72 points/inch and a bottom-left origin. The provider
+            // requires 96 pixels/inch and the center relative to the page's top-left.
+            var position = new com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition(
+                    writer.getPageNumber(), pixels(rectangle.getLeft() + rectangle.getWidth() / 2),
+                    pixels(document.getPageSize().getHeight() - rectangle.getBottom() - rectangle.getHeight() / 2));
+            position.validate();
+            if (positions.putIfAbsent(actorId, position) != null) {
+                throw new BusinessException("合同 PDF 签章区域重复，请检查合同内容");
+            }
+        });
+        return cell;
     }
 
-    private List<Clause> mergeStandardClauses(List<Clause> clauses) {
-        List<Clause> remaining = new ArrayList<>(clauses == null ? List.of() : clauses);
-        List<Clause> merged = new ArrayList<>();
-        for (Clause standard : defaultClauses()) {
-            int match = -1;
-            String standardTitle = stripNumberPrefix(standard.title());
-            for (int index = 0; index < remaining.size(); index++) {
-                String candidateTitle = stripNumberPrefix(safe(remaining.get(index).title(), ""));
-                if (candidateTitle.equals(standardTitle)) {
-                    match = index;
-                    break;
-                }
-            }
-            merged.add(match >= 0 ? remaining.remove(match) : standard);
-        }
-        merged.addAll(remaining);
-        return merged;
+    private String pixels(float points) {
+        return java.math.BigDecimal.valueOf(points).multiply(java.math.BigDecimal.valueOf(4))
+                .divide(java.math.BigDecimal.valueOf(3), 3, java.math.RoundingMode.HALF_UP)
+                .stripTrailingZeros().toPlainString();
     }
 
     private ContractContent parseContent(ContractRespDTO contract) {
@@ -387,6 +390,7 @@ public class ContractPdfServiceImpl implements ContractPdfService {
         }
         JsonNode summary = section.path("summary");
         return new ProductTable(
+                text(section.path("title"), "商品明细"),
                 columns,
                 rows,
                 text(summary.path("totalAmount"), ""),
@@ -554,7 +558,7 @@ public class ContractPdfServiceImpl implements ContractPdfService {
     }
 
     private String stripNumberPrefix(String value) {
-        return value.replaceFirst("^[一二三四五六七八九十百零]+、\\s*", "");
+        return value.replaceFirst("^\\s*(?:第[一二三四五六七八九十百零0-9]+条[、.．:：]?\\s*|[一二三四五六七八九十百零0-9]+[、.．)）]\\s*)", "");
     }
 
     private boolean looksLikeJson(String value) {
@@ -638,13 +642,14 @@ public class ContractPdfServiceImpl implements ContractPdfService {
     }
 
     private record ProductTable(
+            String title,
             List<String> columns,
             List<List<String>> rows,
             String totalAmount,
             String totalAmountCn
     ) {
         private static ProductTable empty() {
-            return new ProductTable(List.of(), List.of(), "", "");
+            return new ProductTable("商品明细", List.of(), List.of(), "", "");
         }
     }
 

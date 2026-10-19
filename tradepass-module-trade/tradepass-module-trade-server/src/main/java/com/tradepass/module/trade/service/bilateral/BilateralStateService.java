@@ -9,6 +9,7 @@ import java.util.List;
 
 public interface BilateralStateService {
     List<Long> approvedVoids(Long contractId, boolean lock);
+    List<Long> approvedVoidContracts(List<Long> contractIds);
     List<Long> pendingResumes(Long contractId, boolean contractOnly, boolean lock);
     int cancelApprovedVoids(Long contractId);
 }

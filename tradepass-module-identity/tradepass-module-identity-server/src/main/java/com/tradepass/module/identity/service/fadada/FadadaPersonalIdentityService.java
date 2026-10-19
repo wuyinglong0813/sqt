@@ -40,7 +40,8 @@ public interface FadadaPersonalIdentityService {
     PersonalIdentityRespDTO syncCallback(String clientUserId, JsonNode data);
 
     /** Used transiently on the server; must never be logged or returned to the client. */
-    record VerifiedPerson(String openUserId, String fddId, String name) {
+    record VerifiedPerson(String openUserId, String fddId, String name, String accountName) {
+        public VerifiedPerson(String openUserId, String fddId, String name) { this(openUserId, fddId, name, null); }
         @Override public String toString() { return "VerifiedPerson[REDACTED]"; }
     }
 }

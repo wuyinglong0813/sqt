@@ -71,7 +71,7 @@ public class SdkFadadaUserGateway implements FadadaUserGateway {
         UserIdentInfo identity = response.getUserIdentInfo();
         return new UserIdentityResult(response.getOpenUserId(), response.getIdentStatus(),
                 identity == null ? null : identity.getUserName(), response.getIdentMethod(),
-                response.getIdentSubmitTime(), response.getIdentSuccessTime(), response.getFddId());
+                response.getIdentSubmitTime(), response.getIdentSuccessTime(), response.getFddId(), response.getAccountName());
     }
 
     static void applyUserLookup(GetUserReq request, String clientUserId, String openUserId) {

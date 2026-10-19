@@ -54,6 +54,19 @@ class FadadaCallbackProcessorTest {
         verify(events, never()).finish(any(), anyString());
     }
 
+    @Test void deliveredCompletionIsRetriedUntilItsArchiveAndStateHaveConverged() {
+        event.setEventType("sign-task-finished");
+        doThrow(new com.tradepass.framework.common.exception.BusinessException("结果尚未同步完整"))
+                .doNothing().when(signing).requireCallbackSettled("task-1", "sign-task-finished");
+        processor.process(12L);
+        assertThat(event.getStatus()).isEqualTo("FAILED");
+        assertThat(event.getNextAttemptAt()).isNotNull();
+        processor.process(12L);
+        assertThat(event.getStatus()).isEqualTo("PROCESSED");
+        assertThat(event.getNextAttemptAt()).isNull();
+        verify(signing, times(2)).syncBySignTaskId("task-1");
+    }
+
     @Test void companyCallbackBeforeIdentityCommitIsRetriedAndNotMisroutedToUser() {
         event.setRetryPayload("{\"clientCorpId\":\"corp-1\",\"clientUserId\":\"user-1\"}");
         processor.process(12L);
@@ -90,6 +103,18 @@ class FadadaCallbackProcessorTest {
         assertThat(event.getStatus()).isEqualTo("FAILED");
         assertThat(event.getNextAttemptAt()).isNotNull();
         verifyNoInteractions(people);
+    }
+
+    @Test void olderAuthorizationSuccessAlreadySupersededByRevocationDoesNotRetryForever() {
+        event.setEventType("user-authorize");
+        event.setRetryPayload("{\"clientUserId\":\"user-1\",\"authResult\":\"success\"}");
+        var revoked = mock(com.tradepass.module.identity.api.fadada.dto.PersonalIdentityRespDTO.class);
+        when(revoked.status()).thenReturn("IN_PROGRESS"); when(revoked.callbackObsolete()).thenReturn(true);
+        when(people.syncCallback(eq("user-1"), any())).thenReturn(revoked);
+        processor.process(12L);
+        assertThat(event.getStatus()).isEqualTo("PROCESSED");
+        assertThat(event.getNextAttemptAt()).isNull();
+        verifyNoInteractions(signing);
     }
 
     @Test void unsupportedCallbackIsAcknowledgedWithoutRetry() {

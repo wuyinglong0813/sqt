@@ -31,4 +31,10 @@ public interface FadadaCompanyOperations {
     public FadadaCorpIdentityRespDTO requireVerified(long companyId);
 
     public String enabledSealId(long companyId);
+
+    public void requireCurrentSigningMember(long companyId);
+
+    public void requireCurrentSigningAuthorization(long companyId);
+
+    public ServiceUrlPayload memberSealGrantUrl(long companyId, long userId, String sealId);
 }

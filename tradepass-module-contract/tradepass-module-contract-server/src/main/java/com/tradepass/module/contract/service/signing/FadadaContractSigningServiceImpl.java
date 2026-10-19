@@ -74,6 +74,11 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         TradeContractDO contract = requireParty(contractId, companyId);
         FadadaContractSignTaskDO task = find(contract);
         if (!"PENDING".equals(contract.getStatus())) throw new BusinessException("当前合同不在待签署状态");
+        if (task != null && terminal(task.getProviderStatus())) {
+            return java.util.Map.of("canSign", false, "newTask", false, "message",
+                    "task_finished".equals(task.getProviderStatus()) && task.getArchivedAt() == null
+                            ? "签署结果确认中，请稍后刷新" : statusText(task.getProviderStatus()));
+        }
         if (!contract.getCompanyId().equals(companyId))
             return java.util.Map.of("canSign", true, "newTask", false, "message", "接收方签署免费，额度由发起方承担");
         if (task != null && hasText(task.getSignTaskId()))
@@ -122,6 +127,45 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         return payload(contract, find(contract));
     }
 
+    public ServiceUrlPayload memberSealGrantUrl(Long contractId, long userId) {
+        requireReady();
+        long companyId = AuthContext.requireCompanyId();
+        accessControl.requireManager(companyId);
+        accessControl.requirePermission(companyId, "seal_manage");
+        TradeContractDO contract = requireParty(contractId, companyId);
+        FadadaContractSignTaskDO task = find(contract);
+        String sealId = null;
+        if (task != null && hasText(task.getSignTaskId())) {
+            String taskId = hasText(task.getAbolishedSignTaskId())
+                    ? task.getAbolishedSignTaskId() : task.getSignTaskId();
+            var sealIds = gateway.actorSealIds(taskId, actorId(task, companyId));
+            if (sealIds == null || sealIds.size() != 1) {
+                throw new BusinessException("暂无法确定本合同需授权的具体印章，请由印章管理员在法大大用印管理页面核对办理");
+            }
+            sealId = sealIds.get(0);
+        }
+        return companyService.memberSealGrantUrl(companyId, userId, sealId);
+    }
+
+    /** A delivered completion must remain retryable until its business effect is durable. */
+    public void requireCallbackSettled(String signTaskId, String eventType) {
+        if (!"sign-task-finished".equals(eventType) && !"sign-task-abolish".equals(eventType)) return;
+        var task = taskMapper.selectOne(new LambdaQueryWrapper<FadadaContractSignTaskDO>()
+                .and(q -> q.eq(FadadaContractSignTaskDO::getSignTaskId, signTaskId)
+                        .or().eq(FadadaContractSignTaskDO::getAbolishedSignTaskId, signTaskId)).last("LIMIT 1"));
+        if (task == null) return; // retired child callbacks are settled by their own recovery path
+        var contract = contractMapper.selectById(task.getContractId());
+        if (contract == null || version(contract) != taskVersion(task)
+                || !("PENDING".equals(contract.getStatus()) || "ACTIVE".equals(contract.getStatus()))) return;
+        String observed = task.getProviderStatus();
+        if (observed != null && observed.startsWith("ABOLISH_")) observed = observed.substring(8);
+        if (ContractAbolishRecoveryService.stopped(observed)) return;
+        boolean abolish = "sign-task-abolish".equals(eventType) || signTaskId.equals(task.getAbolishedSignTaskId());
+        if (abolish ? !"revoked".equalsIgnoreCase(task.getProviderStatus()) : task.getArchivedAt() == null) {
+            throw new BusinessException("签署完成通知已收到，结果尚未同步完整，将在后台继续核对");
+        }
+    }
+
     @Transactional
     public ServiceUrlPayload signUrl(Long contractId) {
         requireReady();
@@ -129,7 +173,16 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         accessControl.requirePermission(companyId, "contract_sign");
         TradeContractDO contract = requireParty(contractId, companyId, true);
         if (!"PENDING".equals(contract.getStatus())) throw new BusinessException("当前合同不在待签署状态");
-        FadadaContractSignTaskDO task = contract.getCompanyId().equals(companyId) ? prepare(contract) : find(contract, true);
+        // Local contract permissions do not establish membership of the provider enterprise.
+        // Check before preparing a billable task or issuing a personal signing link.
+        companyService.requireCurrentSigningMember(companyId);
+        FadadaContractSignTaskDO task = find(contract, true);
+        if (contract.getCompanyId().equals(companyId) && (task == null || !hasText(task.getSignTaskId()))) {
+            // A new task uses the currently configured seal. Existing signing and
+            // abolishment tasks retain their original provider seal configuration.
+            companyService.requireCurrentSigningAuthorization(companyId);
+            task = prepare(contract);
+        }
         if (task == null || !hasText(task.getSignTaskId())) {
             throw new BusinessException("请等待合同发起方先完成签署");
         }
@@ -235,8 +288,16 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         FadadaContractSignTaskDO task = find(contract, true);
         if (task == null || !hasText(task.getSignTaskId())) throw new BusinessException("该合同没有电子签署记录");
         String checkedReason = safeReason(reason);
+        companyService.requireCurrentSigningMember(companyId);
         reconcileAbolishIntent(task);
         if (!hasText(task.getAbolishedSignTaskId()) || abolishRetryable(task.getProviderStatus())) {
+            var original = gateway.status(task.getSignTaskId());
+            requireRemoteTask(original, task.getSignTaskId());
+            if ("revoked".equalsIgnoreCase(original.status())) {
+                completeAbolish(task, contract);
+                taskMapper.updateById(task);
+                throw new BusinessException("合同已完成作废，请刷新合同状态");
+            }
             if (hasText(task.getAbolishedSignTaskId())) {
                 var oldStatus = gateway.status(task.getAbolishedSignTaskId());
                 if (oldStatus == null || !ContractAbolishRecoveryService.stopped(oldStatus.status())) {
@@ -318,13 +379,15 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         String initiatorActor = "SALE".equalsIgnoreCase(contract.getDirection()) ? "supplier" : "buyer";
         String counterpartyActor = "supplier".equals(initiatorActor) ? "buyer" : "supplier";
         ContractRespDTO payload = signingSnapshot(contract, existing);
-        byte[] pdf = pdfService.generate(payload);
+        var signingDocument = pdfService.generateForSigning(payload);
+        byte[] pdf = signingDocument.pdf();
         var createCommand = new FadadaSigningGateway.CreateTaskCommand(
                 pdf, pdfService.fileName(payload), contract.getName(),
                 "contract-" + contract.getId() + "-v" + version(contract),
                 initiatorIdentity.getOpenCorpId(), initiatorActor, initiator.getName(), initiatorSeal,
                 counterpartyIdentity.getOpenCorpId(), counterpartyActor, counterparty.getName(), counterpartySeal,
-                "supplier", "buyer", properties.getCallbackUrl());
+                "supplier", "buyer", properties.getCallbackUrl(),
+                signingDocument.supplierPosition(), signingDocument.buyerPosition());
         createCommand.validate(); // Fail locally before reserving quota or creating a remote task.
         String sha256 = FileTypeInspector.sha256(pdf);
         FadadaContractSignTaskDO task = existing == null ? new FadadaContractSignTaskDO() : existing;
@@ -368,7 +431,13 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
             taskMapper.updateById(task);
             return task;
         } catch (RuntimeException exception) {
-            if (reservation != null) membership.uncertain(reservation.id());
+            if (reservation != null) {
+                if (exception instanceof com.tradepass.framework.fadada.core.FadadaTaskPreparationException && reservation.createAllowed()) {
+                    membership.releaseBeforeTaskCreation(reservation.id());
+                } else {
+                    membership.uncertain(reservation.id());
+                }
+            }
             task.setProviderStatus("CREATE_FAILED");
             task.setLastError(shortMessage(exception));
             taskMapper.updateById(task);
@@ -383,26 +452,70 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
     private FadadaContractSignTaskDO sync(FadadaContractSignTaskDO task, TradeContractDO contract, boolean reconcileIntent) {
         if (!contract.getId().equals(task.getContractId()) || version(contract) != taskVersion(task)) return task;
         if (!"PENDING".equals(contract.getStatus()) && !"ACTIVE".equals(contract.getStatus())) return task;
-        if (reconcileIntent) reconcileAbolishIntent(task);
         String remoteTaskId = hasText(task.getAbolishedSignTaskId())
                 ? task.getAbolishedSignTaskId() : task.getSignTaskId();
         FadadaSigningGateway.TaskStatus status = gateway.status(remoteTaskId);
-        for (FadadaSigningGateway.ActorStatus actor : status.actors()) {
+        requireRemoteTask(status, remoteTaskId);
+        // A parent callback can be the only event received for an externally completed
+        // abolishment. Its revoked state is authoritative even if no child id was saved.
+        if (!hasText(task.getAbolishedSignTaskId()) && "ACTIVE".equals(contract.getStatus())
+                && "revoked".equalsIgnoreCase(status.status())) {
+            completeAbolish(task, contract);
+            taskMapper.updateById(task);
+            return task;
+        }
+        if (reconcileIntent) {
+            String previousChild = task.getAbolishedSignTaskId();
+            reconcileAbolishIntent(task);
+            if (!java.util.Objects.equals(previousChild, task.getAbolishedSignTaskId())) {
+                status = gateway.status(task.getAbolishedSignTaskId());
+                requireRemoteTask(status, task.getAbolishedSignTaskId());
+            }
+        }
+        boolean discoveredChild = false;
+        // Recover provider-created children on normal refresh as well as uncertain-create
+        // recovery. Otherwise a completed child can be hidden behind a finished parent.
+        if (!hasText(task.getAbolishedSignTaskId()) && "ACTIVE".equals(contract.getStatus())
+                && hasText(status.abolishedSignTaskId())) {
+            String childId = status.abolishedSignTaskId();
+            var child = gateway.status(childId);
+            requireRemoteTask(child, childId);
+            requireAbolishParent(child, task.getSignTaskId());
+            if (retiredAbolishTask(task, childId)) {
+                // The provider can retain its last child pointer after bilateral recovery.
+                // A confirmed stopped child must not re-lock a successfully resumed contract.
+                if ("task_finished".equalsIgnoreCase(child.status()) || "revoked".equalsIgnoreCase(child.status())) {
+                    completeAbolish(task, contract);
+                    taskMapper.updateById(task);
+                    return task;
+                }
+                if (!ContractAbolishRecoveryService.stopped(child.status())) {
+                    throw new BusinessException("已取消作废任务的远程状态发生变化，需要核实处理");
+                }
+            } else {
+                task.setAbolishedSignTaskId(childId);
+                task.setInitiatorSignStatus(null);
+                task.setCounterpartySignStatus(null);
+                status = child;
+                discoveredChild = true;
+            }
+        }
+        if (hasText(task.getAbolishedSignTaskId())) requireAbolishParent(status, task.getSignTaskId());
+        var currentActors = status.actors();
+        for (FadadaSigningGateway.ActorStatus actor : currentActors) {
             if (task.getInitiatorActorId().equals(actor.actorId())) task.setInitiatorSignStatus(actor.signStatus());
             if (task.getCounterpartyActorId().equals(actor.actorId())) task.setCounterpartySignStatus(actor.signStatus());
         }
         if (hasText(task.getAbolishedSignTaskId())) {
             task.setProviderStatus("ABOLISH_" + status.status());
             if ("task_finished".equalsIgnoreCase(status.status()) || "revoked".equalsIgnoreCase(status.status())) {
-                tradeService.voidAfterElectronicAbolish(contract.getId(), taskVersion(task), safeUserId(contract));
-                task.setProviderStatus("revoked");
-                task.setFinishedAt(LocalDateTime.now());
+                completeAbolish(task, contract);
             }
         } else {
             task.setProviderStatus(status.status());
             if ("task_finished".equalsIgnoreCase(status.status()) && task.getArchivedAt() == null) {
                 boolean bothSigned = java.util.stream.Stream.of(task.getInitiatorActorId(), task.getCounterpartyActorId())
-                        .allMatch(id -> status.actors().stream().anyMatch(actor -> id.equals(actor.actorId())
+                        .allMatch(id -> currentActors.stream().anyMatch(actor -> id.equals(actor.actorId())
                                 && "signed".equals(actor.signStatus())));
                 if (!bothSigned) {
                     task.setLastError("签署任务已结束，但双方签署证据尚未齐全，请稍后同步或联系管理员核验");
@@ -421,8 +534,45 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
             }
         }
         task.setLastError("");
-        taskMapper.updateById(task);
+        if (discoveredChild) {
+            taskMapper.update(task, new LambdaUpdateWrapper<FadadaContractSignTaskDO>()
+                    .eq(FadadaContractSignTaskDO::getId, task.getId())
+                    .set(FadadaContractSignTaskDO::getInitiatorSignStatus, task.getInitiatorSignStatus())
+                    .set(FadadaContractSignTaskDO::getCounterpartySignStatus, task.getCounterpartySignStatus()));
+        } else {
+            taskMapper.updateById(task);
+        }
         return task;
+    }
+
+    private void requireRemoteTask(FadadaSigningGateway.TaskStatus status, String expectedId) {
+        if (status == null || !expectedId.equals(status.signTaskId()) || !hasText(status.status())) {
+            throw new BusinessException("无法确认电子签署任务状态，请稍后同步");
+        }
+    }
+
+    private void requireAbolishParent(FadadaSigningGateway.TaskStatus child, String originalId) {
+        if (!originalId.equals(child.originalSignTaskId())) {
+            throw new BusinessException("无法确认作废协议与原合同的对应关系，合同保持只读");
+        }
+    }
+
+    private boolean retiredAbolishTask(FadadaContractSignTaskDO task, String childId) {
+        // Use a current read: a callback may have read its task before waiting for
+        // the contract lock held by the transaction that completed recovery.
+        return !jdbc.queryForList("""
+                SELECT sign_task_id FROM fadada_cancelled_abolish_task
+                WHERE sign_task_id = ? AND contract_id = ? AND version_no = ? AND original_sign_task_id = ?
+                FOR UPDATE
+                """, String.class, childId, task.getContractId(), taskVersion(task), task.getSignTaskId()).isEmpty();
+    }
+
+    private void completeAbolish(FadadaContractSignTaskDO task, TradeContractDO contract) {
+        tradeService.voidAfterElectronicAbolish(contract.getId(), taskVersion(task), safeUserId(contract));
+        contract.setStatus("VOIDED");
+        task.setProviderStatus("revoked");
+        task.setLastError("");
+        task.setFinishedAt(LocalDateTime.now());
     }
 
     private ContractSigningRespDTO payload(TradeContractDO contract, FadadaContractSignTaskDO task) {
@@ -452,8 +602,15 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
                 || (abolishing && !isSigned(actorStatus))
                 || (active && abolishApproved && task != null && hasText(task.getSignTaskId())
                     && !hasText(task.getAbolishedSignTaskId()));
-        canSign = canSign && !recoveryPending && !"ABOLISH_CREATION_UNCERTAIN".equals(status);
-        String displayStatus = pending && !firstSignerReady ? "等待发起方签署" : statusText(status);
+        canSign = canSign && !recoveryPending && !"ABOLISH_CREATION_UNCERTAIN".equals(status)
+                && !"revoked".equalsIgnoreCase(status);
+        String displayStatus = pending && task != null && terminal(status)
+                ? "task_finished".equals(status) && task.getArchivedAt() == null ? "签署结果确认中" : statusText(status)
+                : pending && !firstSignerReady ? "等待发起方签署"
+                : active && "revoked".equalsIgnoreCase(status) ? "作废结果待同步"
+                : active && abolishApproved && !abolishing ? "待签署作废协议"
+                : task != null && "task_finished".equals(status) && task.getArchivedAt() == null
+                    ? "签署结果确认中" : statusText(status);
         return new ContractSigningRespDTO(String.valueOf(contract.getId()), status, displayStatus,
                 task == null ? null : task.getInitiatorSignStatus(),
                 task == null ? null : task.getCounterpartySignStatus(), canSign,
@@ -468,16 +625,22 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         return contract.getVersionNo() == null ? 1 : contract.getVersionNo();
     }
 
+    record RetiredAbolishTask(long contractId, int versionNo, String originalSignTaskId) {}
+
     private boolean syncCancelledAbolishTask(String signTaskId, boolean contractLocked) {
         var rows = jdbc.query("""
-                SELECT contract_id, version_no FROM fadada_cancelled_abolish_task WHERE sign_task_id = ?
+                SELECT contract_id, version_no, original_sign_task_id
+                FROM fadada_cancelled_abolish_task WHERE sign_task_id = ?
                 """ + (contractLocked ? " FOR UPDATE" : ""),
-                (rs, row) -> new long[]{rs.getLong("contract_id"), rs.getLong("version_no")}, signTaskId);
+                (rs, row) -> new RetiredAbolishTask(rs.getLong("contract_id"), rs.getInt("version_no"),
+                        rs.getString("original_sign_task_id")), signTaskId);
         if (rows.isEmpty()) return false;
-        TradeContractDO contract = contractMapper.selectByIdForUpdate(rows.get(0)[0]);
-        if (contract == null || version(contract) != rows.get(0)[1]) return true;
+        RetiredAbolishTask retired = rows.get(0);
+        TradeContractDO contract = contractMapper.selectByIdForUpdate(retired.contractId());
+        if (contract == null || version(contract) != retired.versionNo()) return true;
         FadadaSigningGateway.TaskStatus remote = gateway.status(signTaskId);
-        if (remote == null || !hasText(remote.status())) throw new BusinessException("无法核实已取消作废任务的状态");
+        requireRemoteTask(remote, signTaskId);
+        requireAbolishParent(remote, retired.originalSignTaskId());
         if ("task_finished".equalsIgnoreCase(remote.status()) || "revoked".equalsIgnoreCase(remote.status())) {
             // A real completion arriving after recovery wins over local recovery state.
             tradeService.voidAfterElectronicAbolish(contract.getId(), version(contract), safeUserId(contract));
@@ -622,6 +785,7 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
     private String statusText(String status) {
         if (status == null) return "待准备";
         if ("ABOLISH_CREATION_UNCERTAIN".equals(status)) return "作废任务结果待核实";
+        if ("ABOLISH_sign_completed".equals(status)) return "双方已签署，正在确认作废结果";
         if (status.startsWith("ABOLISH_") && abolishRetryable(status)) return "作废签署已中止，可重试或申请恢复履约";
         if (status.startsWith("ABOLISH_") || "abolishing".equals(status)) return "作废签署中";
         return switch (status) {
@@ -630,7 +794,8 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
             case "sign_progress", "finish_creation" -> "签署中";
             case "sign_completed" -> "双方已签署，正在归档";
             case "task_finished" -> "已签署并归档";
-            case "task_terminated", "expired" -> "签署已终止";
+            case "task_terminated" -> "签署已终止";
+            case "expired", "task_expired" -> "签署已过期";
             case "revoked" -> "已作废";
             default -> "待完成企业认证和印章设置";
         };

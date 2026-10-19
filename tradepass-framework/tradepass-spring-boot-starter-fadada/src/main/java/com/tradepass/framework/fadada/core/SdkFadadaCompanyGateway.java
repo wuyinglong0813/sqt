@@ -8,6 +8,12 @@ import com.fasc.open.api.v5_1.client.CorpClient;
 import com.fasc.open.api.v5_1.client.OpenApiClient;
 import com.fasc.open.api.v5_1.client.OrgClient;
 import com.fasc.open.api.v5_1.req.org.GetCorpMemberDetailReq;
+import com.fasc.open.api.v5_1.req.org.GetMemberListReq;
+import com.fasc.open.api.v5_1.req.org.GetMemberListFilter;
+import com.fasc.open.api.v5_1.req.org.GetCorpOrgManageUrlReq;
+import com.fasc.open.api.v5_1.req.org.CreateCorpMemberReq;
+import com.fasc.open.api.v5_1.req.org.GetCorpMemberActiveUrlReq;
+import com.fasc.open.api.v5_1.res.org.EmployeeInfo;
 import com.fasc.open.api.v5_1.client.SealClient;
 import com.fasc.open.api.v5_1.req.corp.GetCorpAuthResourceUrlReq;
 import com.fasc.open.api.v5_1.req.corp.CorpIdentInfoReq;
@@ -153,8 +159,141 @@ public class SdkFadadaCompanyGateway implements FadadaCompanyGateway {
         request.setOpenCorpId(openCorpId);
         request.setMemberId(memberId);
         var response = invoke(request, () -> orgClient.getCorpMemberDetail(request), "查询企业成员权限");
+        var accounts = new java.util.LinkedHashSet<String>();
+        if (response.getAccountNames() != null) response.getAccountNames().stream().filter(SdkFadadaCompanyGateway::hasText).forEach(accounts::add);
+        if (hasText(response.getMemberMobile())) accounts.add(response.getMemberMobile());
+        if (hasText(response.getMemberEmail())) accounts.add(response.getMemberEmail());
         return new CompanyMember(response.getMemberId(), response.getMemberStatus(),
-                response.getRoleType(), response.getFddId());
+                response.getRoleType(), response.getFddId(), response.getInternalIdentifier(), List.copyOf(accounts));
+    }
+
+    @Override
+    public List<Long> listMemberIds(String openCorpId, String memberName) {
+        return listMemberCandidates(openCorpId, memberName).stream().map(EmployeeInfo::getMemberId).toList();
+    }
+
+    private List<EmployeeInfo> listMemberCandidates(String openCorpId, String memberName) {
+        if (!hasText(openCorpId)) throw new BusinessException("企业成员核验信息缺失");
+        var members = new java.util.ArrayList<EmployeeInfo>();
+        var seen = new java.util.HashSet<Long>();
+        Integer total = null;
+        Integer pageCount = null;
+        for (int page = 1; page <= 1000; page++) {
+            GetMemberListReq request = new GetMemberListReq();
+            request.setAccessToken(tokenProvider.get());
+            request.setOpenCorpId(openCorpId);
+            // Name only narrows candidates. The caller must match the detail's fddId
+            // to the current verified person; a name or phone is never identity proof.
+            if (hasText(memberName)) {
+                GetMemberListFilter filter = new GetMemberListFilter();
+                filter.setMemberName(memberName);
+                request.setListFilter(filter);
+            }
+            request.setListPageNo(page);
+            request.setListPageSize(100);
+            var response = invoke(request, () -> orgClient.getMemberList(request), "查询企业成员列表");
+            var values = response.getEmployeeInfos();
+            if (response.getListPageNo() == null || response.getListPageNo() != page
+                    || response.getListPageCount() == null || response.getListPageCount() < 0
+                    || response.getTotalCount() == null || response.getTotalCount() < 0
+                    || values == null || response.getCountInPage() == null || response.getCountInPage() != values.size()
+                    || (page < response.getListPageCount() && values.isEmpty())
+                    || (total != null && !total.equals(response.getTotalCount()))
+                    || (pageCount != null && !pageCount.equals(response.getListPageCount()))) {
+                throw new BusinessException("电子签企业成员列表不完整，请稍后重试");
+            }
+            total = response.getTotalCount();
+            pageCount = response.getListPageCount();
+            for (var value : values) {
+                Long id = value == null ? null : value.getMemberId();
+                if (id == null || id <= 0 || !seen.add(id)) {
+                    throw new BusinessException("电子签企业成员列表异常，请稍后重试");
+                }
+                members.add(value);
+            }
+            if (page >= pageCount) {
+                if (members.size() != total) throw new BusinessException("电子签企业成员列表不完整，请稍后重试");
+                return List.copyOf(members);
+            }
+        }
+        throw new BusinessException("电子签企业成员分页数量异常，请联系管理员核验");
+    }
+
+    @Override
+    public CompanyMember findMemberByInternalIdentifier(String openCorpId, String internalIdentifier) {
+        if (!hasText(internalIdentifier)) throw new BusinessException("企业成员关联标识缺失");
+        // get-detail supports internalIdentifier, but its public error table does not
+        // define a member-not-found code. A complete list distinguishes absence from
+        // provider/permission failures without turning an unknown error into a create.
+        var matches = listMemberCandidates(openCorpId, null).stream()
+                .filter(value -> internalIdentifier.equals(value.getInternalIdentifier())).toList();
+        if (matches.isEmpty()) return null;
+        if (matches.size() != 1) throw new BusinessException("电子签企业成员关联重复，请联系管理员核验");
+        var member = getMember(openCorpId, matches.get(0).getMemberId());
+        if (!matches.get(0).getMemberId().equals(member.memberId()) || !internalIdentifier.equals(member.internalIdentifier())) {
+            throw new BusinessException("电子签企业成员关联信息不一致，请联系管理员核验");
+        }
+        return member;
+    }
+
+    @Override
+    public MemberInvitation createMember(MemberCreateCommand command) {
+        if (!hasText(command.openCorpId()) || !hasText(command.internalIdentifier())
+                || !hasText(command.memberName()) || !hasText(command.accountName())) {
+            throw new BusinessException("企业成员同步资料不完整");
+        }
+        CreateCorpMemberReq request = new CreateCorpMemberReq();
+        request.setAccessToken(tokenProvider.get());
+        request.setOpenCorpId(command.openCorpId());
+        request.setNotifyActiveByEmail(false);
+        EmployeeInfo employee = new EmployeeInfo();
+        employee.setMemberName(command.memberName());
+        employee.setInternalIdentifier(command.internalIdentifier());
+        if (command.accountName().contains("@")) employee.setMemberEmail(command.accountName());
+        else employee.setMemberMobile(command.accountName());
+        request.setEmployeeInfos(List.of(employee));
+        // Do not pass roles or the undocumented mergeMemberInfo extension. Existing
+        // member information and remote administrative permissions remain authoritative.
+        var response = invoke(request, () -> orgClient.createCorpMember(request), "同步电子签企业成员");
+        if (response.size() != 1 || response.get(0) == null
+                || response.get(0).getMemberId() == null || response.get(0).getMemberId() <= 0
+                || !command.internalIdentifier().equals(response.get(0).getInternalIdentifier())) {
+            throw new BusinessException("电子签成员同步结果待确认，请稍后重新同步");
+        }
+        var member = response.get(0);
+        return new MemberInvitation(member.getMemberId(), member.getInternalIdentifier(),
+                member.getMemberStatus(), member.getMemberActiveEmbedUrl());
+    }
+
+    @Override
+    public String createMemberActivationUrl(String openCorpId, long memberId) {
+        if (!hasText(openCorpId) || memberId <= 0) throw new BusinessException("企业成员标识缺失");
+        GetCorpMemberActiveUrlReq request = new GetCorpMemberActiveUrlReq();
+        request.setAccessToken(tokenProvider.get());
+        request.setOpenCorpId(openCorpId);
+        request.setMemberIds(List.of(memberId));
+        var response = invoke(request, () -> orgClient.getCorpMemberActiveUrl(request), "获取本人加入企业地址");
+        if (response.size() != 1 || response.get(0) == null || !Long.valueOf(memberId).equals(response.get(0).getMemberId())
+                || !hasText(response.get(0).getMemberActiveEmbedUrl())
+                || !response.get(0).getMemberActiveEmbedUrl().startsWith("https://")) {
+            throw new BusinessException("未获取到本人加入企业地址，请稍后重新同步");
+        }
+        return response.get(0).getMemberActiveEmbedUrl();
+    }
+
+    @Override
+    public String createOrganizationManageUrl(String openCorpId, String clientUserId) {
+        GetCorpOrgManageUrlReq request = new GetCorpOrgManageUrlReq();
+        request.setAccessToken(tokenProvider.get());
+        request.setOpenCorpId(openCorpId);
+        request.setClientUserId(clientUserId);
+        request.setModules(List.of("member"));
+        // This official editor is PC-only and has no redirectMiniAppUrl parameter.
+        var response = invoke(request, () -> orgClient.getCorpOrgManageUrl(request), "获取企业成员管理地址");
+        if (!hasText(response.getResourceUrl()) || !response.getResourceUrl().startsWith("https://")) {
+            throw new BusinessException("未获取到企业成员管理地址，请稍后重试");
+        }
+        return response.getResourceUrl();
     }
 
     @Override

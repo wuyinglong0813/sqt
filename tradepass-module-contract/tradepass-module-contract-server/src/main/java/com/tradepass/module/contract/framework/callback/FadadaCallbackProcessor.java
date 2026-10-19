@@ -68,26 +68,27 @@ public class FadadaCallbackProcessor {
             // personal-identification callbacks.
             if (hasText(signTaskId)) {
                 signingService.syncBySignTaskId(signTaskId);
+                signingService.requireCallbackSettled(signTaskId, event.getEventType());
                 event.setSubjectType("CONTRACT");
                 event.setStatus("PROCESSED");
             } else if (hasText(clientCorpId)) {
                 var payload = companyService.syncCallback(clientCorpId, openCorpId, data);
                 if (payload == null) throw new BusinessException("企业认证记录尚未就绪");
-                requireSettledAuthorization(event, data, payload.status());
+                requireSettledAuthorization(event, data, payload.status(), payload.callbackObsolete());
                 event.setSubjectType("COMPANY");
                 event.setSubjectId(Long.valueOf(payload.companyId()));
                 event.setStatus("PROCESSED");
             } else if (hasText(openCorpId)) {
                 var payload = companyService.syncCallback(null, openCorpId, data);
                 if (payload == null) throw new BusinessException("企业认证记录尚未就绪");
-                requireSettledAuthorization(event, data, payload.status());
+                requireSettledAuthorization(event, data, payload.status(), payload.callbackObsolete());
                 event.setSubjectType("COMPANY");
                 event.setSubjectId(Long.valueOf(payload.companyId()));
                 event.setStatus("PROCESSED");
             } else if (hasText(clientUserId)) {
                 var payload = personalService.syncCallback(clientUserId, data);
                 if (payload == null) throw new BusinessException("个人认证记录尚未就绪");
-                requireSettledAuthorization(event, data, payload.status());
+                requireSettledAuthorization(event, data, payload.status(), payload.callbackObsolete());
                 event.setSubjectType("USER");
                 event.setStatus("PROCESSED");
             } else {
@@ -110,7 +111,8 @@ public class FadadaCallbackProcessor {
         JsonNode value = node == null ? null : node.get(name);
         return value == null || value.isNull() ? null : value.asText();
     }
-    private void requireSettledAuthorization(FadadaCallbackEventDO event, JsonNode data, String status) {
+    private void requireSettledAuthorization(FadadaCallbackEventDO event, JsonNode data, String status, boolean obsolete) {
+        if (obsolete) return;
         if (("user-authorize".equals(event.getEventType()) || "corp-authorize".equals(event.getEventType()))
                 && "success".equals(text(data, "authResult")) && "IN_PROGRESS".equals(status)) {
             throw new BusinessException("授权成功通知已收到，认证资料待补齐，将在后台重试");
