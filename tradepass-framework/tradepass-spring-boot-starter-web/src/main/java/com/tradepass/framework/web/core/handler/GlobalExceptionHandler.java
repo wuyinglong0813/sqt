@@ -18,7 +18,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiResponse<Void> handleBusinessException(BusinessException ex) {
-        return new ApiResponse<>(400, ex.getMessage(), null);
+        return new ApiResponse<>(ex.getCode(), ex.getMessage(), null);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

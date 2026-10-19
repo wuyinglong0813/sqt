@@ -3,6 +3,7 @@ package com.tradepass.module.contract.framework.config;
 import com.tradepass.framework.runtime.core.DomainComponentRegistrar;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.mock.env.MockEnvironment;
 
@@ -24,5 +25,16 @@ class ServiceRegistrarScheduledJobsTest {
         if (hostsContract) assertThat(registry.getBeanDefinition("signingStateReconciliationScheduler").getBeanClassName())
                 .isEqualTo("com.tradepass.module.contract.job.SigningStateReconciliationScheduler");
         assertThat(registry.containsBeanDefinition("fadadaIdentityReconciliationService")).isEqualTo("identity".equals(role));
+        assertThat(registry.containsBeanDefinition("fadadaSigningMemberSyncService")).isEqualTo("identity".equals(role));
+    }
+
+    @ParameterizedTest
+    @CsvSource({"identity,true", "identity,false", "business,true", "business,false"})
+    void memberPreparationScheduleIsAnExplicitRootInBothAssemblies(String role, boolean split) {
+        var environment = new MockEnvironment().withProperty("tradepass.services.split", String.valueOf(split))
+                .withProperty("tradepass.runtime.role", role);
+        var registry = new DefaultListableBeanFactory();
+        new DomainComponentRegistrar(environment).postProcessBeanDefinitionRegistry(registry);
+        assertThat(registry.containsBeanDefinition("fadadaSigningMemberSyncService")).isEqualTo("identity".equals(role));
     }
 }

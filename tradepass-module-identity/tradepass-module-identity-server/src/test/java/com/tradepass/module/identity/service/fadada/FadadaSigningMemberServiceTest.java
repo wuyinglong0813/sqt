@@ -108,6 +108,38 @@ class FadadaSigningMemberServiceTest {
     }
 
     @Test
+    void aBackgroundReconciliationReusesTheSamePersonWithoutRequestContextOrAnotherInvitation() {
+        var f = new Fixture();
+        when(f.gateway.findMemberByInternalIdentifier("corp-3", "tradepass-user-7"))
+                .thenReturn(f.linked(90L, "activated", "current-fdd-id"));
+        AuthContext.clear();
+        assertThat(f.service.reconcileLocalSigningMember(3L, 7L).memberId()).isEqualTo(90L);
+        verify(f.access, never()).requireManager(anyLong());
+        verify(f.gateway, never()).createMember(any());
+    }
+
+    @Test
+    void backgroundWorkRechecksCurrentLocalPermissionBeforeReadingRemotePersonalOrCompanyData() {
+        var f = new Fixture();
+        when(f.access.effectiveRole(3L, 7L)).thenReturn(new EffectiveRole("GUEST", "访客", List.of()));
+        AuthContext.clear();
+        assertThatThrownBy(() -> f.service.reconcileLocalSigningMember(3L, 7L))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46105));
+        verifyNoInteractions(f.personal, f.companies, f.gateway);
+    }
+
+    @Test
+    void anAlreadyAuthorizedResponseStillRequiresEvidenceOfOrganizationConsent() {
+        var f = new Fixture();
+        when(f.gateway.getCompany("local-3", "corp-3"))
+                .thenThrow(new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210002"));
+        assertThatThrownBy(() -> f.service.requireCurrentSigningMember(3L))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46101));
+        verify(f.gateway, never()).listMemberIds(anyString(), anyString());
+        verify(f.gateway, never()).createMember(any());
+    }
+
+    @Test
     void memberDetailsMustBelongToTheRequestedMemberId() {
         var f = new Fixture();
         when(f.gateway.getMember("corp-3", 88L)).thenReturn(new FadadaCompanyGateway.CompanyMember(

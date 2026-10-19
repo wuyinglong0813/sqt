@@ -467,6 +467,8 @@ class FadadaPersonalIdentityServiceTest {
 
     @Test
     void signedCompleteAuthorizationCommitsSuccessWithoutAnyProviderQueryEvenDuringCooldown() {
+        var events = mock(org.springframework.context.ApplicationEventPublisher.class);
+        ((FadadaPersonalIdentityServiceImpl) service).setEventPublisher(events);
         var identity = identity("IN_PROGRESS");
         identity.setLastSyncAt(LocalDateTime.now());
         identity.setFailureReason(new FadadaUserQueryException("210022").getMessage());
@@ -479,6 +481,7 @@ class FadadaPersonalIdentityServiceTest {
         assertThat(result.status()).isEqualTo("VERIFIED");
         assertThat(result.verifiedName()).isEqualTo("张三");
         assertThat(result.failureReason()).isNull();
+        verify(events).publishEvent(new SigningMemberSyncRequested(null, 8L, 8L, "PERSONAL_IDENTITY_VERIFIED"));
         assertThat(identity.getOpenUserId()).isEqualTo("open-user-8");
         assertThat(identity.getAuthScopes()).isEqualTo("[\"ident_info\"]");
         assertThat(service.requireCurrentVerified().status()).isEqualTo("VERIFIED");

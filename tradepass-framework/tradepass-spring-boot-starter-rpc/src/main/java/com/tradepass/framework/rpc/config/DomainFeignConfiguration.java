@@ -20,13 +20,17 @@ public class DomainFeignConfiguration {
     @Bean ErrorDecoder domainErrors(ObjectMapper mapper) {
         return (method, response) -> {
             String message = "服务暂时不可用，请稍后重试";
+            int code = 400;
             if (response.body() != null) {
                 try (var body = response.body().asInputStream()) {
-                    String value = mapper.readTree(body).path("message").asText();
+                    var payload = mapper.readTree(body);
+                    String value = payload.path("message").asText();
                     if (!value.isBlank() && (response.status() == 400 || response.status() == 409)) message = value;
+                    if (response.status() == 400 && payload.path("code").canConvertToInt()
+                            && payload.path("code").asInt() > 0) code = payload.path("code").asInt();
                 } catch (Exception ignored) { }
             }
-            if (response.status() == 400) return new BusinessException(message);
+            if (response.status() == 400) return new BusinessException(code, message);
             if (response.status() == 409) return new DataIntegrityViolationException(message);
             return new DomainUnavailableException();
         };

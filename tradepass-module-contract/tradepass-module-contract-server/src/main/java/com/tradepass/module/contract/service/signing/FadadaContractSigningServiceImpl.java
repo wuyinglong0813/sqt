@@ -68,6 +68,32 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
     @Autowired
     public void setMembershipService(MembershipService membership) { this.membership = membership; }
 
+    /** Prepare only the signer's identity and authority before any billable confirmation. */
+    public java.util.Map<String, Object> signingPrerequisites(Long contractId) {
+        requireReady();
+        long companyId = AuthContext.requireCompanyId();
+        accessControl.requirePermission(companyId, "contract_sign");
+        TradeContractDO contract = requireParty(contractId, companyId);
+        if (!"PENDING".equals(contract.getStatus())) throw new BusinessException("当前合同不在待签署状态");
+        FadadaContractSignTaskDO task = find(contract);
+        boolean newTask = task == null || !hasText(task.getSignTaskId());
+        if (task != null && terminal(task.getProviderStatus())) {
+            throw new BusinessException("签署任务已结束，请刷新合同状态");
+        }
+        if (!newTask && isSigned(actorStatus(task, companyId))) {
+            throw new BusinessException("当前企业已完成签署，请等待对方签署");
+        }
+        if (!contract.getCompanyId().equals(companyId)
+                && (newTask || !isSigned(task.getInitiatorSignStatus()))) {
+            throw new BusinessException("请等待合同发起方先完成签署");
+        }
+        // Existing tasks keep their original provider seals. Do not reject them
+        // because the company's current default seal changed after task creation.
+        if (newTask) companyService.requireCurrentSigningAuthorization(companyId);
+        else companyService.requireCurrentSigningMember(companyId);
+        return java.util.Map.of("status", "READY");
+    }
+
     public java.util.Map<String, Object> signingQuote(Long contractId) {
         long companyId = AuthContext.requireCompanyId();
         accessControl.requirePermission(companyId, "contract_sign");
@@ -175,14 +201,13 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         if (!"PENDING".equals(contract.getStatus())) throw new BusinessException("当前合同不在待签署状态");
         // Local contract permissions do not establish membership of the provider enterprise.
         // Check before preparing a billable task or issuing a personal signing link.
-        companyService.requireCurrentSigningMember(companyId);
         FadadaContractSignTaskDO task = find(contract, true);
         if (contract.getCompanyId().equals(companyId) && (task == null || !hasText(task.getSignTaskId()))) {
             // A new task uses the currently configured seal. Existing signing and
             // abolishment tasks retain their original provider seal configuration.
             companyService.requireCurrentSigningAuthorization(companyId);
             task = prepare(contract);
-        }
+        } else companyService.requireCurrentSigningMember(companyId);
         if (task == null || !hasText(task.getSignTaskId())) {
             throw new BusinessException("请等待合同发起方先完成签署");
         }

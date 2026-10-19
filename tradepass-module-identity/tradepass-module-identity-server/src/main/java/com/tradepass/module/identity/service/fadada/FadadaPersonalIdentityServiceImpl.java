@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import static com.tradepass.framework.common.exception.SigningErrorCodes.*;
 import com.tradepass.framework.fadada.config.FadadaProperties;
 import com.tradepass.module.identity.api.fadada.dto.FadadaAuthUrlRespDTO;
 import com.tradepass.module.identity.api.fadada.dto.PersonalIdentityRespDTO;
@@ -20,6 +21,8 @@ import com.tradepass.framework.fadada.core.FadadaUserGateway;
 import com.tradepass.module.identity.dal.mysql.fadada.FadadaUserIdentityMapper;
 import com.tradepass.module.identity.dal.mysql.user.SysUserMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.net.URI;
@@ -33,6 +36,7 @@ import java.util.List;
 
 @Service
 public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentityService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(FadadaPersonalIdentityServiceImpl.class);
     private static final String AUTH_SCOPE = "ident_info";
     private static final ZoneId BEIJING_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter DISPLAY_TIME =
@@ -42,6 +46,10 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
     private final FadadaUserGateway gateway;
     private final FadadaProperties properties;
     private final ObjectMapper objectMapper;
+    private ApplicationEventPublisher events;
+
+    @Autowired
+    public void setEventPublisher(ApplicationEventPublisher events) { this.events = events; }
 
     public FadadaPersonalIdentityServiceImpl(FadadaUserIdentityMapper identityMapper,
                                          SysUserMapper userMapper,
@@ -99,7 +107,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         FadadaUserIdentityDO identity = findByUserId(userId);
         if (identity == null || !"VERIFIED".equals(identity.getLocalStatus())
                 || identity.getOpenUserId() == null || identity.getOpenUserId().isBlank()) {
-            throw new BusinessException("该账号的个人实名身份尚未确认，请先在“我的 → 个人认证”完成认证后重试");
+            throw new BusinessException(PERSONAL_IDENTITY_REQUIRED, "该账号的个人实名身份尚未确认，请先完成个人认证后继续");
         }
         return identity.getOpenUserId();
     }
@@ -122,7 +130,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
                 || !"enable".equals(account.availableStatus()) || !"authorized".equals(account.bindingStatus())
                 || !"identified".equals(account.identStatus())
                 || account.authScopes() == null || !account.authScopes().contains(AUTH_SCOPE)) {
-            throw new BusinessException("个人账号授权关联尚未确认，请重新同步个人认证");
+            throw new BusinessException(PERSONAL_IDENTITY_REQUIRED, "个人账号授权关联尚未确认，请重新同步个人认证");
         }
         var detail = gateway.getIdentityInfo(openUserId);
         if (detail == null || !openUserId.equals(detail.openUserId()) || !"identified".equals(detail.identStatus())) {
@@ -240,6 +248,7 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
             identity.setFailureReason("");
             identity.setLastSyncAt(beijingNow());
             identityMapper.updateById(identity);
+            requestSigningPreparation(identity.getUserId());
             return toPayload(identity);
         }
         if (hasText(openUserId)) identity.setOpenUserId(openUserId);
@@ -332,7 +341,18 @@ public class FadadaPersonalIdentityServiceImpl implements FadadaPersonalIdentity
         }
         identity.setLastSyncAt(LocalDateTime.now());
         identityMapper.updateById(identity);
+        if ("VERIFIED".equals(identity.getLocalStatus())) requestSigningPreparation(identity.getUserId());
         return identity;
+    }
+
+    private void requestSigningPreparation(Long targetUserId) {
+        if (events == null || targetUserId == null) return;
+        try {
+            Long actor = AuthContext.isLoggedIn() ? AuthContext.userId() : null;
+            events.publishEvent(new SigningMemberSyncRequested(null, targetUserId, actor, "PERSONAL_IDENTITY_VERIFIED"));
+        } catch (RuntimeException failure) {
+            log.warn("Signing member preparation event deferred: targetUserId={}", targetUserId);
+        }
     }
 
     private void markRevoked(FadadaUserIdentityDO identity) {

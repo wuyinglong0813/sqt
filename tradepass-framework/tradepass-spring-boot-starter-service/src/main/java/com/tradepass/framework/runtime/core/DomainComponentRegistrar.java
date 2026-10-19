@@ -50,7 +50,9 @@ public final class DomainComponentRegistrar implements BeanDefinitionRegistryPos
                 "com.tradepass.framework.mybatis.config.IdentifierConfiguration", "com.tradepass.framework.storage.config.StorageProperties",
                 "com.tradepass.framework.fadada.config.FadadaProperties", "com.tradepass.framework.flyway.config.FlywaySafetyConfig"));
         if (HostedRoles.hosts(role, "identity")) roots.addAll(List.of("com.tradepass.module.identity.framework.config.AuthInterceptor",
-                "com.tradepass.module.identity.framework.config.SystemPermissionInitializer", "com.tradepass.module.identity.framework.config.DatabaseInitializer"));
+                "com.tradepass.module.identity.framework.config.SystemPermissionInitializer", "com.tradepass.module.identity.framework.config.DatabaseInitializer",
+                "com.tradepass.module.identity.service.fadada.FadadaIdentityReconciliationService",
+                "com.tradepass.module.identity.service.fadada.FadadaSigningMemberSyncService"));
         if (HostedRoles.hosts(role, "contract")) roots.addAll(List.of("com.tradepass.module.contract.framework.callback.FadadaCallbackRecovery",
                 "com.tradepass.module.contract.job.LocalCallbackRecoveryScheduler",
                 "com.tradepass.module.contract.framework.membership.MembershipNacosLoader",

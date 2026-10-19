@@ -116,7 +116,9 @@ class FadadaSigningAuthorizationServiceTest {
         var f = new Fixture(); AuthContext.set(7L, 3L);
 
         assertThatThrownBy(() -> f.service.requireCurrentSigningAuthorization(3L))
-                .hasMessageContaining("组织成员 → 授权签署", "授权有效期间无需重复办理");
+                .isInstanceOfSatisfying(com.tradepass.framework.common.exception.BusinessException.class,
+                        error -> assertThat(error.getCode()).isEqualTo(46104))
+                .hasMessageContaining("印章管理员", "授权有效期间无需重复办理");
 
         verify(f.seals, never()).memberSealGrantUrl(anyString(), anyLong(), anyLong(), anyString());
     }

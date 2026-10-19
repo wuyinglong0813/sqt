@@ -1,0 +1,20 @@
+CREATE TABLE fadada_signing_member_sync (
+    id VARCHAR(48) NOT NULL,
+    company_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    requested_by BIGINT NULL,
+    trigger_source VARCHAR(48) NOT NULL,
+    status VARCHAR(40) NOT NULL DEFAULT 'PENDING',
+    attempt_count INT NOT NULL DEFAULT 0,
+    last_error_code INT NOT NULL DEFAULT 0,
+    last_error VARCHAR(512) NOT NULL DEFAULT '',
+    next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_attempt_at DATETIME NULL,
+    lease_token VARCHAR(36) NULL,
+    lease_until DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_signing_member_sync_target (company_id, user_id),
+    KEY idx_signing_member_sync_due (next_attempt_at, lease_until)
+);

@@ -67,7 +67,7 @@ class SigningMemberPreflightTest {
     void missingProviderMembershipBlocksPreparationBeforePdfOrTaskCreation() {
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(null);
         doThrow(new BusinessException("请先完成电子签企业成员激活"))
-                .when(companies).requireCurrentSigningMember(3L);
+                .when(companies).requireCurrentSigningAuthorization(3L);
 
         assertThatThrownBy(() -> service.signUrl(12L)).hasMessageContaining("成员激活");
 
@@ -99,7 +99,7 @@ class SigningMemberPreflightTest {
 
         assertThatThrownBy(() -> service.signUrl(12L)).hasMessageContaining("先授权签署");
 
-        verify(companies).requireCurrentSigningMember(3L);
+        verify(companies, never()).requireCurrentSigningMember(anyLong());
         verifyNoInteractions(gateway, pdf);
         verify(tasks, never()).insert(any(FadadaContractSignTaskDO.class));
     }

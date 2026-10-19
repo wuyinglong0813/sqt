@@ -47,6 +47,7 @@ BEGIN
         ('tradepass_staging_identity', 'fadada_user_identity'),
         ('tradepass_staging_identity', 'fadada_corp_identity'),
         ('tradepass_staging_identity', 'fadada_corp_seal'),
+        ('tradepass_staging_identity', 'fadada_signing_member_sync'),
         ('tradepass_staging_identity', 'member_removal_notice'),
         ('tradepass_staging_identity', 'audit_log'),
         ('tradepass_staging_business', 'contract_template'),

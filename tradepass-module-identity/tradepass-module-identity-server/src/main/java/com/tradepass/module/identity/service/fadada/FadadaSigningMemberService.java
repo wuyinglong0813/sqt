@@ -2,8 +2,10 @@ package com.tradepass.module.identity.service.fadada;
 
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import static com.tradepass.framework.common.exception.SigningErrorCodes.*;
 import com.tradepass.framework.common.pojo.ServiceUrlPayload;
 import com.tradepass.framework.fadada.core.FadadaCompanyGateway;
+import com.tradepass.framework.fadada.core.FadadaCompanyQueryException;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.module.identity.service.permission.AccessControlService;
 import org.springframework.stereotype.Service;
@@ -32,7 +34,17 @@ public class FadadaSigningMemberService {
 
     /** Resolves the target person, never the manager who happens to invoke this method. */
     public FadadaCompanyGateway.CompanyMember ensureSigningMember(long companyId, long userId) {
+        if (AuthContext.userId() != userId) accessControl.requireManager(companyId);
         var result = synchronize(companyId, userId);
+        requireActivated(result.member());
+        return result.member();
+    }
+
+    /** Server-only desired-state reconciliation; never an API or an impersonated request. */
+    FadadaCompanyGateway.CompanyMember reconcileLocalSigningMember(long companyId, long targetUserId) {
+        // synchronize rechecks ACTIVE membership, effective signing permission and
+        // the target's live personal identity before touching the provider company.
+        var result = synchronize(companyId, targetUserId);
         requireActivated(result.member());
         return result.member();
     }
@@ -50,16 +62,15 @@ public class FadadaSigningMemberService {
     }
 
     private MemberResolution synchronize(long companyId, long userId) {
-        if (userId <= 0 || !accessControl.isActiveMember(companyId, userId)) throw new BusinessException("该账号不是企业的有效成员");
+        if (userId <= 0 || !accessControl.isActiveMember(companyId, userId)) throw new BusinessException(ADMIN_REVIEW_REQUIRED, "该账号不是企业的有效成员");
         var role = accessControl.effectiveRole(companyId, userId);
         if (role == null || role.permissions() == null
                 || role.permissions().stream().noneMatch(value -> "contract_sign".equals(value) || "all".equals(value))) {
-            throw new BusinessException("该成员尚未获得商签通合同签署权限，请企业管理员先分配签署权限");
+            throw new BusinessException(ADMIN_REVIEW_REQUIRED, "该成员尚未获得商签通合同签署权限，请企业管理员先分配签署权限");
         }
-        if (AuthContext.userId() != userId) accessControl.requireManager(companyId);
         var person = personalService.verifiedPerson(userId);
         if (person == null || !hasText(person.fddId()) || !hasText(person.openUserId())) {
-            throw new BusinessException("当前个人实名信息尚未完整同步，请先完成个人认证后重试");
+            throw new BusinessException(PERSONAL_IDENTITY_REQUIRED, "当前个人实名信息尚未完整同步，请先完成个人认证后重试");
         }
         var identity = companyService.requireVerified(companyId);
         requireOrganizationAuthorization(identity);
@@ -80,7 +91,7 @@ public class FadadaSigningMemberService {
                 gateway.listMemberIds(identity.getOpenCorpId(), null));
         if (existing != null) return new MemberResolution(identity, existing);
         if (!hasText(person.name()) || !usableProviderAccount(person)) {
-            throw new BusinessException("电子签实名账号尚未返回可关联的手机号或邮箱，请本人先在电子签平台绑定账号后重新同步；系统不会使用其他联系手机号代替");
+            throw new BusinessException(ADMIN_REVIEW_REQUIRED, "电子签实名账号尚未返回可关联的手机号或邮箱，请本人先在电子签平台绑定账号后重新同步；系统不会使用其他联系手机号代替");
         }
         FadadaCompanyGateway.MemberInvitation created;
         try {
@@ -131,7 +142,7 @@ public class FadadaSigningMemberService {
         // provider account can receive that invitation; signing still requires fddId.
         if (!hasText(member.fddId()) && "inactive".equals(member.memberStatus())
                 && accountMatches(member, person)) return;
-        throw new BusinessException("电子签企业成员与该账号的个人实名标识不一致，请联系企业管理员核验，系统不会覆盖既有成员");
+        throw new BusinessException(ADMIN_REVIEW_REQUIRED, "电子签企业成员与该账号的个人实名标识不一致，请联系企业管理员核验，系统不会覆盖既有成员");
     }
 
     private boolean accountMatches(FadadaCompanyGateway.CompanyMember member,
@@ -142,17 +153,17 @@ public class FadadaSigningMemberService {
 
     private void requireLinkedIdentifier(FadadaCompanyGateway.CompanyMember member, String internalIdentifier) {
         if (!internalIdentifier.equals(member.internalIdentifier())) {
-            throw new BusinessException("电子签企业成员关联标识不一致，请联系企业管理员核验");
+            throw new BusinessException(ADMIN_REVIEW_REQUIRED, "电子签企业成员关联标识不一致，请联系企业管理员核验");
         }
     }
 
     private void requireActivated(FadadaCompanyGateway.CompanyMember member) {
         if ("activated".equals(member.memberStatus())) return;
         if ("disabled".equals(member.memberStatus())) {
-            throw new BusinessException("该成员已在电子签平台被禁用，请企业管理员核验；系统不会自动重新加入或恢复禁用成员");
+            throw new BusinessException(ADMIN_REVIEW_REQUIRED, "该成员已在电子签平台被禁用，请企业管理员核验；系统不会自动重新加入或恢复禁用成员");
         }
         if ("inactive".equals(member.memberStatus())) {
-            throw new BusinessException("成员已同步，请本人进入“企业 → 电子签成员”确认加入企业后重试，无需企业超管重复审批");
+            throw new BusinessException(MEMBER_ACTIVATION_REQUIRED, "成员已同步，请本人确认加入电子签企业后继续签署，无需企业超管重复审批");
         }
         throw new BusinessException("电子签企业成员状态尚未确认，请稍后重新同步");
     }
@@ -183,18 +194,25 @@ public class FadadaSigningMemberService {
     }
 
     private void requireOrganizationAuthorization(FadadaCorpIdentityDO identity) {
-        var account = gateway.getCompany(identity.getClientCorpId(), identity.getOpenCorpId());
+        FadadaCompanyGateway.CompanyAccount account;
+        try {
+            account = gateway.getCompany(identity.getClientCorpId(), identity.getOpenCorpId());
+        } catch (FadadaCompanyQueryException unavailable) {
+            if (!java.util.Set.of("210002", "210032").contains(unavailable.providerCode())) throw unavailable;
+            throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED,
+                    "企业成员核验授权尚未确认，请企业电子签超管补充组织数据授权后继续签署");
+        }
         if (account == null || !identity.getOpenCorpId().equals(account.openCorpId())
                 || (hasText(account.clientCorpId()) && !identity.getClientCorpId().equals(account.clientCorpId()))
                 || !"enable".equals(account.availableStatus()) || !"identified".equals(account.identStatus())
                 || !"authorized".equals(account.bindingStatus())) {
-            throw new BusinessException("企业电子签授权状态已变化，请由企业管理员重新核对企业认证");
+            throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED, "企业电子签授权状态已变化，请由企业管理员重新核对企业认证");
         }
         if (account.authScopes() == null || !account.authScopes().contains("organization")) {
-            throw new BusinessException("企业尚未授权电子签成员核验，请企业法大大超管在“企业 → 企业认证”补充组织数据授权后重试");
+            throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED, "企业尚未授权电子签成员核验，请企业法大大超管补充组织数据授权后继续签署");
         }
         if (!account.authScopes().containsAll(SIGNING_SCOPES)) {
-            throw new BusinessException("企业电子签业务授权不完整，请企业法大大超管重新核对企业认证授权");
+            throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED, "企业电子签业务授权不完整，请企业法大大超管重新核对企业认证授权");
         }
     }
 

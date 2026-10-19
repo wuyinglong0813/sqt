@@ -11,6 +11,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import static com.tradepass.framework.common.exception.SigningErrorCodes.*;
 import com.tradepass.framework.fadada.config.FadadaProperties;
 import com.tradepass.module.identity.api.fadada.dto.FadadaCompanyIdentityRespDTO;
 import com.tradepass.module.identity.api.fadada.dto.LegalRepresentativeRespDTO;
@@ -110,13 +111,12 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             company.setCertificationStatus("PENDING");
         }
         // Native completion redirect plus client polling; the return page verifies server state.
-        if ("VERIFIED".equals(identity.getLocalStatus())) {
+        if ("VERIFIED".equals(company.getCertificationStatus()) || "VERIFIED".equals(identity.getLocalStatus())) {
             var result = syncCurrent(companyId);
             identity = findForUpdate(companyId);
             // Older enterprises may have authorized signing before organization was
             // requested. They still need a real provider authorization flow to add it.
-            if ("VERIFIED".equals(result.status()) && hasText(identity.getAuthScopes())
-                    && identity.getAuthScopes().contains("\"organization\"")) {
+            if (result.organizationAuthorized()) {
                 return new ServiceUrlPayload(null, "company", result.status());
             }
         }
@@ -132,13 +132,20 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         } catch (FadadaCompanyQueryException exception) {
             if (!"210002".equals(exception.providerCode())) throw exception;
             // Already authorized is a cue to reconcile, never proof of this applicant's role.
-            var result = syncCurrent(companyId);
+            var result = sync(companyId);
+            if ("VERIFIED".equals(result.status()) && !result.organizationAuthorized()) {
+                // Keep the independently verified company identity committed. The
+                // requested consent is still outstanding; a null URL is not success.
+                return new ServiceUrlPayload(null, "company", "AUTHORIZATION_REQUIRED");
+            }
             return new ServiceUrlPayload(null, "company", result.status());
         }
         validateUrl(url);
         identity.setAuthorizationUserId(userId);
         identity.setAuthorizationSubmittedAt(attemptStartedAt);
-        identity.setLocalStatus("IN_PROGRESS");
+        // Supplementary resource consent does not undo a verified company identity.
+        // organizationAuthorized, confirmed from the provider, tracks its completion.
+        if (!"VERIFIED".equals(identity.getLocalStatus())) identity.setLocalStatus("IN_PROGRESS");
         identity.setFailureReason("");
         if (identity.getSubmittedAt() == null) identity.setSubmittedAt(attemptStartedAt);
         identityMapper.updateById(identity);
@@ -156,7 +163,8 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         CompanyDO company = requireCompany(companyId);
         FadadaCorpIdentityDO identity = findForUpdate(companyId);
         if (identity == null) return payload(companyId, null);
-        if (!"VERIFIED".equals(identity.getLocalStatus()) && identity.getLastSyncAt() != null
+        if (!"VERIFIED".equals(company.getCertificationStatus()) && !"VERIFIED".equals(identity.getLocalStatus())
+                && identity.getLastSyncAt() != null
                 && identity.getLastSyncAt().isAfter(LocalDateTime.now().minusSeconds(30))) {
             return payload(companyId, identity);
         }
@@ -191,7 +199,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         CompanyDO company = requireCompany(companyId);
         FadadaCorpIdentityDO identity = findForUpdate(companyId);
         if (identity == null || !hasText(identity.getOpenCorpId())) {
-            throw new BusinessException("请先完成企业认证");
+            throw new BusinessException(COMPANY_IDENTITY_REQUIRED, "请先完成企业认证");
         }
         if ("corp-cancel-authorization".equals(identity.getAuthorizationEventType())
                 && identity.getAuthorizationRevokedAt() != null
@@ -476,16 +484,14 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         CompanyDO company = companyMapper.selectById(companyId);
         if (identity == null || company == null || !"VERIFIED".equals(company.getCertificationStatus())
                 || !"VERIFIED".equals(identity.getLocalStatus()) || !hasText(identity.getOpenCorpId())) {
-            throw new BusinessException("请先完成企业认证");
+            throw new BusinessException(COMPANY_IDENTITY_REQUIRED, "请先完成企业认证");
         }
         if (!normalize(company.getName()).equals(normalize(identity.getVerifiedName()))
                 || !normalize(company.getCreditCode()).equals(normalize(identity.getVerifiedCreditCode()))) {
-            throw new BusinessException("企业信息与认证记录不一致，请重新核验企业认证");
+            throw new BusinessException(ADMIN_REVIEW_REQUIRED, "企业信息与认证记录不一致，请重新核验企业认证");
         }
-        for (String scope : AUTH_SCOPES) {
-            if (!hasText(identity.getAuthScopes()) || !identity.getAuthScopes().contains("\"" + scope + "\"")) {
-                throw new BusinessException("企业电子签授权不完整，请重新进入企业认证完成授权");
-            }
+        if (!authorizedScopes(identity).containsAll(AUTH_SCOPES)) {
+            throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED, "企业电子签授权不完整，请补充企业电子签授权后继续");
         }
         return identity;
     }
@@ -495,7 +501,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                 .eq(FadadaCorpSealDO::getCompanyId, companyId)
                 .eq(FadadaCorpSealDO::getSealStatus, "enable")
                 .orderByAsc(FadadaCorpSealDO::getId).last("LIMIT 1"));
-        if (seal == null) throw new BusinessException("请先启用企业电子印章");
+        if (seal == null) throw new BusinessException(SEAL_CONFIGURATION_REQUIRED, "请先启用企业电子印章");
         return seal.getSealId();
     }
 
@@ -589,7 +595,30 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                 existing ? EXISTING_AUTHORIZATION_REASON
                         : identity == null || !hasText(identity.getFailureReason()) ? null : identity.getFailureReason(),
                 enabled, seals, identity == null || identity.getLastSyncAt() == null
-                ? null : identity.getLastSyncAt().toString(), identity == null ? null : identity.getSealSyncWarning());
+                ? null : identity.getLastSyncAt().toString(), identity == null ? null : identity.getSealSyncWarning(),
+                false, organizationAuthorized(identity));
+    }
+
+    private boolean organizationAuthorized(FadadaCorpIdentityDO identity) {
+        return identity != null && "VERIFIED".equals(identity.getLocalStatus())
+                && "authorized".equalsIgnoreCase(identity.getBindingStatus())
+                && authorizedScopes(identity).containsAll(ONBOARDING_SCOPES);
+    }
+
+    private List<String> authorizedScopes(FadadaCorpIdentityDO identity) {
+        if (identity == null || !hasText(identity.getAuthScopes())) return List.of();
+        try {
+            JsonNode values = objectMapper.readTree(identity.getAuthScopes());
+            if (!values.isArray()) return List.of();
+            var scopes = new java.util.ArrayList<String>();
+            for (JsonNode value : values) {
+                if (!value.isTextual()) return List.of();
+                scopes.add(value.textValue());
+            }
+            return List.copyOf(scopes);
+        } catch (JsonProcessingException exception) {
+            return List.of();
+        }
     }
 
     private boolean existingAuthorization(FadadaCorpIdentityDO identity) {

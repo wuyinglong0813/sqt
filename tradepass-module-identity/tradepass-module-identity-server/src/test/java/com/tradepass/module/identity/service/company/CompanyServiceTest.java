@@ -544,6 +544,8 @@ class CompanyServiceTest {
 
     @Test
     void approvesMembersAndManagesCustomRolesWithinTenant() {
+        var events = mock(org.springframework.context.ApplicationEventPublisher.class);
+        ((CompanyServiceImpl) service).setEventPublisher(events);
         CompanyMemberDO pending = new CompanyMemberDO();
         pending.setId(12L);
         pending.setCompanyId(3L);
@@ -560,6 +562,8 @@ class CompanyServiceTest {
                 new ApproveReqVO("FINANCE", List.of("order_view")), "3");
         assertThat(approved.status()).isEqualTo("ACTIVE");
         assertThat(approved.roleText()).isEqualTo("财务");
+        verify(events).publishEvent(new com.tradepass.module.identity.service.fadada.SigningMemberSyncRequested(
+                3L, 8L, 7L, "MEMBER_APPROVED"));
         verify(accessControl).requireManager(3L);
         verify(memberMapper).update(any(Wrapper.class));
 
@@ -722,6 +726,8 @@ class CompanyServiceTest {
 
     @Test
     void changesAdministratorToEmptyCustomRoleAndClearsLegacyGrants() {
+        var events = mock(org.springframework.context.ApplicationEventPublisher.class);
+        ((CompanyServiceImpl) service).setEventPublisher(events);
         CompanyMemberDO member = new CompanyMemberDO();
         member.setId(12L);
         member.setCompanyId(3L);
@@ -736,6 +742,8 @@ class CompanyServiceTest {
         role.setPermissions("[]");
         when(roleMapper.selectOne(any(Wrapper.class))).thenReturn(role);
         service.updateMemberRole("12", new ApproveReqVO("CUSTOM_READONLY", List.of()), "3");
+        verify(events).publishEvent(new com.tradepass.module.identity.service.fadada.SigningMemberSyncRequested(
+                3L, 8L, 7L, "MEMBER_ROLE_CHANGED"));
         ArgumentCaptor<Wrapper> update = ArgumentCaptor.forClass(Wrapper.class);
         verify(memberMapper).update(update.capture());
         assertThat(update.getValue().getSqlSet()).contains("custom_permissions=", "is_administrator=", "role_code=");

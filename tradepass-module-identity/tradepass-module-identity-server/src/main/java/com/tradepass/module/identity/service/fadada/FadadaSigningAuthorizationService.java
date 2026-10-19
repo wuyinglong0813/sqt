@@ -2,6 +2,7 @@ package com.tradepass.module.identity.service.fadada;
 
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import static com.tradepass.framework.common.exception.SigningErrorCodes.*;
 import com.tradepass.framework.common.pojo.ServiceUrlPayload;
 import com.tradepass.framework.fadada.core.FadadaSealAuthorizationGateway;
 import com.tradepass.module.identity.service.permission.AccessControlService;
@@ -49,8 +50,8 @@ public class FadadaSigningAuthorizationService {
         var member = members.ensureSigningMember(companyId, AuthContext.userId());
         var company = companies.requireVerified(companyId);
         if (!hasEffectiveGrant(company.getOpenCorpId(), member.memberId(), configuredSealId(companyId))) {
-            throw new BusinessException("本人已同步为电子签企业成员，但尚未获得当前合同印章的有效用印授权。"
-                    + "请企业印章管理员在“企业 → 组织成员 → 授权签署”办理一次，授权有效期间无需重复办理");
+            throw new BusinessException(SEAL_AUTHORIZATION_REQUIRED, "本人尚未获得当前合同印章的有效用印授权，"
+                    + "请企业印章管理员办理一次，授权有效期间无需重复办理");
         }
     }
 
@@ -70,7 +71,7 @@ public class FadadaSigningAuthorizationService {
             if (sealId <= 0) throw new NumberFormatException();
             return sealId;
         } catch (NumberFormatException invalid) {
-            throw new BusinessException("当前企业尚未配置有效的合同签署印章");
+            throw new BusinessException(SEAL_CONFIGURATION_REQUIRED, "当前企业尚未配置有效的合同签署印章");
         }
     }
 }

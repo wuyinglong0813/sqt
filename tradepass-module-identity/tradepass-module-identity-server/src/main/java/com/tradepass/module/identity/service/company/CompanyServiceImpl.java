@@ -5,6 +5,7 @@ import com.tradepass.module.identity.api.permission.AccessControlOperations.*;
 
 import com.tradepass.framework.common.pojo.TradePassDtos;
 import com.tradepass.module.identity.service.fadada.FadadaPersonalIdentityService;
+import com.tradepass.module.identity.service.fadada.SigningMemberSyncRequested;
 import com.tradepass.module.identity.service.notice.MemberRemovalNoticeService;
 import com.tradepass.module.identity.service.permission.AccessControlService;
 import com.tradepass.module.identity.service.permission.RolePermissionService;
@@ -51,6 +52,7 @@ import com.tradepass.module.identity.dal.mysql.counterparty.CounterpartyRelation
 import com.tradepass.module.identity.dal.mysql.permission.PermDefMapper;
 import com.tradepass.module.identity.dal.mysql.permission.RoleDefMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -64,6 +66,7 @@ import java.util.UUID;
 
 @Service
 public class CompanyServiceImpl implements CompanyService {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(CompanyServiceImpl.class);
     private final CompanyMapper companyMapper;
     private final CompanyMemberMapper companyMemberMapper;
     private final CompanyInviteMapper companyInviteMapper;
@@ -80,6 +83,7 @@ public class CompanyServiceImpl implements CompanyService {
     private final boolean caMockEnabled;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private FadadaPersonalIdentityService personalIdentityService;
+    private ApplicationEventPublisher events;
 
     public CompanyServiceImpl(CompanyMapper companyMapper,
                           CompanyMemberMapper companyMemberMapper,
@@ -115,6 +119,9 @@ public class CompanyServiceImpl implements CompanyService {
     public void setPersonalIdentityService(FadadaPersonalIdentityService personalIdentityService) {
         this.personalIdentityService = personalIdentityService;
     }
+
+    @Autowired
+    public void setEventPublisher(ApplicationEventPublisher events) { this.events = events; }
 
     public List<CompanySearchSummary> searchCompanies(String keyword) {
         companySearchRateLimiter.check(AuthContext.userId());
@@ -457,6 +464,7 @@ public class CompanyServiceImpl implements CompanyService {
         Set<String> effective = new LinkedHashSet<>(rolePermissions);
         effective.addAll(customPermissions);
         auditLogService.log(cid, "COMPANY_MEMBER", memberId, "APPROVE", "分配角色 " + String.join("、", roleCodes));
+        requestSigningPreparation(cid, target.getUserId(), "MEMBER_APPROVED");
         return new AuthorizationRecord(id, companyId, String.valueOf(target.getUserId()), "", role.getCode(),
                 String.join("、", memberRoles(roles).stream().map(MemberRole::name).toList()),
                 List.copyOf(effective), "ACTIVE", "", null, memberRoles(roles));
@@ -511,6 +519,7 @@ public class CompanyServiceImpl implements CompanyService {
                 .set(CompanyMemberDO::getCustomPermissions, null));
         if (updated != 1) throw new BusinessException("成员状态已变化，请刷新后重试");
         auditLogService.log(cid, "COMPANY_MEMBER", memberId, "UPDATE_ROLE", "调整角色 " + String.join("、", roleCodes));
+        requestSigningPreparation(cid, target.getUserId(), "MEMBER_ROLE_CHANGED");
     }
 
     @Transactional
@@ -589,6 +598,16 @@ public class CompanyServiceImpl implements CompanyService {
             throw new BusinessException("角色状态已变化，请刷新后重试");
         }
         auditLogService.log(companyId, "ROLE", existing.getId(), "UPDATE", "更新角色 " + existing.getCode());
+        requestSigningPreparation(companyId, null, "ROLE_PERMISSIONS_CHANGED");
+    }
+
+    private void requestSigningPreparation(long companyId, Long targetUserId, String source) {
+        if (events == null) return;
+        try {
+            events.publishEvent(new SigningMemberSyncRequested(companyId, targetUserId, AuthContext.userId(), source));
+        } catch (RuntimeException failure) {
+            log.warn("Signing member preparation event deferred: companyId={}, targetUserId={}", companyId, targetUserId);
+        }
     }
 
     public void deleteRole(String id) {

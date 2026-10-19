@@ -150,7 +150,9 @@ class FadadaCompanyVerificationTest {
             assertThat(f.service.createAuthUrl(3L).url()).isEqualTo("https://example.test/add-organization-consent");
             verify(f.gateway).createAuthUrl(argThat(command -> command.authScopes().contains("organization")));
             assertThat(f.identity.getApplicantUserId()).isEqualTo(99L);
-            assertThat(f.identity.getLocalStatus()).isEqualTo("IN_PROGRESS");
+            assertThat(f.identity.getLocalStatus()).isEqualTo("VERIFIED");
+            assertThat(f.service.current(3L).organizationAuthorized()).isFalse();
+            verifyNoInteractions(f.certifications);
         } finally { AuthContext.clear(); }
     }
 
@@ -162,6 +164,151 @@ class FadadaCompanyVerificationTest {
         try {
             assertThat(f.service.createAuthUrl(3L).url()).isNull();
             verify(f.gateway, never()).createAuthUrl(any());
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void aLegacySupplementaryAttemptReconcilesLiveBeforeOpeningAnotherProviderPage() {
+        var f = new Fixture(); f.superAdmin(); f.detail("legal_rep", "open-user-7", "identified");
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("IN_PROGRESS");
+        f.identity.setLastSyncAt(java.time.LocalDateTime.now());
+        AuthContext.set(7L, 3L);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("VERIFIED");
+            assertThat(f.service.current(3L).organizationAuthorized()).isTrue();
+            verify(f.gateway).getCompany(anyString(), any());
+            verify(f.gateway, never()).createAuthUrl(any());
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void organizationConsentIsReportedIndependentlyFromHistoricalEnterpriseVerification() {
+        var f = new Fixture(); f.detail("legal_rep", "open-user-7", "identified");
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
+        assertThat(f.service.sync(3L).organizationAuthorized()).isFalse();
+        f.superAdmin();
+        var result = f.service.sync(3L);
+        assertThat(result.organizationAuthorized()).isTrue();
+        assertThat(result.withCallbackObsolete(true).organizationAuthorized()).isTrue();
+        f.identity.setAuthScopes("{\"organization\":true}");
+        assertThat(f.service.current(3L).organizationAuthorized()).isFalse();
+    }
+
+    @Test
+    void alreadyAuthorizedResponseCannotPretendTheMissingOrganizationConsentWasGranted() {
+        var f = new Fixture(); f.detail("legal_rep", "open-user-7", "identified");
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
+        when(f.gateway.createAuthUrl(any())).thenThrow(
+                new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210002"));
+        AuthContext.set(7L, 3L);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("AUTHORIZATION_REQUIRED");
+            assertThat(f.identity.getLocalStatus()).isEqualTo("VERIFIED");
+            assertThat(f.service.current(3L).organizationAuthorized()).isFalse();
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void firstEnrollmentRetainsConfirmedIdentityWhenAlreadyAuthorizedStillLacksOrganizationConsent() {
+        var f = new Fixture(); f.detail("deputy_auth", "open-user-7", "identified");
+        when(f.gateway.createAuthUrl(any())).thenThrow(
+                new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210002"));
+        AuthContext.set(7L, 3L);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("AUTHORIZATION_REQUIRED");
+            assertThat(f.identity.getLocalStatus()).isEqualTo("VERIFIED");
+            assertThat(f.identity.getApplicantUserId()).isEqualTo(7L);
+            assertThat(f.service.current(3L).organizationAuthorized()).isFalse();
+            verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(),
+                    eq(CertifiedApplicantRole.ADMIN));
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void supplementaryConsentStaysPendingUntilARealProviderRefreshConfirmsTheNewScope() {
+        var f = new Fixture(); f.detail("legal_rep", "open-user-99", "identified");
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
+        f.identity.setApplicantUserId(99L); f.identity.setProviderRequestId("original-99");
+        when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/supplementary-consent");
+        AuthContext.set(7L, 3L);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isEqualTo("https://example.test/supplementary-consent");
+            assertThat(result.status()).isEqualTo("VERIFIED");
+            assertThat(f.service.syncCurrent(3L).organizationAuthorized()).isFalse();
+            f.superAdmin();
+            var complete = f.service.syncCurrent(3L);
+            assertThat(complete.status()).isEqualTo("VERIFIED");
+            assertThat(complete.organizationAuthorized()).isTrue();
+            assertThat(f.identity.getApplicantUserId()).isEqualTo(99L);
+            assertThat(f.identity.getProviderRequestId()).isEqualTo("original-99");
+            verifyNoInteractions(f.certifications);
+            verify(f.gateway, times(3)).getCompany(anyString(), any());
+            verify(f.gateway).createAuthUrl(any());
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void supplementaryConsentFailurePreservesVerifiedCompanyAndItsOriginalApplication() {
+        var f = new Fixture(); f.detail("legal_rep", "open-user-99", "identified");
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
+        f.identity.setApplicantUserId(99L); f.identity.setProviderRequestId("original-99");
+        f.identity.setAuthorizationUserId(99L);
+        when(f.gateway.createAuthUrl(any())).thenThrow(new BusinessException("暂时无法获取授权页面"));
+        AuthContext.set(7L, 3L);
+        try {
+            assertThatThrownBy(() -> f.service.createAuthUrl(3L)).hasMessageContaining("暂时无法");
+            assertThat(f.identity.getLocalStatus()).isEqualTo("VERIFIED");
+            assertThat(f.identity.getApplicantUserId()).isEqualTo(99L);
+            assertThat(f.identity.getAuthorizationUserId()).isEqualTo(99L);
+            assertThat(f.identity.getAuthorizationSubmittedAt()).isNull();
+            assertThat(f.identity.getProviderRequestId()).isEqualTo("original-99");
+            assertThat(f.service.current(3L).organizationAuthorized()).isFalse();
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void supplementaryConsentRefreshCanRecoverWithoutRecreatingTheAuthorizationOrLosingIdentity() {
+        var f = new Fixture(); f.detail("legal_rep", "open-user-7", "identified");
+        f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
+        when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/supplementary-consent");
+        AuthContext.set(7L, 3L);
+        try {
+            f.service.createAuthUrl(3L);
+            when(f.gateway.getCompany(anyString(), any())).thenThrow(
+                    new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("100020"));
+            assertThatThrownBy(() -> f.service.syncCurrent(3L)).hasMessageContaining("30秒");
+            assertThat(f.identity.getLocalStatus()).isEqualTo("VERIFIED");
+            assertThat(f.service.current(3L).organizationAuthorized()).isFalse();
+            doReturn(new FadadaCompanyGateway.CompanyAccount("local-3", "corp-3", "authorized", "identified", "enable",
+                    java.util.stream.Stream.concat(SCOPES.stream(), java.util.stream.Stream.of("organization")).toList()))
+                    .when(f.gateway).getCompany(anyString(), any());
+            assertThat(f.service.syncCurrent(3L).organizationAuthorized()).isTrue();
+            assertThat(f.identity.getAuthorizationUserId()).isEqualTo(7L);
+            verify(f.gateway).createAuthUrl(any());
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void revokedLocalCompanyAccessCannotReuseAnExistingSupplementaryConsentAttempt() {
+        var f = new Fixture(); f.identity.setLocalStatus("VERIFIED"); f.superAdmin();
+        doThrow(new BusinessException("无权访问该企业")).when(f.accessControl).requireCertificationOperator(3L);
+        AuthContext.set(7L, 3L);
+        try {
+            assertThatThrownBy(() -> f.service.current(3L)).hasMessageContaining("无权");
+            assertThatThrownBy(() -> f.service.syncCurrent(3L)).hasMessageContaining("无权");
+            assertThatThrownBy(() -> f.service.createAuthUrl(3L)).hasMessageContaining("无权");
+            verifyNoInteractions(f.gateway, f.certifications, f.personal);
         } finally { AuthContext.clear(); }
     }
     @Test
@@ -467,7 +614,7 @@ class FadadaCompanyVerificationTest {
 
     @Test
     void renewingAuthorizationDoesNotTurnAnActiveCompanyBackIntoAnUnapprovedApplication() {
-        var f = new Fixture();
+        var f = new Fixture(); f.detail("deputy_auth", "open-user-7", "identified");
         f.company.setCertificationStatus("VERIFIED");
         var properties = new FadadaProperties();
         properties.setEnabled(true); properties.setAppId("test-app"); properties.setAppSecret("test-secret");
@@ -481,7 +628,9 @@ class FadadaCompanyVerificationTest {
             verify(f.gateway).createAuthUrl(argThat(command ->
                     java.net.URLDecoder.decode(command.redirectMiniAppUrl(), java.nio.charset.StandardCharsets.UTF_8)
                             .equals("/pages/service-return/service-return?scene=company&companyId=3")));
-            verify(f.companies, never()).update(any(Wrapper.class));
+            assertThat(f.company.getCertificationStatus()).isEqualTo("VERIFIED");
+            assertThat(f.identity.getLocalStatus()).isEqualTo("VERIFIED");
+            verifyNoInteractions(f.certifications);
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
     }
 
@@ -845,7 +994,7 @@ class FadadaCompanyVerificationTest {
 
     @Test
     void alreadyAuthorizedEnrollmentReconcilesInsteadOfGeneratingAnotherUrl() {
-        var f = new Fixture();
+        var f = new Fixture(); f.superAdmin();
         f.detail("deputy_auth", "open-user-7", "identified");
         when(f.gateway.createAuthUrl(any())).thenThrow(
                 new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210002"));
@@ -869,6 +1018,7 @@ class FadadaCompanyVerificationTest {
         final FadadaCorpIdentityDO identity = new FadadaCorpIdentityDO();
         final CompanyDO company = new CompanyDO();
         final FadadaProperties properties = new FadadaProperties();
+        final AccessControlService accessControl = mock(AccessControlService.class);
         final FadadaCompanyService service;
         Fixture() { this(true); }
         Fixture(boolean providerConfirmed) {
@@ -886,7 +1036,7 @@ class FadadaCompanyVerificationTest {
             properties.setOperatorOpenUserIdConfirmed(providerConfirmed);
             properties.setEnabled(true); properties.setAppId("test-app"); properties.setAppSecret("test-secret");
             properties.setServerUrl("https://example.test"); properties.setCallbackUrl("https://example.test/callback");
-            service = new FadadaCompanyServiceImpl(identities, seals, companies, users, mock(AccessControlService.class),
+            service = new FadadaCompanyServiceImpl(identities, seals, companies, users, accessControl,
                     certifications, personal, gateway, properties, new ObjectMapper());
         }
         void superAdmin() {

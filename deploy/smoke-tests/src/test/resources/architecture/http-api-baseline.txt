@@ -30,6 +30,7 @@
 {GET [/api/contracts/{id}/memo]}
 {GET [/api/contracts/{id}/signed-preview-chunk-data]}
 {GET [/api/contracts/{id}/signed-preview-data]}
+{GET [/api/contracts/{id}/signing/quote]}
 {GET [/api/contracts/{id}/signing]}
 {GET [/api/contracts]}
 {GET [/api/counterparties]}
@@ -49,6 +50,11 @@
 {GET [/api/me/membership-notices]}
 {GET [/api/me/todos]}
 {GET [/api/me]}
+{GET [/api/membership/orders/{no}]}
+{GET [/api/membership/orders]}
+{GET [/api/membership/products]}
+{GET [/api/membership/usage]}
+{GET [/api/membership]}
 {GET [/api/orders/monthly-summary]}
 {GET [/api/orders/summary]}
 {GET [/api/orders]}
@@ -70,6 +76,11 @@
 {GET [/api/reconciliation-statements/{id}/content-data]}
 {GET [/api/reconciliation-statements/{id}/content]}
 {GET [/api/reconciliation-statements]}
+{GET [/api/retail/customers/{id}/documents]}
+{GET [/api/retail/customers/{id}]}
+{GET [/api/retail/customers]}
+{GET [/api/retail/documents/{id}/pdf-data]}
+{GET [/api/retail/documents/{id}]}
 {GET [/api/roles]}
 {GET [/api/trade-documents/{id}/memo]}
 {GET [/api/trade-documents/{id}/pdf-data]}
@@ -110,10 +121,12 @@
 {POST [/api/contracts/{id}/approve]}
 {POST [/api/contracts/{id}/cancel]}
 {POST [/api/contracts/{id}/delete]}
+{POST [/api/contracts/{id}/members/{userId}/seal-grant-url]}
 {POST [/api/contracts/{id}/memo]}
 {POST [/api/contracts/{id}/reject]}
 {POST [/api/contracts/{id}/resubmit]}
 {POST [/api/contracts/{id}/sign-url]}
+{POST [/api/contracts/{id}/signing/prerequisites]}
 {POST [/api/contracts/{id}/signing/sync]}
 {POST [/api/contracts]}
 {POST [/api/counterparties]}
@@ -125,7 +138,10 @@
 {POST [/api/fadada/companies/{companyId}/identity/sync]}
 {POST [/api/fadada/companies/{companyId}/legal-representative/auth-url]}
 {POST [/api/fadada/companies/{companyId}/legal-representative/sync]}
+{POST [/api/fadada/companies/{companyId}/members/{userId}/seal-grant-url]}
+{POST [/api/fadada/companies/{companyId}/organization-manage-url]}
 {POST [/api/fadada/companies/{companyId}/seal-manage-url]}
+{POST [/api/fadada/companies/{companyId}/signing-member/sync]}
 {POST [/api/fadada/users/me/auth-url]}
 {POST [/api/fadada/users/me/identity/sync]}
 {POST [/api/files/upload-token]}
@@ -134,12 +150,24 @@
 {POST [/api/me/company]}
 {POST [/api/me/membership-notices/acknowledge]}
 {POST [/api/me/switch-company]}
+{POST [/api/membership/orders/{no}/close]}
+{POST [/api/membership/orders/{no}/prepay]}
+{POST [/api/membership/orders/{no}/sync]}
+{POST [/api/membership/orders]}
+{POST [/api/membership/payment/notify], consumes [application/json]}
 {POST [/api/orders]}
 {POST [/api/project-ledgers/contracts/{contractId:\d+}/dismiss]}
 {POST [/api/project-ledgers/{id:\d+}/contracts/{contractId:\d+}/remove]}
 {POST [/api/project-ledgers/{id:\d+}/contracts]}
 {POST [/api/project-ledgers]}
 {POST [/api/reconciliation-statements], consumes [multipart/form-data]}
+{POST [/api/retail/customers/{id}/documents]}
+{POST [/api/retail/customers/{id}]}
+{POST [/api/retail/customers]}
+{POST [/api/retail/documents/{id}/confirm]}
+{POST [/api/retail/documents/{id}/delete]}
+{POST [/api/retail/documents/{id}/draft]}
+{POST [/api/retail/documents/{id}/stock]}
 {POST [/api/roles]}
 {POST [/api/sales-orders/{id}/receive], consumes [application/json]}
 {POST [/api/sales-orders/{id}/receive], consumes [multipart/form-data]}

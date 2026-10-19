@@ -152,8 +152,8 @@ public final class SplitDatabaseMigration {
     private static void requireSourceVersion(Connection source) throws SQLException {
         try (var statement = source.createStatement(); var rows = statement.executeQuery(
                 "SELECT MAX(CAST(version AS UNSIGNED)), SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) FROM flyway_schema_history")) {
-            if (!rows.next() || !Set.of(40, 41, 42).contains(rows.getInt(1)) || rows.getInt(2) != 0) {
-                throw new IllegalStateException("Source must match reviewed V40–V42 migrations, including membership payment and signing reconciliation");
+            if (!rows.next() || rows.getInt(1) != 43 || rows.getInt(2) != 0) {
+                throw new IllegalStateException("Upgrade the source to reviewed V43 before cutover, including the signing member preparation table");
             }
         }
     }

@@ -44,6 +44,7 @@ import java.util.List;
 
 public interface FadadaContractSigningService {
     java.util.Map<String, Object> signingQuote(Long contractId);
+    java.util.Map<String, Object> signingPrerequisites(Long contractId);
     void setAbolishIntentService(ContractAbolishIntentService service);
     ContractSigningRespDTO current(Long contractId);
     ServiceUrlPayload signUrl(Long contractId);

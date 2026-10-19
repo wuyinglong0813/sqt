@@ -43,6 +43,17 @@ class DomainWireCompatibilityTest {
         assertFalse(unavailable.getMessage().contains("private"));
     }
 
+    @Test void actionableSigningCodeSurvivesTheDomainBoundaryAndLegacyErrorsRemainCompatible() {
+        var decoder = new DomainFeignConfiguration().domainErrors(mapper);
+        var actionable = assertInstanceOf(com.tradepass.framework.common.exception.BusinessException.class,
+                decoder.decode("test", response(400, "{\"code\":46101,\"message\":\"请补充组织数据授权\"}")));
+        assertEquals(46101, actionable.getCode());
+        assertEquals("请补充组织数据授权", actionable.getMessage());
+        var legacy = assertInstanceOf(com.tradepass.framework.common.exception.BusinessException.class,
+                decoder.decode("test", response(400, "{\"message\":\"原业务错误\"}")));
+        assertEquals(400, legacy.getCode());
+    }
+
     static Response response(int status, String body) {
         return Response.builder().status(status).reason("test")
                 .request(Request.create(Request.HttpMethod.POST, "http://isolated/internal/domain/test", Map.of(), null, StandardCharsets.UTF_8, null))
