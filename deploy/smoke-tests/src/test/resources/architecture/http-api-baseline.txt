@@ -30,6 +30,7 @@
 {GET [/api/contracts/{id}/memo]}
 {GET [/api/contracts/{id}/signed-preview-chunk-data]}
 {GET [/api/contracts/{id}/signed-preview-data]}
+{GET [/api/contracts/{id}/signed-preview-manifest]}
 {GET [/api/contracts/{id}/signing/quote]}
 {GET [/api/contracts/{id}/signing]}
 {GET [/api/contracts]}
