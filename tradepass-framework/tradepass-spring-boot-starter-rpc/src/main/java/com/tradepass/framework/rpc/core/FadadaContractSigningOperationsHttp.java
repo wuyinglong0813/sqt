@@ -19,6 +19,8 @@ public class FadadaContractSigningOperationsHttp {
     public record SignUrl1Request(Long contractId) {}
     public record SyncCurrent1Request(Long contractId) {}
     public record SignedPreview1Request(Long contractId) {}
+    public record SignedPreviewManifest1Request(Long contractId) {}
+    public record SignedPreviewPage3Request(Long contractId, int page, String archiveKey) {}
     public record SyncBySignTaskId1Request(String signTaskId) {}
     public record AbolishUrl2Request(Long contractId, String reason) {}
 
@@ -33,6 +35,10 @@ public class FadadaContractSigningOperationsHttp {
         ContractSigningRespDTO syncCurrent1(@RequestBody SyncCurrent1Request request);
         @PostMapping("/internal/domain/FadadaContractSigningOperations/signedPreview1")
         SignedPreview signedPreview1(@RequestBody SignedPreview1Request request);
+        @PostMapping("/internal/domain/FadadaContractSigningOperations/signedPreviewManifest1")
+        SignedPreviewManifest signedPreviewManifest1(@RequestBody SignedPreviewManifest1Request request);
+        @PostMapping("/internal/domain/FadadaContractSigningOperations/signedPreviewPage3")
+        SignedPreview signedPreviewPage3(@RequestBody SignedPreviewPage3Request request);
         @PostMapping("/internal/domain/FadadaContractSigningOperations/syncBySignTaskId1")
         void syncBySignTaskId1(@RequestBody SyncBySignTaskId1Request request);
         @PostMapping("/internal/domain/FadadaContractSigningOperations/abolishUrl2")
@@ -47,6 +53,8 @@ public class FadadaContractSigningOperationsHttp {
             @Override public ServiceUrlPayload signUrl(Long contractId) { return client.signUrl1(new SignUrl1Request(contractId)); }
             @Override public ContractSigningRespDTO syncCurrent(Long contractId) { return client.syncCurrent1(new SyncCurrent1Request(contractId)); }
             @Override public SignedPreview signedPreview(Long contractId) { return client.signedPreview1(new SignedPreview1Request(contractId)); }
+            @Override public SignedPreviewManifest signedPreviewManifest(Long contractId) { return client.signedPreviewManifest1(new SignedPreviewManifest1Request(contractId)); }
+            @Override public SignedPreview signedPreviewPage(Long contractId, int page, String archiveKey) { return client.signedPreviewPage3(new SignedPreviewPage3Request(contractId, page, archiveKey)); }
             @Override public void syncBySignTaskId(String signTaskId) { client.syncBySignTaskId1(new SyncBySignTaskId1Request(signTaskId)); }
             @Override public ServiceUrlPayload abolishUrl(Long contractId, String reason) { return client.abolishUrl2(new AbolishUrl2Request(contractId, reason)); }
         };
@@ -65,6 +73,10 @@ public class FadadaContractSigningOperationsHttp {
         public ContractSigningRespDTO syncCurrent1(@RequestBody SyncCurrent1Request request) { return operations.syncCurrent(request.contractId()); }
         @PostMapping("/internal/domain/FadadaContractSigningOperations/signedPreview1")
         public SignedPreview signedPreview1(@RequestBody SignedPreview1Request request) { return operations.signedPreview(request.contractId()); }
+        @PostMapping("/internal/domain/FadadaContractSigningOperations/signedPreviewManifest1")
+        public SignedPreviewManifest signedPreviewManifest1(@RequestBody SignedPreviewManifest1Request request) { return operations.signedPreviewManifest(request.contractId()); }
+        @PostMapping("/internal/domain/FadadaContractSigningOperations/signedPreviewPage3")
+        public SignedPreview signedPreviewPage3(@RequestBody SignedPreviewPage3Request request) { return operations.signedPreviewPage(request.contractId(), request.page(), request.archiveKey()); }
         @PostMapping("/internal/domain/FadadaContractSigningOperations/syncBySignTaskId1")
         public void syncBySignTaskId1(@RequestBody SyncBySignTaskId1Request request) { operations.syncBySignTaskId(request.signTaskId()); }
         @PostMapping("/internal/domain/FadadaContractSigningOperations/abolishUrl2")

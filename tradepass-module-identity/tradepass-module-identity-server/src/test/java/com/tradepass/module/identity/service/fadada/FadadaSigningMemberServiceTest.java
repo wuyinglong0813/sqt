@@ -2,6 +2,7 @@ package com.tradepass.module.identity.service.fadada;
 
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.framework.fadada.config.FadadaProperties;
 import com.tradepass.framework.fadada.core.FadadaCompanyGateway;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.module.identity.service.permission.AccessControlService;
@@ -96,6 +97,57 @@ class FadadaSigningMemberServiceTest {
                 "local-3", "another-corp", "authorized", "identified", "enable", List.of("organization")));
         assertThatThrownBy(() -> f.service.requireCurrentSigningMember(3L)).hasMessageContaining("授权状态已变化");
         verify(f.gateway, never()).listMemberIds(anyString(), anyString());
+    }
+
+    @Test
+    void aVerifiedApplicationOwnerKeepsItsProviderDefaultBindingForSigningMembers() {
+        var f = new Fixture();
+        f.ownerEnterprise();
+        f.member(89L, "activated", "current-fdd-id");
+        assertThatCode(() -> f.service.requireCurrentSigningMember(3L)).doesNotThrowAnyException();
+        verify(f.gateway).getMember("corp-3", 89L);
+        verify(f.gateway, never()).createAuthUrl(any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"app", "openCorp", "clientCorp", "credit", "missingCredit"})
+    void theProviderDefaultBindingCannotBeReusedOutsideTheConfiguredOwner(String mismatch) {
+        var f = new Fixture();
+        f.ownerEnterprise();
+        switch (mismatch) {
+            case "app" -> f.properties.setAppId("another-app");
+            case "openCorp" -> f.properties.setOwnerEnterpriseOpenCorpId("another-corp");
+            case "clientCorp" -> f.properties.setOwnerEnterpriseClientCorpId("another-client");
+            case "credit" -> f.identity.setVerifiedCreditCode("another-credit");
+            case "missingCredit" -> f.identity.setVerifiedCreditCode(null);
+        }
+        assertThatThrownBy(() -> f.service.requireCurrentSigningMember(3L)).hasMessageContaining("授权状态已变化");
+        verify(f.gateway, never()).listMemberIds(anyString(), nullable(String.class));
+        verify(f.gateway, never()).createMember(any());
+    }
+
+    @Test
+    void theApplicationOwnerStillRequiresAllSigningAndOrganizationConsent() {
+        var f = new Fixture();
+        f.ownerEnterprise();
+        when(f.gateway.getCompany("local-3", "corp-3")).thenReturn(new FadadaCompanyGateway.CompanyAccount(
+                "provider-default", "corp-3", "authorized", "identified", "enable", List.of("ident_info")));
+        assertThatThrownBy(() -> f.service.requireCurrentSigningMember(3L)).hasMessageContaining("补充组织数据授权");
+        verify(f.gateway, never()).listMemberIds(anyString(), nullable(String.class));
+        when(f.gateway.getCompany("local-3", "corp-3")).thenReturn(new FadadaCompanyGateway.CompanyAccount(
+                "provider-default", "corp-3", "authorized", "identified", "enable", List.of("organization", "ident_info")));
+        assertThatThrownBy(() -> f.service.requireCurrentSigningMember(3L)).hasMessageContaining("业务授权不完整");
+        verify(f.gateway, never()).createMember(any());
+    }
+
+    @Test
+    void theApplicationOwnerCannotSubstituteForTheCurrentPersonsVerifiedMembership() {
+        var f = new Fixture();
+        f.ownerEnterprise();
+        when(f.gateway.findMemberByInternalIdentifier("corp-3", "tradepass-user-7"))
+                .thenReturn(f.linked(90L, "activated", "another-person"));
+        assertThatThrownBy(() -> f.service.requireCurrentSigningMember(3L)).hasMessageContaining("个人实名标识不一致");
+        verify(f.gateway, never()).createMember(any());
     }
 
     @Test
@@ -274,10 +326,11 @@ class FadadaSigningMemberServiceTest {
         final FadadaCompanyService companies = mock(FadadaCompanyService.class);
         final FadadaPersonalIdentityService personal = mock(FadadaPersonalIdentityService.class);
         final FadadaCompanyGateway gateway = mock(FadadaCompanyGateway.class);
-        final FadadaSigningMemberService service = new FadadaSigningMemberService(access, companies, personal, gateway);
+        final FadadaProperties properties = new FadadaProperties();
+        final FadadaCorpIdentityDO identity = new FadadaCorpIdentityDO();
+        final FadadaSigningMemberService service = new FadadaSigningMemberService(access, companies, personal, gateway, properties);
         Fixture() {
             AuthContext.set(7L, 3L);
-            var identity = new FadadaCorpIdentityDO();
             identity.setClientCorpId("local-3"); identity.setOpenCorpId("corp-3");
             when(access.isActiveMember(3L, 7L)).thenReturn(true);
             when(access.effectiveRole(3L, 7L)).thenReturn(new EffectiveRole("SIGNER", "签署人", List.of("contract_sign")));
@@ -289,6 +342,17 @@ class FadadaSigningMemberServiceTest {
             when(gateway.listMemberIds("corp-3", "武英龙")).thenReturn(List.of(88L, 89L));
             when(gateway.listMemberIds("corp-3", null)).thenReturn(List.of(88L, 89L));
             member(88L, "activated", "another-person"); member(89L, "activated", "another-person");
+        }
+        void ownerEnterprise() {
+            properties.setAppId("owner-app");
+            properties.setOwnerEnterpriseAppId("owner-app");
+            properties.setOwnerEnterpriseOpenCorpId("corp-3");
+            properties.setOwnerEnterpriseClientCorpId("provider-default");
+            properties.setOwnerEnterpriseCreditCode("owner-credit");
+            identity.setVerifiedCreditCode("owner-credit");
+            when(gateway.getCompany("local-3", "corp-3")).thenReturn(new FadadaCompanyGateway.CompanyAccount(
+                    "provider-default", "corp-3", "authorized", "identified", "enable", List.of(
+                    "ident_info", "seal_info", "signtask_init", "signtask_info", "signtask_file", "organization")));
         }
         void member(long id, String status, String fddId) {
             when(gateway.getMember("corp-3", id)).thenReturn(new FadadaCompanyGateway.CompanyMember(id, status, List.of(), fddId));

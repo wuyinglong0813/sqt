@@ -198,6 +198,12 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
 
     @Override
     public byte[] downloadSignedPreviewPage(String signTaskId, String ownerOpenCorpId) {
+        List<byte[]> pages = downloadSignedPreviewPages(signTaskId, ownerOpenCorpId);
+        return pages.get(pages.size() - 1);
+    }
+
+    @Override
+    public List<byte[]> downloadSignedPreviewPages(String signTaskId, String ownerOpenCorpId) {
         GetSignTaskImgDownloadUrlReq request = new GetSignTaskImgDownloadUrlReq();
         request.setAccessToken(tokenProvider.get());
         request.setOwnerId(OpenId.getInstance("corp", ownerOpenCorpId));
@@ -205,7 +211,7 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         GetSigntaskImgDownloadUrlRes response = invoke(request,
                 () -> signTaskClient.getSignTaskOwnerSlicingTicketId(request),
                 "获取签署合同预览");
-        return lastPngFromZip(download(response.getSignTaskImgUrl()));
+        return pngPagesFromZip(download(response.getSignTaskImgUrl()));
     }
 
     @Override
@@ -356,12 +362,17 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
     }
 
     static byte[] lastPngFromZip(byte[] zipData) {
+        List<byte[]> pages = pngPagesFromZip(zipData);
+        return pages.get(pages.size() - 1);
+    }
+
+    static List<byte[]> pngPagesFromZip(byte[] zipData) {
         if (zipData == null || zipData.length == 0) {
             throw new BusinessException("签署合同预览内容为空");
         }
-        byte[] selected = null;
-        int selectedPage = Integer.MIN_VALUE;
+        var pages = new java.util.ArrayList<PreviewImage>();
         int fallbackOrder = 0;
+        long totalBytes = 0;
         try (ZipInputStream input = new ZipInputStream(new ByteArrayInputStream(zipData))) {
             ZipEntry entry;
             int pageCount = 0;
@@ -379,8 +390,12 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
                 int length;
                 while ((length = input.read(buffer)) != -1) {
                     total += length;
+                    totalBytes += length;
                     if (total > MAX_PREVIEW_PAGE_SIZE) {
                         throw new BusinessException("签署合同预览页过大");
+                    }
+                    if (totalBytes > MAX_SIGNED_FILE_SIZE) {
+                        throw new BusinessException("签署合同预览内容过大，请打开归档 PDF 查看");
                     }
                     page.write(buffer, 0, length);
                 }
@@ -389,10 +404,7 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
                     throw new BusinessException("签署合同预览格式不正确");
                 }
                 int pageNumber = pageNumber(entry.getName(), fallbackOrder++);
-                if (selected == null || pageNumber >= selectedPage) {
-                    selected = data;
-                    selectedPage = pageNumber;
-                }
+                pages.add(new PreviewImage(pageNumber, data));
                 input.closeEntry();
             }
         } catch (BusinessException exception) {
@@ -400,11 +412,14 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         } catch (java.io.IOException exception) {
             throw new BusinessException("签署合同预览读取失败，请打开归档 PDF 查看");
         }
-        if (selected == null) {
+        if (pages.isEmpty()) {
             throw new BusinessException("签署合同预览尚未生成，请打开归档 PDF 查看");
         }
-        return selected;
+        pages.sort(java.util.Comparator.comparingInt(PreviewImage::pageNumber));
+        return pages.stream().map(PreviewImage::data).toList();
     }
+
+    private record PreviewImage(int pageNumber, byte[] data) {}
 
     private static int pageNumber(String name, int fallback) {
         String baseName = name == null ? "" : name.replace('\\', '/');

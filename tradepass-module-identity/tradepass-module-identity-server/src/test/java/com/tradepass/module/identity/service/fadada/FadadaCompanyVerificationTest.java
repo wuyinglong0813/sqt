@@ -54,6 +54,65 @@ class FadadaCompanyVerificationTest {
     }
 
     @Test
+    void trustedOwnerRevocationReachesTheExistingLocalIdentityWithoutReplacingItsClientId() {
+        var f = new Fixture(); trustOwner(f);
+        f.company.setCertificationStatus("VERIFIED");
+        f.identity.setLocalStatus("VERIFIED"); f.identity.setOpenCorpId("corp-3");
+        f.identity.setBindingStatus("authorized"); f.identity.setAuthScopes("[\"organization\"]");
+        when(f.identities.selectOne(any(Wrapper.class))).thenReturn(null, f.identity, f.identity);
+        var cancel = new ObjectMapper().createObjectNode().put("_verifiedEvent", "corp-cancel-authorization")
+                .put("clientCorpId", "default-owner-client").put("openCorpId", "corp-3")
+                .put("eventTime", String.valueOf(System.currentTimeMillis()));
+
+        var result = f.service.syncCallback("default-owner-client", "corp-3", cancel);
+
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.companyAuthorizationReady()).isFalse();
+        assertThat(f.identity.getBindingStatus()).isEqualTo("unauthorized");
+        assertThat(f.identity.getAuthScopes()).isEqualTo("[]");
+        assertThat(f.identity.getAuthorizationEventType()).isEqualTo("corp-cancel-authorization");
+        assertThat(f.identity.getClientCorpId()).isEqualTo("local-3");
+        verify(f.identities).updateById(f.identity);
+        verifyNoInteractions(f.gateway, f.certifications);
+    }
+
+    @Test
+    void ownerCallbackCannotReachACompanyWhoseCreditCodeDoesNotMatchTheTrustedTuple() {
+        var f = new Fixture(); trustOwner(f);
+        f.properties.setOwnerEnterpriseCreditCode("OTHER-CREDIT");
+        f.identity.setLocalStatus("VERIFIED"); f.identity.setOpenCorpId("corp-3");
+        f.identity.setBindingStatus("authorized");
+        when(f.identities.selectOne(any(Wrapper.class))).thenReturn(null, f.identity, f.identity);
+        var cancel = new ObjectMapper().createObjectNode().put("_verifiedEvent", "corp-cancel-authorization")
+                .put("eventTime", String.valueOf(System.currentTimeMillis()));
+
+        assertThat(f.service.syncCallback("default-owner-client", "corp-3", cancel)).isNull();
+
+        assertThat(f.identity.getLocalStatus()).isEqualTo("VERIFIED");
+        assertThat(f.identity.getBindingStatus()).isEqualTo("authorized");
+        assertThat(f.identity.getAuthorizationEventType()).isNull();
+        verify(f.identities, never()).updateById(any(FadadaCorpIdentityDO.class));
+        verifyNoInteractions(f.gateway, f.certifications);
+    }
+
+    @Test
+    void anOrdinaryWrongCallbackClientCannotFallBackToAnExistingOpenCorpId() {
+        var f = new Fixture(); trustOwner(f);
+        f.identity.setLocalStatus("VERIFIED"); f.identity.setOpenCorpId("corp-3");
+        when(f.identities.selectOne(any(Wrapper.class))).thenReturn(null, f.identity);
+        var cancel = new ObjectMapper().createObjectNode().put("_verifiedEvent", "corp-cancel-authorization")
+                .put("eventTime", String.valueOf(System.currentTimeMillis()));
+
+        assertThat(f.service.syncCallback("wrong-client", "corp-3", cancel)).isNull();
+
+        assertThat(f.identity.getLocalStatus()).isEqualTo("VERIFIED");
+        assertThat(f.identity.getAuthorizationEventType()).isNull();
+        verify(f.identities, times(1)).selectOne(any(Wrapper.class));
+        verify(f.identities, never()).updateById(any(FadadaCorpIdentityDO.class));
+        verifyNoInteractions(f.companies, f.gateway, f.certifications);
+    }
+
+    @Test
     void olderCorporateRevocationCannotOverrideNewerAuthorizationWatermark() {
         var f = new Fixture(); f.identity.setLocalStatus("VERIFIED");
         f.identity.setAuthorizationEventAt(java.time.LocalDateTime.now());
@@ -387,7 +446,7 @@ class FadadaCompanyVerificationTest {
         var result = f.service.syncCurrent(3L);
         assertThat(result.status()).isEqualTo("IN_PROGRESS");
         assertThat(result.failureReason()).contains("已在法大大实名", "原认证经办人不是当前账号",
-                "申请超管权限", "以当前账号重新完成企业授权", "联系平台支持核验")
+                "原经办人不等于当前法人", "本人企业身份仍需独立核验", "联系平台支持核验")
                 .doesNotContain("尚未返回经办人身份", "稍后重新同步");
         verifyNoInteractions(f.certifications);
         verify(f.gateway, never()).getMember(anyString(), anyLong());
@@ -513,8 +572,8 @@ class FadadaCompanyVerificationTest {
         var f = new Fixture(); f.detailWithoutOperator("legal_rep");
         var result = f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-9"));
         assertThat(result.status()).isEqualTo("IN_PROGRESS");
-        assertThat(result.failureReason()).contains("本次授权经办人与当前小程序账号不一致", "申请超管权限",
-                "以当前账号重新完成企业授权");
+        assertThat(result.failureReason()).contains("本次授权经办人与当前小程序账号不一致", "企业授权不代表当前申请人的身份已通过",
+                "本人账号完成企业身份核验");
         verifyNoInteractions(f.certifications);
         verify(f.gateway, never()).getMember(anyString(), anyLong());
     }
@@ -1003,8 +1062,231 @@ class FadadaCompanyVerificationTest {
             var result = f.service.createAuthUrl(3L);
             assertThat(result.url()).isNull();
             assertThat(result.status()).isEqualTo("VERIFIED");
+            verify(f.gateway, never()).createAuthUrl(any());
             verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(), eq(CertifiedApplicantRole.ADMIN));
         } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void firstEnrollmentRecoversDefaultEnterpriseConsentAndVerifiesTheActualLegalOperatorBeforeOpeningAnyPage() {
+        var f = new Fixture(false); f.superAdmin(); f.documentedOperator("legal_rep", "open-user-7");
+        when(f.gateway.getCompany(anyString(), any())).thenThrow(
+                new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210032"));
+        when(f.gateway.getCompanyByCreditCode("TEST-CREDIT")).thenReturn(
+                new FadadaCompanyGateway.CompanyAccount(null, "corp-3", "authorized", "identified", "enable", onboardingScopes()));
+        AuthContext.set(7L, null);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("VERIFIED");
+            assertThat(f.identity.getOpenCorpId()).isEqualTo("corp-3");
+            assertThat(f.identity.getClientCorpId()).isEqualTo("local-3");
+            verify(f.gateway).getCompanyByCreditCode("TEST-CREDIT");
+            verify(f.gateway, never()).createAuthUrl(any());
+            verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(),
+                    eq(CertifiedApplicantRole.LEGAL));
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void defaultEnterpriseConsentDoesNotTurnThePurchaserOrAMatchingNameIntoTheCurrentApplicantsLegalProof() {
+        var f = new Fixture(false); f.superAdmin(); f.documentedOperator("deputy_auth", "purchasers-open-user");
+        when(f.gateway.getCompany(anyString(), any())).thenReturn(
+                new FadadaCompanyGateway.CompanyAccount(null, "corp-3", "authorized", "identified", "enable", onboardingScopes()));
+        AuthContext.set(7L, null);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("IDENTITY_VERIFICATION_REQUIRED");
+            assertThat(f.identity.getLocalStatus()).isEqualTo("IN_PROGRESS");
+            assertThat(f.identity.getBindingStatus()).isEqualTo("authorized");
+            assertThat(f.identity.getOpenCorpId()).isEqualTo("corp-3");
+            assertThat(f.identity.getFailureReason()).contains("有效授权", "本人", "无需重复办理企业授权");
+            verify(f.gateway, never()).createAuthUrl(any());
+            verifyNoInteractions(f.certifications);
+
+            // A later authoritative personal/operator result can complete the same saved application.
+            f.documentedOperator("legal_rep", "open-user-7");
+            var retry = f.service.createAuthUrl(3L);
+            assertThat(retry.url()).isNull();
+            assertThat(retry.status()).isEqualTo("VERIFIED");
+            verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(),
+                    eq(CertifiedApplicantRole.LEGAL));
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void anExistingFullAuthorizationNeverOverwritesAnotherClientAssociation() {
+        var f = new Fixture(false); f.superAdmin(); f.documentedOperator("legal_rep", "open-user-7");
+        when(f.gateway.getCompany(anyString(), any())).thenThrow(
+                new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210032"));
+        when(f.gateway.getCompanyByCreditCode("TEST-CREDIT")).thenReturn(
+                new FadadaCompanyGateway.CompanyAccount("previous-client", "corp-3", "authorized", "identified", "enable", onboardingScopes()));
+        AuthContext.set(7L, null);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("IN_PROGRESS");
+            assertThat(f.identity.getClientCorpId()).isEqualTo("local-3");
+            assertThat(f.identity.getFailureReason()).contains("其他授权关联");
+            verify(f.gateway, never()).createAuthUrl(any());
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void anExplicitlyTrustedApplicationOwnerCanReuseItsDefaultClientBindingButStillNeedsTheActualLegalPerson() {
+        var f = new Fixture(false); f.superAdmin(); f.documentedOperator("legal_rep", "open-user-7");
+        trustOwner(f);
+        when(f.gateway.getCompany(anyString(), any())).thenThrow(
+                new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210032"));
+        when(f.gateway.getCompanyByCreditCode("TEST-CREDIT")).thenReturn(ownerAccount());
+        AuthContext.set(7L, null);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("VERIFIED");
+            assertThat(f.identity.getOpenCorpId()).isEqualTo("corp-3");
+            assertThat(f.identity.getClientCorpId()).isEqualTo("local-3");
+            verify(f.gateway, never()).createAuthUrl(any());
+            verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(),
+                    eq(CertifiedApplicantRole.LEGAL));
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void aTrustedOwnerMappingIsNeverTheCurrentApplicantsPersonalLegalEvidence() {
+        var f = new Fixture(false); f.superAdmin(); f.documentedOperator("deputy_auth", "purchasers-open-user");
+        trustOwner(f);
+        when(f.gateway.getCompany(anyString(), any())).thenReturn(ownerAccount());
+        AuthContext.set(7L, null);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("IDENTITY_VERIFICATION_REQUIRED");
+            assertThat(f.identity.getClientCorpId()).isEqualTo("local-3");
+            assertThat(f.identity.getLocalStatus()).isEqualTo("IN_PROGRESS");
+            assertThat(f.identity.getFailureReason()).contains("有效授权", "本人", "无需重复办理企业授权");
+            verify(f.gateway, never()).createAuthUrl(any());
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"app", "openCorpId", "creditCode", "clientCorpId", "incomplete"})
+    void anIncompleteOrDifferentOwnerTupleCannotBypassTheExistingAssociationCheck(String mismatch) {
+        var f = new Fixture(false); f.superAdmin(); f.documentedOperator("legal_rep", "open-user-7");
+        trustOwner(f);
+        switch (mismatch) {
+            case "app" -> f.properties.setOwnerEnterpriseAppId("different-app");
+            case "openCorpId" -> f.properties.setOwnerEnterpriseOpenCorpId("different-corp");
+            case "creditCode" -> f.properties.setOwnerEnterpriseCreditCode("different-credit");
+            case "clientCorpId" -> f.properties.setOwnerEnterpriseClientCorpId("different-client");
+            default -> f.properties.setOwnerEnterpriseAppId("");
+        }
+        when(f.gateway.getCompany(anyString(), any())).thenReturn(ownerAccount());
+        AuthContext.set(7L, null);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("IN_PROGRESS");
+            assertThat(f.identity.getFailureReason()).contains("其他授权关联");
+            assertThat(f.identity.getClientCorpId()).isEqualTo("local-3");
+            verify(f.gateway, never()).createAuthUrl(any());
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    private static void trustOwner(Fixture f) {
+        f.properties.setOwnerEnterpriseAppId("test-app");
+        f.properties.setOwnerEnterpriseOpenCorpId("corp-3");
+        f.properties.setOwnerEnterpriseCreditCode("TEST-CREDIT");
+        f.properties.setOwnerEnterpriseClientCorpId("default-owner-client");
+    }
+
+    private static FadadaCompanyGateway.CompanyAccount ownerAccount() {
+        return new FadadaCompanyGateway.CompanyAccount("default-owner-client", "corp-3", "authorized", "identified", "enable", onboardingScopes());
+    }
+
+    @Test
+    void anAlreadyAuthorizedButDifferentEnterpriseCannotBeUsedForFirstEnrollment() {
+        var f = new Fixture(false); f.superAdmin();
+        when(f.gateway.getIdentity("corp-3")).thenReturn(new FadadaCompanyGateway.CompanyIdentity(
+                "corp-3", "identified", "其他企业", "OTHER-CREDIT", "张三", "legal_rep", null,
+                "2024-01-01T10:00:00", "legal_rep", "open-user-7", true));
+        AuthContext.set(7L, null);
+        try {
+            assertThatThrownBy(() -> f.service.createAuthUrl(3L)).hasMessageContaining("名称或统一社会信用代码不一致");
+            verify(f.gateway, never()).createAuthUrl(any());
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void absentEnterpriseConsentStillOpensTheNormalProviderAuthorizationFlow() {
+        var f = new Fixture();
+        var missing = new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210032");
+        when(f.gateway.getCompany(anyString(), any())).thenThrow(missing);
+        when(f.gateway.getCompanyByCreditCode("TEST-CREDIT")).thenThrow(missing);
+        when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/new-consent");
+        AuthContext.set(7L, null);
+        try {
+            assertThat(f.service.createAuthUrl(3L).url()).isEqualTo("https://example.test/new-consent");
+            verify(f.gateway).getCompanyByCreditCode("TEST-CREDIT");
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void aLimitedAuthorizationQueryDoesNotBlindlyCreateAnotherAuthorizationPage() {
+        var f = new Fixture();
+        when(f.gateway.getCompany(anyString(), any())).thenThrow(
+                new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("100020"));
+        AuthContext.set(7L, null);
+        try {
+            var result = f.service.createAuthUrl(3L);
+            assertThat(result.url()).isNull();
+            assertThat(result.status()).isEqualTo("IN_PROGRESS");
+            assertThat(f.identity.getFailureReason()).contains("30秒");
+            assertThat(f.service.current(3L).companyAuthorizationReady()).isFalse();
+            verify(f.gateway, never()).getCompanyByCreditCode(any());
+            verify(f.gateway, never()).createAuthUrl(any());
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void currentOrCooledDownStateCannotPresentOldScopesAsAFreshAuthorizationConfirmation() {
+        var f = new Fixture(false); f.superAdmin(); f.documentedOperator("deputy_auth", "purchasers-open-user");
+        var current = f.service.sync(3L);
+        assertThat(current.status()).isEqualTo("IN_PROGRESS");
+        assertThat(current.companyAuthorizationReady()).isTrue();
+        assertThat(current.organizationAuthorized()).isFalse();
+        assertThat(current.withCallbackObsolete(true).companyAuthorizationReady()).isTrue();
+        assertThat(f.service.current(3L).companyAuthorizationReady()).isFalse();
+        AuthContext.set(7L, null);
+        try {
+            assertThat(f.service.syncCurrent(3L).companyAuthorizationReady()).isFalse();
+            verify(f.gateway, times(1)).getCompany(anyString(), any());
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void aRecentSignedRevocationCannotBeOverruledByTheExistingAuthorizationPreflight() {
+        var f = new Fixture(false); f.superAdmin();
+        f.identity.setAuthorizationEventType("corp-cancel-authorization");
+        f.identity.setAuthorizationRevokedAt(java.time.LocalDateTime.now());
+        when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/renew-consent");
+        AuthContext.set(7L, null);
+        try {
+            assertThat(f.service.createAuthUrl(3L).url()).isEqualTo("https://example.test/renew-consent");
+            verify(f.gateway, never()).getCompany(anyString(), any());
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    private static List<String> onboardingScopes() {
+        return java.util.stream.Stream.concat(SCOPES.stream(), java.util.stream.Stream.of("organization")).toList();
     }
 
     private static class Fixture {

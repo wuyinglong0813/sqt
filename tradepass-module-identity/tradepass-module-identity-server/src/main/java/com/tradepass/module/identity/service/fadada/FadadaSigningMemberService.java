@@ -4,6 +4,7 @@ import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
 import static com.tradepass.framework.common.exception.SigningErrorCodes.*;
 import com.tradepass.framework.common.pojo.ServiceUrlPayload;
+import com.tradepass.framework.fadada.config.FadadaProperties;
 import com.tradepass.framework.fadada.core.FadadaCompanyGateway;
 import com.tradepass.framework.fadada.core.FadadaCompanyQueryException;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
@@ -19,13 +20,16 @@ public class FadadaSigningMemberService {
     private final FadadaCompanyService companyService;
     private final FadadaPersonalIdentityService personalService;
     private final FadadaCompanyGateway gateway;
+    private final FadadaProperties properties;
 
     public FadadaSigningMemberService(AccessControlService accessControl, FadadaCompanyService companyService,
-                                     FadadaPersonalIdentityService personalService, FadadaCompanyGateway gateway) {
+                                     FadadaPersonalIdentityService personalService, FadadaCompanyGateway gateway,
+                                     FadadaProperties properties) {
         this.accessControl = accessControl;
         this.companyService = companyService;
         this.personalService = personalService;
         this.gateway = gateway;
+        this.properties = properties;
     }
 
     public void requireCurrentSigningMember(long companyId) {
@@ -203,7 +207,9 @@ public class FadadaSigningMemberService {
                     "企业成员核验授权尚未确认，请企业电子签超管补充组织数据授权后继续签署");
         }
         if (account == null || !identity.getOpenCorpId().equals(account.openCorpId())
-                || (hasText(account.clientCorpId()) && !identity.getClientCorpId().equals(account.clientCorpId()))
+                || (hasText(account.clientCorpId()) && !identity.getClientCorpId().equals(account.clientCorpId())
+                    && !properties.matchesOwnerEnterprise(account.openCorpId(), account.clientCorpId(),
+                            identity.getVerifiedCreditCode()))
                 || !"enable".equals(account.availableStatus()) || !"identified".equals(account.identStatus())
                 || !"authorized".equals(account.bindingStatus())) {
             throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED, "企业电子签授权状态已变化，请由企业管理员重新核对企业认证");

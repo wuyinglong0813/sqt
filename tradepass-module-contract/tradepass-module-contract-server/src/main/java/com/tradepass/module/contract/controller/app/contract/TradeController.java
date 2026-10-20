@@ -194,15 +194,25 @@ public class TradeController {
                 preview.fileName(), MediaType.IMAGE_PNG_VALUE, preview.data()));
     }
 
+    @GetMapping("/contracts/{id}/signed-preview-manifest")
+    public ApiResponse<FadadaContractSigningOperations.SignedPreviewManifest> signedContractPreviewManifest(
+            @PathVariable Long id) {
+        return ApiResponse.ok(signingService.signedPreviewManifest(id));
+    }
+
     @GetMapping("/contracts/{id}/signed-preview-chunk-data")
     public ApiResponse<FileChunkDataPayload> signedContractPreviewChunk(
             @PathVariable Long id,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) String archiveKey,
             @RequestParam(defaultValue = "0") long offset,
             @RequestParam(defaultValue = "655360") int size) {
         if (offset < 0 || size <= 0 || size > 640 * 1024) {
             throw new BusinessException("文件分片参数不正确");
         }
-        FadadaContractSigningOperations.SignedPreview preview = signingService.signedPreview(id);
+        if (page != null && page < 1) throw new BusinessException("合同预览页码不正确");
+        FadadaContractSigningOperations.SignedPreview preview = page == null
+                ? signingService.signedPreview(id) : signingService.signedPreviewPage(id, page, archiveKey);
         int totalSize = preview.data().length;
         if (offset >= totalSize) {
             throw new BusinessException("文件分片位置超出范围");
@@ -213,6 +223,10 @@ public class TradeController {
                 preview.fileName(), MediaType.IMAGE_PNG_VALUE,
                 Arrays.copyOfRange(preview.data(), start, end),
                 offset, totalSize, end == totalSize));
+    }
+
+    public ApiResponse<FileChunkDataPayload> signedContractPreviewChunk(Long id, long offset, int size) {
+        return signedContractPreviewChunk(id, null, null, offset, size);
     }
 
     @PostMapping("/contracts/{id}/signing/sync")

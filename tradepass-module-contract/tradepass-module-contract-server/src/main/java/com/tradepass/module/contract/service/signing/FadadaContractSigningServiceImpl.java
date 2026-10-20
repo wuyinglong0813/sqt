@@ -238,6 +238,25 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
     }
 
     public SignedPreview signedPreview(Long contractId) {
+        PreviewBundle preview = signedPreviewBundle(contractId);
+        return previewPage(preview.data(), java.nio.ByteBuffer.wrap(preview.data()).getInt());
+    }
+
+    public SignedPreviewManifest signedPreviewManifest(Long contractId) {
+        PreviewBundle preview = signedPreviewBundle(contractId);
+        return new SignedPreviewManifest(java.nio.ByteBuffer.wrap(preview.data()).getInt(), preview.archiveKey());
+    }
+
+    public SignedPreview signedPreviewPage(Long contractId, int page, String archiveKey) {
+        if (page < 1) throw new BusinessException("合同预览页码不正确");
+        PreviewBundle preview = signedPreviewBundle(contractId);
+        if (!preview.archiveKey().equals(archiveKey)) {
+            throw new BusinessException(409, "合同归档版本已更新，请重新加载完整合同");
+        }
+        return previewPage(preview.data(), page);
+    }
+
+    private PreviewBundle signedPreviewBundle(Long contractId) {
         requireReady();
         long companyId = AuthContext.requireCompanyId();
         accessControl.requireAnyPermission(companyId, "contract_view", "contract_sign");
@@ -247,10 +266,44 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
             throw new BusinessException("合同真实签章页尚未归档");
         }
         FadadaCorpIdentityRespDTO owner = companyService.requireVerified(contract.getCompanyId());
-        byte[] image = signedPreviewCache.get(
-                "signed-preview:" + task.getSignTaskId(),
-                () -> gateway.downloadSignedPreviewPage(task.getSignTaskId(), owner.getOpenCorpId()));
-        return new SignedPreview("合同签章页.png", image);
+        // Pack the complete immutable archive once. Page lookup skips bytes without
+        // unzipping or downloading the provider archive again for each file chunk.
+        byte[] pages = signedPreviewCache.get(
+                "signed-preview-pages:" + task.getSignTaskId(),
+                () -> packPreviewPages(gateway.downloadSignedPreviewPages(task.getSignTaskId(), owner.getOpenCorpId())));
+        return new PreviewBundle(task.getSignTaskId(), pages);
+    }
+
+    private record PreviewBundle(String archiveKey, byte[] data) {}
+
+    private static byte[] packPreviewPages(List<byte[]> pages) {
+        if (pages == null || pages.isEmpty()) throw new BusinessException("合同完整预览尚未生成");
+        long size = Integer.BYTES;
+        for (byte[] page : pages) {
+            if (page == null || page.length == 0) throw new BusinessException("合同预览页面为空");
+            size += Integer.BYTES + (long) page.length;
+        }
+        if (size > 64L * 1024 * 1024) throw new BusinessException("合同预览内容过大，请查看归档 PDF");
+        var buffer = java.nio.ByteBuffer.allocate((int) size);
+        buffer.putInt(pages.size());
+        for (byte[] page : pages) buffer.putInt(page.length).put(page);
+        return buffer.array();
+    }
+
+    private static SignedPreview previewPage(byte[] packed, int page) {
+        var buffer = java.nio.ByteBuffer.wrap(packed);
+        int count = buffer.getInt();
+        if (page < 1 || page > count) throw new BusinessException("合同预览页码超出范围");
+        for (int number = 1; number <= count; number++) {
+            int length = buffer.getInt();
+            if (number == page) {
+                byte[] image = new byte[length];
+                buffer.get(image);
+                return new SignedPreview("合同第" + page + "页.png", image);
+            }
+            buffer.position(buffer.position() + length);
+        }
+        throw new BusinessException("合同预览页码超出范围");
     }
 
     @Transactional

@@ -214,6 +214,62 @@ class SdkFadadaSigningGatewayTest {
                 .containsExactly(lastPage);
     }
 
+    @Test
+    void returnsEverySignedPageInNumericOrderRegardlessOfZipEntryOrder() throws Exception {
+        byte[] first = png((byte) 1);
+        byte[] second = png((byte) 2);
+        byte[] tenth = png((byte) 10);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(output)) {
+            add(zip, "contract/page-10.png", tenth);
+            add(zip, "contract/readme.txt", "ignored".getBytes());
+            add(zip, "contract/page-2.PNG", second);
+            add(zip, "contract/page-1.png", first);
+        }
+
+        var pages = SdkFadadaSigningGateway.pngPagesFromZip(output.toByteArray());
+        assertThat(pages).hasSize(3);
+        assertThat(pages.get(0)).containsExactly(first);
+        assertThat(pages.get(1)).containsExactly(second);
+        assertThat(pages.get(2)).containsExactly(tenth);
+        assertThat(SdkFadadaSigningGateway.lastPngFromZip(output.toByteArray())).containsExactly(tenth);
+    }
+
+    @Test
+    void refusesAnArchiveWithNoPngPagesOrACorruptedPng() throws Exception {
+        ByteArrayOutputStream noPages = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(noPages)) {
+            add(zip, "readme.txt", "ignored".getBytes());
+        }
+        assertThatThrownBy(() -> SdkFadadaSigningGateway.pngPagesFromZip(noPages.toByteArray()))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("尚未生成");
+
+        ByteArrayOutputStream corrupted = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(corrupted)) {
+            add(zip, "page-1.png", "not a PNG".getBytes());
+        }
+        assertThatThrownBy(() -> SdkFadadaSigningGateway.pngPagesFromZip(corrupted.toByteArray()))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("格式不正确");
+    }
+
+    @Test
+    void refusesExcessivePageCountsAndDecompressedTotalSize() throws Exception {
+        ByteArrayOutputStream tooMany = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(tooMany)) {
+            for (int page = 1; page <= 101; page++) add(zip, "page-" + page + ".png", png((byte) page));
+        }
+        assertThatThrownBy(() -> SdkFadadaSigningGateway.pngPagesFromZip(tooMany.toByteArray()))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("页数过多");
+
+        ByteArrayOutputStream tooLarge = new ByteArrayOutputStream();
+        byte[] page = java.util.Arrays.copyOf(png((byte) 1), 8 * 1024 * 1024);
+        try (ZipOutputStream zip = new ZipOutputStream(tooLarge)) {
+            for (int number = 1; number <= 8; number++) add(zip, "page-" + number + ".png", page);
+        }
+        assertThatThrownBy(() -> SdkFadadaSigningGateway.pngPagesFromZip(tooLarge.toByteArray()))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("内容过大");
+    }
+
     private byte[] png(byte marker) {
         return new byte[]{(byte) 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, marker};
     }

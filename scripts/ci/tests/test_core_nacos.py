@@ -83,6 +83,44 @@ class CoreNacosTest(unittest.TestCase):
         self.assertEqual("", mod.get_path(docs["identity"], "tradepass.services.contract-url"))
         self.assertEqual("127.0.0.1:9876", mod.get_path(docs["business"], "tradepass.messaging.rocketmq.name-server"))
 
+    def test_verified_application_owner_mapping_is_opt_in_and_preserves_padded_identifiers(self):
+        owner = {
+            "APP_ID": "00005270",
+            "OPEN_CORP_ID": "verified-owner-corp",
+            "CREDIT_CODE": "verified-owner-credit",
+            "CLIENT_CORP_ID": "1788597722465158940",
+        }
+        defaults = mod.documents(settings())["common"]
+        values = settings()
+        values.update({"FADADA_OWNER_ENTERPRISE_" + key: value for key, value in owner.items()})
+        # Exercise the same YAML serialization used for native Nacos configuration.
+        configured = yaml.safe_load(yaml.safe_dump(mod.documents(values)["common"]))
+        for key, value in owner.items():
+            path = "tradepass.fadada.owner-enterprise-" + key.lower().replace("_", "-")
+            self.assertEqual("", mod.get_path(defaults, path))
+            self.assertEqual(value, mod.get_path(configured, path))
+        self.assertIsInstance(mod.get_path(configured, "tradepass.fadada.owner-enterprise-app-id"), str)
+
+    def test_owner_configuration_reaches_identity_containers_without_public_enterprise_defaults(self):
+        suffixes = ("APP_ID", "OPEN_CORP_ID", "CREDIT_CODE", "CLIENT_CORP_ID")
+        for relative in ("deploy/server/service.compose.yml", "deploy/server/yudao.compose.yml",
+                         "deploy/microservices/compose.yml"):
+            compose = yaml.safe_load((ROOT / relative).read_text())
+            environment = compose["services"]["identity"]["environment"]
+            for suffix in suffixes:
+                key = "FADADA_OWNER_ENTERPRISE_" + suffix
+                self.assertEqual("${" + key + ":-}", environment[key], relative)
+        spring = yaml.safe_load((ROOT / "tradepass-framework/tradepass-spring-boot-starter-core/src/main/resources/application.yml").read_text())
+        for suffix in suffixes:
+            path = "tradepass.fadada.owner-enterprise-" + suffix.lower().replace("_", "-")
+            self.assertEqual("${FADADA_OWNER_ENTERPRISE_" + suffix + ":}", mod.get_path(spring, path))
+        for relative in (".env.example", "deploy/microservices/.env.example", "deploy/server/.env.example",
+                         "deploy/server/.env.core.example", "deploy/jenkins/server.env.example",
+                         "deploy/k8s/identity.env.example", "deploy/k8s/contract.env.example"):
+            lines = (ROOT / relative).read_text().splitlines()
+            for suffix in suffixes:
+                self.assertIn("FADADA_OWNER_ENTERPRISE_" + suffix + "=", lines, relative)
+
     def test_existing_nacos_values_win_without_mutating_original(self):
         original = {"tradepass": {"fadada": {"enabled": True, "app-secret": "latest-secret"}}, "custom": {"timeout": 42}}
         existing = copy.deepcopy(original)

@@ -14,6 +14,8 @@ public class FadadaContractSigningOperationsImpl implements FadadaContractSignin
     @Override public ServiceUrlPayload signUrl(Long contractId) { return delegate.signUrl(contractId); }
     @Override public ContractSigningRespDTO syncCurrent(Long contractId) { return delegate.syncCurrent(contractId); }
     @Override public SignedPreview signedPreview(Long contractId) { return delegate.signedPreview(contractId); }
+    @Override public SignedPreviewManifest signedPreviewManifest(Long contractId) { return delegate.signedPreviewManifest(contractId); }
+    @Override public SignedPreview signedPreviewPage(Long contractId, int page, String archiveKey) { return delegate.signedPreviewPage(contractId, page, archiveKey); }
     @Override public void syncBySignTaskId(String signTaskId) { delegate.syncBySignTaskId(signTaskId); }
     @Override public ServiceUrlPayload abolishUrl(Long contractId, String reason) { return delegate.abolishUrl(contractId, reason); }
 }

@@ -8,6 +8,9 @@ public interface FadadaSigningGateway {
     TaskStatus status(String signTaskId);
     byte[] downloadSignedPdf(String signTaskId, String ownerOpenCorpId, String fileName);
     byte[] downloadSignedPreviewPage(String signTaskId, String ownerOpenCorpId);
+    default List<byte[]> downloadSignedPreviewPages(String signTaskId, String ownerOpenCorpId) {
+        throw new UnsupportedOperationException("合同完整预览尚未实现");
+    }
     void cancel(String signTaskId, String reason);
     String abolish(String signTaskId, String actorId, String reason, String callbackUrl);
     default List<String> actorSealIds(String signTaskId, String actorId) {

@@ -13,10 +13,17 @@ public interface FadadaContractSigningOperations {
 
     public SignedPreview signedPreview(Long contractId);
 
+    public SignedPreviewManifest signedPreviewManifest(Long contractId);
+
+    public SignedPreview signedPreviewPage(Long contractId, int page, String archiveKey);
+
     public void syncBySignTaskId(String signTaskId);
 
     public ServiceUrlPayload abolishUrl(Long contractId, String reason);
 
     public record SignedPreview(String fileName, byte[] data) {
+    }
+
+    public record SignedPreviewManifest(int pageCount, String archiveKey) {
     }
 }

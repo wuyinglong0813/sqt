@@ -38,6 +38,10 @@ tradepass:
     app-secret: ${FADADA_APP_SECRET:}
     server-url: ${FADADA_SERVER_URL:https://api.fadada.com/api/v5}
     callback-url: ${FADADA_CALLBACK_URL:}
+    owner-enterprise-app-id: ${FADADA_OWNER_ENTERPRISE_APP_ID:}
+    owner-enterprise-open-corp-id: ${FADADA_OWNER_ENTERPRISE_OPEN_CORP_ID:}
+    owner-enterprise-credit-code: ${FADADA_OWNER_ENTERPRISE_CREDIT_CODE:}
+    owner-enterprise-client-corp-id: ${FADADA_OWNER_ENTERPRISE_CLIENT_CORP_ID:}
   redis:
     enabled: ${TRADEPASS_REDIS_ENABLED:false}
     key-prefix: ${TRADEPASS_REDIS_KEY_PREFIX:tradepass}

@@ -11,6 +11,11 @@ public class FadadaProperties {
     private String appSecret = "";
     private String serverUrl = "https://api.fadada.com/api/v5";
     private String callbackUrl = "";
+    // Operator-verified application owner only. Never populate these from onboarding input.
+    private String ownerEnterpriseAppId = "";
+    private String ownerEnterpriseOpenCorpId = "";
+    private String ownerEnterpriseCreditCode = "";
+    private String ownerEnterpriseClientCorpId = "";
     // The public 5.1 document does not define the SDK extension's operatorId namespace.
     // Enable only after provider confirmation for this integration, never from user input.
     private boolean operatorOpenUserIdConfirmed;
@@ -25,8 +30,24 @@ public class FadadaProperties {
     public void setServerUrl(String serverUrl) { this.serverUrl = safe(serverUrl); }
     public String getCallbackUrl() { return callbackUrl; }
     public void setCallbackUrl(String callbackUrl) { this.callbackUrl = safe(callbackUrl); }
+    public String getOwnerEnterpriseAppId() { return ownerEnterpriseAppId; }
+    public void setOwnerEnterpriseAppId(String value) { this.ownerEnterpriseAppId = safe(value); }
+    public String getOwnerEnterpriseOpenCorpId() { return ownerEnterpriseOpenCorpId; }
+    public void setOwnerEnterpriseOpenCorpId(String value) { this.ownerEnterpriseOpenCorpId = safe(value); }
+    public String getOwnerEnterpriseCreditCode() { return ownerEnterpriseCreditCode; }
+    public void setOwnerEnterpriseCreditCode(String value) { this.ownerEnterpriseCreditCode = safe(value); }
+    public String getOwnerEnterpriseClientCorpId() { return ownerEnterpriseClientCorpId; }
+    public void setOwnerEnterpriseClientCorpId(String value) { this.ownerEnterpriseClientCorpId = safe(value); }
     public boolean isOperatorOpenUserIdConfirmed() { return operatorOpenUserIdConfirmed; }
     public void setOperatorOpenUserIdConfirmed(boolean value) { this.operatorOpenUserIdConfirmed = value; }
+
+    /** Allows only the configured app owner's existing provider-side default binding. */
+    public boolean matchesOwnerEnterprise(String openCorpId, String clientCorpId, String creditCode) {
+        return !ownerEnterpriseAppId.isBlank() && ownerEnterpriseAppId.equals(appId)
+                && !ownerEnterpriseOpenCorpId.isBlank() && ownerEnterpriseOpenCorpId.equals(openCorpId)
+                && !ownerEnterpriseClientCorpId.isBlank() && ownerEnterpriseClientCorpId.equals(clientCorpId)
+                && !ownerEnterpriseCreditCode.isBlank() && ownerEnterpriseCreditCode.equals(creditCode);
+    }
 
     private String safe(String value) {
         return value == null ? "" : value.trim();

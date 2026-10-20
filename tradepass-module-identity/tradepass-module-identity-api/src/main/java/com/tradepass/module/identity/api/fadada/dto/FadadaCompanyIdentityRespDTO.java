@@ -15,8 +15,16 @@ public record FadadaCompanyIdentityRespDTO(
         String lastSyncAt,
         String sealSyncWarning,
         boolean callbackObsolete,
-        boolean organizationAuthorized
+        boolean organizationAuthorized,
+        boolean companyAuthorizationReady
 ) {
+    public FadadaCompanyIdentityRespDTO(boolean enabled, String companyId, String status, String statusText,
+                                       String verifiedName, String verifiedCreditCode, String failureReason,
+                                       int enabledSealCount, List<SealPayload> seals, String lastSyncAt,
+                                       String sealSyncWarning, boolean callbackObsolete, boolean organizationAuthorized) {
+        this(enabled, companyId, status, statusText, verifiedName, verifiedCreditCode, failureReason,
+                enabledSealCount, seals, lastSyncAt, sealSyncWarning, callbackObsolete, organizationAuthorized, false);
+    }
     public FadadaCompanyIdentityRespDTO(boolean enabled, String companyId, String status, String statusText,
                                        String verifiedName, String verifiedCreditCode, String failureReason,
                                        int enabledSealCount, List<SealPayload> seals, String lastSyncAt,
@@ -36,7 +44,14 @@ public record FadadaCompanyIdentityRespDTO(
     public FadadaCompanyIdentityRespDTO withCallbackObsolete(boolean value) {
         return new FadadaCompanyIdentityRespDTO(enabled, companyId, status, statusText, verifiedName,
                 verifiedCreditCode, failureReason, enabledSealCount, seals, lastSyncAt, sealSyncWarning, value,
-                organizationAuthorized);
+                organizationAuthorized, companyAuthorizationReady);
+    }
+
+    /** A live provider query confirmed enterprise consent; it does not prove the applicant's identity. */
+    public FadadaCompanyIdentityRespDTO withCompanyAuthorizationReady(boolean value) {
+        return new FadadaCompanyIdentityRespDTO(enabled, companyId, status, statusText, verifiedName,
+                verifiedCreditCode, failureReason, enabledSealCount, seals, lastSyncAt, sealSyncWarning,
+                callbackObsolete, organizationAuthorized, value);
     }
 
     public FadadaCompanyIdentityRespDTO(boolean enabled, String companyId, String status, String statusText,

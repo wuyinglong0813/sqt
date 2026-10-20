@@ -32,6 +32,10 @@ COMMON = [
     ("FADADA_APP_SECRET", "tradepass.fadada.app-secret", ""),
     ("FADADA_SERVER_URL", "tradepass.fadada.server-url", "https://api.fadada.com/api/v5"),
     ("FADADA_CALLBACK_URL", "tradepass.fadada.callback-url", ""),
+    ("FADADA_OWNER_ENTERPRISE_APP_ID", "tradepass.fadada.owner-enterprise-app-id", ""),
+    ("FADADA_OWNER_ENTERPRISE_OPEN_CORP_ID", "tradepass.fadada.owner-enterprise-open-corp-id", ""),
+    ("FADADA_OWNER_ENTERPRISE_CREDIT_CODE", "tradepass.fadada.owner-enterprise-credit-code", ""),
+    ("FADADA_OWNER_ENTERPRISE_CLIENT_CORP_ID", "tradepass.fadada.owner-enterprise-client-corp-id", ""),
 ]
 BUSINESS = [
     ("ROCKETMQ_CALLBACK_TOPIC", "tradepass.messaging.rocketmq.callback-topic", "tradepass-callback-events"),
