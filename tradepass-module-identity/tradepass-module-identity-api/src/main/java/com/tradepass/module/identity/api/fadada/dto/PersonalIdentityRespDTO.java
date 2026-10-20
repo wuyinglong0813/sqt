@@ -1,5 +1,9 @@
 package com.tradepass.module.identity.api.fadada.dto;
 
+/**
+ * @param identMethod raw provider identity metadata retained for diagnostics;
+ *                    it does not establish the method used in the current authentication session
+ */
 public record PersonalIdentityRespDTO(
         boolean providerEnabled,
         String status,

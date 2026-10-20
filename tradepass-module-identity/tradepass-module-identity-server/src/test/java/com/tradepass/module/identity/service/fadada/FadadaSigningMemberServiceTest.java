@@ -34,6 +34,30 @@ class FadadaSigningMemberServiceTest {
         verify(f.access, never()).requireManager(anyLong());
     }
 
+    @Test
+    void colleaguesReuseOneCompanyAuthorizationWithoutEachOpeningCompanyOnboarding() {
+        var f = new Fixture();
+        when(f.gateway.findMemberByInternalIdentifier("corp-3", "tradepass-user-7"))
+                .thenReturn(f.linked(90L, "activated", "current-fdd-id"));
+        when(f.access.isActiveMember(3L, 9L)).thenReturn(true);
+        when(f.access.effectiveRole(3L, 9L)).thenReturn(new EffectiveRole("ADMIN", "管理员", List.of("contract_sign", "company_manage")));
+        when(f.personal.verifiedPerson(9L)).thenReturn(new FadadaPersonalIdentityService.VerifiedPerson(
+                "open-9", "colleague-fdd-id", "同事", "colleague@example.test"));
+        when(f.gateway.findMemberByInternalIdentifier("corp-3", "tradepass-user-9"))
+                .thenReturn(new FadadaCompanyGateway.CompanyMember(91L, "activated", List.of(),
+                        "colleague-fdd-id", "tradepass-user-9", List.of("colleague@example.test")));
+
+        assertThat(f.service.syncCurrent(3L).status()).isEqualTo("READY");
+        AuthContext.set(9L, 3L);
+        assertThat(f.service.syncCurrent(3L).status()).isEqualTo("READY");
+
+        verify(f.gateway, times(2)).getCompany("local-3", "corp-3");
+        verify(f.gateway, never()).createAuthUrl(any());
+        verify(f.gateway, never()).createMember(any());
+        verify(f.gateway, never()).createMemberActivationUrl(anyString(), anyLong());
+        verify(f.access, never()).requireManager(anyLong());
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"inactive", "disabled", "", "unknown"})
     void anUnjoinedOrDisabledMemberGetsAnActionableMessageBeforeOpeningTheProviderTask(String state) {

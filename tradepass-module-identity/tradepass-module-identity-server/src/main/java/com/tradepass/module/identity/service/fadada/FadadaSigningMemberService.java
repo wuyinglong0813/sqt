@@ -204,7 +204,7 @@ public class FadadaSigningMemberService {
         } catch (FadadaCompanyQueryException unavailable) {
             if (!java.util.Set.of("210002", "210032").contains(unavailable.providerCode())) throw unavailable;
             throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED,
-                    "企业成员核验授权尚未确认，请企业电子签超管补充组织数据授权后继续签署");
+                    "企业成员核验授权尚未确认，请法大大企业超管补充组织数据授权；这是企业一次授权，同企业员工无需逐人重复办理企业授权");
         }
         if (account == null || !identity.getOpenCorpId().equals(account.openCorpId())
                 || (hasText(account.clientCorpId()) && !identity.getClientCorpId().equals(account.clientCorpId())
@@ -215,7 +215,7 @@ public class FadadaSigningMemberService {
             throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED, "企业电子签授权状态已变化，请由企业管理员重新核对企业认证");
         }
         if (account.authScopes() == null || !account.authScopes().contains("organization")) {
-            throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED, "企业尚未授权电子签成员核验，请企业法大大超管补充组织数据授权后继续签署");
+            throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED, "企业尚未授权电子签成员核验，请法大大企业超管补充组织数据授权；这是企业一次授权，同企业员工无需逐人重复办理企业授权");
         }
         if (!account.authScopes().containsAll(SIGNING_SCOPES)) {
             throw new BusinessException(COMPANY_AUTHORIZATION_REQUIRED, "企业电子签业务授权不完整，请企业法大大超管重新核对企业认证授权");
