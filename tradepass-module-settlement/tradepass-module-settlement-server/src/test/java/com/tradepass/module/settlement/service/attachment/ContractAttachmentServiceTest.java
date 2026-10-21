@@ -58,6 +58,7 @@ class ContractAttachmentServiceTest {
         contract.setCompanyId(3L);
         contract.setCounterpartyCompanyId(4L);
         when(contractMapper.selectById(12L)).thenReturn(contract);
+        when(contractMapper.selectByIdForUpdate(12L)).thenReturn(contract);
         AuthContext.set(7L, 3L);
     }
 

@@ -89,6 +89,7 @@ class BusinessDocumentServiceTest {
         contract.setAmount(new BigDecimal("99.00"));
         contract.setTerms("{\"sections\":[]}");
         when(contractMapper.selectById(21L)).thenReturn(contract);
+        when(contractMapper.selectByIdForUpdate(21L)).thenReturn(contract);
 
         CompanyRespDTO company = new CompanyRespDTO();
         company.setId(3L);
@@ -158,6 +159,7 @@ class BusinessDocumentServiceTest {
         contract.setAmount(new BigDecimal("20.00"));
         contract.setTerms("{\"sections\":[{\"type\":\"table\",\"columns\":[\"品名\",\"数量\",\"金额\"],\"rows\":[[\"商品A\",\"2\",\"20\"]]}]}");
         when(contractMapper.selectById(22L)).thenReturn(contract);
+        when(contractMapper.selectByIdForUpdate(22L)).thenReturn(contract);
 
         CompanyRespDTO company = new CompanyRespDTO();
         company.setId(3L);
@@ -193,6 +195,7 @@ class BusinessDocumentServiceTest {
         contract.setDirection("SALE");
         contract.setStatus("ACTIVE");
         when(contractMapper.selectById(23L)).thenReturn(contract);
+        when(contractMapper.selectByIdForUpdate(23L)).thenReturn(contract);
 
         BusinessDocumentDO draft = new BusinessDocumentDO();
         draft.setId(33L);
@@ -247,6 +250,7 @@ class BusinessDocumentServiceTest {
         contract.setStatus("ACTIVE");
         contract.setTerms("{\"sections\":[{\"type\":\"table\",\"columns\":[\"品名\",\"数量\",\"金额\"],\"rows\":[[\"电线\",\"2\",\"1000\"]]}]}");
         when(contractMapper.selectById(25L)).thenReturn(contract);
+        when(contractMapper.selectByIdForUpdate(25L)).thenReturn(contract);
 
         CompanyRespDTO buyer = new CompanyRespDTO();
         buyer.setId(4L);
@@ -296,6 +300,7 @@ class BusinessDocumentServiceTest {
         contract.setStatus("ACTIVE");
         contract.setTerms("{\"sections\":[{\"type\":\"table\",\"columns\":[\"品名\",\"数量\",\"金额\"],\"rows\":[[\"电线\",\"2\",\"1000\"]]}]}");
         when(contractMapper.selectById(26L)).thenReturn(contract);
+        when(contractMapper.selectByIdForUpdate(26L)).thenReturn(contract);
 
         CompanyRespDTO supplier = new CompanyRespDTO();
         supplier.setId(3L);

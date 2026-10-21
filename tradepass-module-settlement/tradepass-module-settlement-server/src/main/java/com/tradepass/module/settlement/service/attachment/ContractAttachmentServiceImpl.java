@@ -196,7 +196,7 @@ public class ContractAttachmentServiceImpl implements ContractAttachmentService 
         long companyId = AuthContext.requireCompanyId();
         accessControlService.requireAnyPermission(companyId,
                 "contract_attachment_upload", "contract_sign", "order_create", "reconciliation");
-        TradeContractRespDTO contract = requireContractParty(contractId, companyId);
+        TradeContractRespDTO contract = requireContractParty(contractId, companyId, true);
         requireContractMutable(contract);
         String normalized = normalizeCategory(category);
         String contentType = FileTypeInspector.inspect(data);
@@ -274,7 +274,7 @@ public class ContractAttachmentServiceImpl implements ContractAttachmentService 
                 "contract_attachment_upload", "contract_sign", "order_create",
                 "reconciliation", "invoice_view");
         AttachmentRecord attachment = requireAttachment(id);
-        TradeContractRespDTO contract = requireContractParty(attachment.contractId(), companyId);
+        TradeContractRespDTO contract = requireContractParty(attachment.contractId(), companyId, true);
         requireContractMutable(contract);
         if (!Long.valueOf(companyId).equals(attachment.recipientCompanyId())) {
             throw new BusinessException("仅接收方企业可以确认该资料");
@@ -379,7 +379,7 @@ private SignatureEvidence prepareSignature(long companyId, Long contractId, Long
                 "contract_attachment_upload", "contract_sign", "order_create",
                 "reconciliation", "invoice_view");
         AttachmentRecord attachment = requireAttachment(id);
-        TradeContractRespDTO contract = requireContractParty(attachment.contractId(), companyId);
+        TradeContractRespDTO contract = requireContractParty(attachment.contractId(), companyId, true);
         requireContractMutable(contract);
         if (!Long.valueOf(companyId).equals(attachment.uploaderCompanyId())
                 || AuthContext.userId() != attachment.createdBy()
@@ -406,7 +406,7 @@ private SignatureEvidence prepareSignature(long companyId, Long contractId, Long
                 "contract_attachment_upload", "contract_sign", "order_create",
                 "reconciliation", "invoice_view");
         AttachmentRecord attachment = requireAttachment(id);
-        TradeContractRespDTO contract = requireContractParty(attachment.contractId(), companyId);
+        TradeContractRespDTO contract = requireContractParty(attachment.contractId(), companyId, true);
         requireContractMutable(contract);
         boolean deletableStatus = "REJECTED".equals(attachment.status())
                 || (OTHER.equals(attachment.category()) && "APPROVED".equals(attachment.status()));
@@ -490,7 +490,12 @@ private SignatureEvidence prepareSignature(long companyId, Long contractId, Long
     }
 
     private TradeContractRespDTO requireContractParty(Long contractId, long companyId) {
-        TradeContractRespDTO contract = contractMapper.selectById(contractId);
+        return requireContractParty(contractId, companyId, false);
+    }
+
+    private TradeContractRespDTO requireContractParty(Long contractId, long companyId, boolean forUpdate) {
+        TradeContractRespDTO contract = forUpdate ? contractMapper.selectByIdForUpdate(contractId)
+                : contractMapper.selectById(contractId);
         if (contract == null || (!Long.valueOf(companyId).equals(contract.getCompanyId())
                 && !Long.valueOf(companyId).equals(contract.getCounterpartyCompanyId()))) {
             throw new BusinessException("合同不存在");

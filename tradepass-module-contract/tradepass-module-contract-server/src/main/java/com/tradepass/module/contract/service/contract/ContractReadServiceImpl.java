@@ -19,11 +19,9 @@ public class ContractReadServiceImpl implements ContractReadService, ContractRea
     private final TradeContractMapper contracts;
     private final JdbcTemplate jdbc;
     public ContractReadServiceImpl(TradeContractMapper contracts, JdbcTemplate jdbc) { this.contracts = contracts; this.jdbc = jdbc; }
-    @Transactional
     public TradeContractRespDTO selectById(Serializable id) {
         if (id == null) return null;
-        // A locking read lets Seata wait for an in-flight global writer before returning state.
-        return TradeContractConvert.INSTANCE.toDTO(contracts.selectByIdForUpdate(Long.valueOf(id.toString())));
+        return TradeContractConvert.INSTANCE.toDTO(contracts.selectById(id));
     }
     @Transactional
     public TradeContractRespDTO selectByIdForUpdate(Long id) {

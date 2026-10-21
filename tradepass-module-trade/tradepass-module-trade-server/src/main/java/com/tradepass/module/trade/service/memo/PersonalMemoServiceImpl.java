@@ -66,7 +66,7 @@ public class PersonalMemoServiceImpl implements PersonalMemoService {
 
     @Transactional
     public Map<String, Object> save(String type, Long bizId, String content) {
-        AccessTarget target = requireTarget(type, bizId);
+        AccessTarget target = requireTarget(type, bizId, true);
         if ("COMPLETED".equals(target.contractStatus()) || "VOIDED".equals(target.contractStatus())) {
             throw new BusinessException("合同已结束或作废，备忘录仅允许查看");
         }
@@ -88,12 +88,17 @@ public class PersonalMemoServiceImpl implements PersonalMemoService {
     }
 
     private AccessTarget requireTarget(String type, Long bizId) {
+        return requireTarget(type, bizId, false);
+    }
+
+    private AccessTarget requireTarget(String type, Long bizId, boolean forUpdate) {
         long companyId = AuthContext.requireCompanyId();
         accessControlService.requireAnyPermission(companyId,
                 "contract_view", "contract_sign", "order_create", "sales_order_receive");
         String normalized = type == null ? "" : type.trim().toUpperCase(Locale.ROOT);
         if (CONTRACT.equals(normalized)) {
-            TradeContractRespDTO contract = contractMapper.selectById(bizId);
+            TradeContractRespDTO contract = forUpdate ? contractMapper.selectByIdForUpdate(bizId)
+                    : contractMapper.selectById(bizId);
             requireContractParty(contract, companyId);
             return new AccessTarget(companyId, CONTRACT, contract.getId(), contract.getStatus());
         }
@@ -103,7 +108,8 @@ public class PersonalMemoServiceImpl implements PersonalMemoService {
                     && !RETURN_ORDER.equals(document.getDocumentType()))) {
                 throw new BusinessException("销售单不存在");
             }
-            TradeContractRespDTO contract = contractMapper.selectById(document.getContractId());
+            TradeContractRespDTO contract = forUpdate ? contractMapper.selectByIdForUpdate(document.getContractId())
+                    : contractMapper.selectById(document.getContractId());
             requireContractParty(contract, companyId);
             if ("DRAFT".equals(document.getStatus())
                     && !Long.valueOf(companyId).equals(document.getCompanyId())) {

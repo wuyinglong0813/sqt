@@ -37,6 +37,7 @@ import com.tradepass.module.identity.api.company.CompanyReader.*;
 import com.tradepass.module.contract.dal.mysql.signing.FadadaContractSignTaskMapper;
 import com.tradepass.module.contract.dal.mysql.contract.TradeContractMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.dao.DuplicateKeyException;
@@ -192,7 +193,7 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         }
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ServiceUrlPayload signUrl(Long contractId) {
         requireReady();
         long companyId = AuthContext.requireCompanyId();
@@ -225,7 +226,7 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         return new ServiceUrlPayload(url, "contract", task.getProviderStatus());
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ContractSigningRespDTO syncCurrent(Long contractId) {
         requireReady();
         long companyId = AuthContext.requireCompanyId();
@@ -306,7 +307,7 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         throw new BusinessException("合同预览页码超出范围");
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public void syncBySignTaskId(String signTaskId) {
         FadadaContractSignTaskDO task = taskMapper.selectOne(new LambdaQueryWrapper<FadadaContractSignTaskDO>()
                 .and(query -> query.eq(FadadaContractSignTaskDO::getSignTaskId, signTaskId)
@@ -342,7 +343,7 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         }
     }
 
-    @Transactional(noRollbackFor = BusinessException.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, noRollbackFor = BusinessException.class)
     public ServiceUrlPayload abolishUrl(Long contractId, String reason) {
         requireReady();
         long companyId = AuthContext.requireCompanyId();

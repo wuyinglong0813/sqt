@@ -95,7 +95,7 @@ public class LogisticsDocumentServiceImpl implements LogisticsDocumentService {
     public Map<String, Object> upload(Long contractId, String originalName, byte[] imageData) {
         long companyId = AuthContext.requireCompanyId();
         accessControlService.requireAnyPermission(companyId, "contract_sign", "order_create");
-        TradeContractRespDTO contract = requireContractParty(contractId, companyId);
+        TradeContractRespDTO contract = requireContractParty(contractId, companyId, true);
         requireContractMutable(contract);
         if (imageData == null || imageData.length == 0) {
             throw new BusinessException("请选择物流单图片");
@@ -167,7 +167,7 @@ public class LogisticsDocumentServiceImpl implements LogisticsDocumentService {
                 || !Long.valueOf(AuthContext.userId()).equals(document.getCreatedBy())) {
             throw new BusinessException("仅上传人可以删除物流单");
         }
-        TradeContractRespDTO contract = requireContractParty(document.getContractId(), companyId);
+        TradeContractRespDTO contract = requireContractParty(document.getContractId(), companyId, true);
         requireContractMutable(contract);
         document.setDeletedBy(AuthContext.userId());
         document.setDeletedAt(java.time.LocalDateTime.now());
@@ -196,7 +196,12 @@ public class LogisticsDocumentServiceImpl implements LogisticsDocumentService {
     }
 
     private TradeContractRespDTO requireContractParty(Long contractId, long companyId) {
-        TradeContractRespDTO contract = contractMapper.selectById(contractId);
+        return requireContractParty(contractId, companyId, false);
+    }
+
+    private TradeContractRespDTO requireContractParty(Long contractId, long companyId, boolean forUpdate) {
+        TradeContractRespDTO contract = forUpdate ? contractMapper.selectByIdForUpdate(contractId)
+                : contractMapper.selectById(contractId);
         if (contract == null
                 || (!Long.valueOf(companyId).equals(contract.getCompanyId())
                 && !Long.valueOf(companyId).equals(contract.getCounterpartyCompanyId()))) {

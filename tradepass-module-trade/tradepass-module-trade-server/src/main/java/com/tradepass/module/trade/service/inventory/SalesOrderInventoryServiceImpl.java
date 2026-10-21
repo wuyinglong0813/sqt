@@ -381,7 +381,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         if (!RECEIVE_ONLY.equals(normalized) && !INBOUND.equals(normalized) && !REJECT.equals(normalized)) {
             throw new BusinessException("接收方式不正确");
         }
-        TradeContractRespDTO contract = document == null ? null : contractMapper.selectById(document.getContractId());
+        TradeContractRespDTO contract = document == null ? null : contractMapper.selectByIdForUpdate(document.getContractId());
         if (contract != null && contractLocked(contract)) {
             throw new BusinessException("合同正在等待处理、已结束或已作废，单据仅允许查看");
         }

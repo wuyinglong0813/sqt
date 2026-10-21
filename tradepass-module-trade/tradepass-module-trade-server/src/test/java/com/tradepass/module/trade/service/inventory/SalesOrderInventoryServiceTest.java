@@ -102,6 +102,7 @@ class SalesOrderInventoryServiceTest {
         contract.setCompanyId(3L);
         contract.setCounterpartyCompanyId(4L);
         when(contractMapper.selectById(12L)).thenReturn(contract);
+        when(contractMapper.selectByIdForUpdate(12L)).thenReturn(contract);
 
         item = Map.of(
                 "id", 41L,

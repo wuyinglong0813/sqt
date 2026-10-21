@@ -29,9 +29,10 @@ public class ContractAbolishIntentServiceImpl implements ContractAbolishIntentSe
         return id;
     }
 
-    // Fresh independent read avoids the caller's RR snapshot and never leaves a gap lock
-    // that could block begin() in its separate transaction.
-    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    // Signing entry points use READ_COMMITTED while holding the contract lock, so this
+    // plain read sees durable intents without borrowing a second connection or leaving
+    // a gap lock that could block begin() in its separate transaction.
+    @Transactional(propagation = Propagation.MANDATORY, readOnly = true)
     public List<PendingIntent> pending(FadadaContractSignTaskDO task) { return pendingRows(task); }
 
     private List<PendingIntent> pendingRows(FadadaContractSignTaskDO task) {

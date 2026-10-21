@@ -181,7 +181,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         if (templateId == null) {
             throw new BusinessException("请选择单据模板");
         }
-        TradeContractRespDTO contract = requireContractParty(contractId, companyId);
+        TradeContractRespDTO contract = requireContractParty(contractId, companyId, true);
         requireContractMutable(contract);
         if (!"PENDING".equals(contract.getStatus()) && !"ACTIVE".equals(contract.getStatus())) {
             throw new BusinessException("当前合同状态不能创建" + typeLabel(type));
@@ -241,7 +241,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         long companyId = AuthContext.requireCompanyId();
         accessControlService.requireAnyPermission(companyId, "contract_sign", "order_create");
         BusinessDocumentDO document = requireOwnedEditableDocument(id, companyId);
-        TradeContractRespDTO contract = requireContractParty(document.getContractId(), companyId);
+        TradeContractRespDTO contract = requireContractParty(document.getContractId(), companyId, true);
         requireContractMutable(contract);
         if (!"PENDING".equals(contract.getStatus()) && !"ACTIVE".equals(contract.getStatus())) {
             throw new BusinessException("当前合同状态不能编辑单据草稿");
@@ -268,7 +268,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         long companyId = AuthContext.requireCompanyId();
         accessControlService.requireAnyPermission(companyId, "contract_sign", "order_create");
         BusinessDocumentDO document = requireOwnedEditableDocument(id, companyId);
-        TradeContractRespDTO contract = requireContractParty(document.getContractId(), companyId);
+        TradeContractRespDTO contract = requireContractParty(document.getContractId(), companyId, true);
         requireContractMutable(contract);
         if (!"ACTIVE".equals(contract.getStatus())) {
             throw new BusinessException("合同生效后才能发布" + typeLabel(document.getDocumentType()));
@@ -322,7 +322,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
                 .last("LIMIT 1 FOR UPDATE"));
         if (document == null) throw new BusinessException("可删除的单据草稿不存在");
         if (bilateralActionService != null) {
-            requireContractMutable(requireContractParty(document.getContractId(), companyId));
+            requireContractMutable(requireContractParty(document.getContractId(), companyId, true));
         }
         document.setDeletedBy(AuthContext.userId());
         document.setDeletedAt(LocalDateTime.now());
@@ -345,7 +345,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
                 .last("LIMIT 1 FOR UPDATE"));
         if (document == null) throw new BusinessException("可撤回的单据不存在");
         if (bilateralActionService != null) {
-            requireContractMutable(requireContractParty(document.getContractId(), companyId));
+            requireContractMutable(requireContractParty(document.getContractId(), companyId, true));
         }
         document.setStatus("WITHDRAWN");
         document.setDeletedBy(AuthContext.userId());
@@ -653,7 +653,12 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
     }
 
     private TradeContractRespDTO requireContractParty(Long contractId, long companyId) {
-        TradeContractRespDTO contract = contractMapper.selectById(contractId);
+        return requireContractParty(contractId, companyId, false);
+    }
+
+    private TradeContractRespDTO requireContractParty(Long contractId, long companyId, boolean forUpdate) {
+        TradeContractRespDTO contract = forUpdate ? contractMapper.selectByIdForUpdate(contractId)
+                : contractMapper.selectById(contractId);
         if (contract == null
                 || (!Long.valueOf(companyId).equals(contract.getCompanyId())
                 && !Long.valueOf(companyId).equals(contract.getCounterpartyCompanyId()))) {

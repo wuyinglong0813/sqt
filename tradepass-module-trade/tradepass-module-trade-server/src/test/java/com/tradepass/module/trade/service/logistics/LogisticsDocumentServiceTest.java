@@ -55,6 +55,7 @@ class LogisticsDocumentServiceTest {
         contract.setCompanyId(3L);
         contract.setCounterpartyCompanyId(4L);
         when(contractMapper.selectById(44L)).thenReturn(contract);
+        when(contractMapper.selectByIdForUpdate(44L)).thenReturn(contract);
         AuthContext.set(7L, 3L);
     }
 

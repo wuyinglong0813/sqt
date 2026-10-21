@@ -373,7 +373,7 @@ public class BilateralActionServiceImpl implements BilateralActionService {
             if (attachmentState != null) {
                 var row = attachmentState.state(bizId, false);
                 if (row == null) throw new BusinessException("资料不存在");
-                TradeContractRespDTO contract = requireContractParty(row.contractId(), companyId);
+                TradeContractRespDTO contract = requireContractParty(row.contractId(), companyId, forUpdate);
                 if (ContractAttachmentOperations.OTHER.equals(row.category())) {
                     throw new BusinessException("其它资料由上传人直接删除，无需双方作废");
                 }
@@ -386,7 +386,7 @@ public class BilateralActionServiceImpl implements BilateralActionService {
                             rs.getString("status"), rs.getString("category")), bizId);
             if (rows.isEmpty()) throw new BusinessException("资料不存在");
             TargetRow row = rows.get(0);
-            TradeContractRespDTO contract = requireContractParty(row.contractId(), companyId);
+            TradeContractRespDTO contract = requireContractParty(row.contractId(), companyId, forUpdate);
             if (ContractAttachmentOperations.OTHER.equals(row.sourceType())) {
                 throw new BusinessException("其它资料由上传人直接删除，无需双方作废");
             }
@@ -400,13 +400,14 @@ public class BilateralActionServiceImpl implements BilateralActionService {
                         rs.getString("status"), rs.getString("document_type")), bizId);
         if (rows.isEmpty()) throw new BusinessException("单据不存在");
         TargetRow row = rows.get(0);
-        TradeContractRespDTO contract = requireContractParty(row.contractId(), companyId);
+        TradeContractRespDTO contract = requireContractParty(row.contractId(), companyId, forUpdate);
         return new Target(bizType, bizId, contract, row.status(),
                 "RETURN_ORDER".equals(row.sourceType()) ? "退货单" : "销售单", row.sourceType());
     }
 
-    private TradeContractRespDTO requireContractParty(Long contractId, long companyId) {
-        TradeContractRespDTO contract = contractMapper.selectById(contractId);
+    private TradeContractRespDTO requireContractParty(Long contractId, long companyId, boolean forUpdate) {
+        TradeContractRespDTO contract = forUpdate ? contractMapper.selectByIdForUpdate(contractId)
+                : contractMapper.selectById(contractId);
         if (contract == null || (!Long.valueOf(companyId).equals(contract.getCompanyId())
                 && !Long.valueOf(companyId).equals(contract.getCounterpartyCompanyId()))) {
             throw new BusinessException("合同不存在");
