@@ -23,6 +23,7 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mybatis.spring.SqlSessionTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -49,6 +50,7 @@ class MysqlCompanyOnboardingAttemptTest {
     private static Schema schema;
     private static TransactionTemplate tx;
     private static CompanyOnboardingAttemptService service;
+    private static FadadaCorpIdentityMapper identities;
 
     @BeforeAll static void database() throws Exception {
         schema = new Schema("identity");
@@ -68,9 +70,10 @@ class MysqlCompanyOnboardingAttemptTest {
         var people = mock(FadadaPersonalIdentityService.class);
         when(people.requireCurrentVerified()).thenReturn(new PersonalIdentityRespDTO(
                 true, "VERIFIED", "已认证", "authorized", "identified", "", "测试申请人", "face", "", "", "", ""));
+        identities = sessions.getMapper(FadadaCorpIdentityMapper.class);
         service = new CompanyOnboardingAttemptService(sessions.getMapper(CompanyMapper.class),
                 sessions.getMapper(CompanyOnboardingAttemptMapper.class), sessions.getMapper(CompanyMemberMapper.class),
-                sessions.getMapper(FadadaCorpIdentityMapper.class),
+                identities,
                 sessions.getMapper(CompanyCertificationApplicationMapper.class), people);
     }
 
@@ -294,6 +297,114 @@ class MysqlCompanyOnboardingAttemptTest {
                 Long.class, company)).isZero();
     }
 
+    @Test void adoptingProviderBindingPreservesApplicationOwnershipAndSurvivesANewApplicantsActivation() {
+        long company = company("PENDING", 7);
+        as(7, () -> service.draft(company, 7, request(company, "本人申请资料", "甲法人")));
+        var original = as(7, () -> service.activate(company, 7)).attempt();
+        long identity = identityId(company);
+        String localClient = "tradepass-company-" + company;
+        String providerClient = "provider-existing-client-" + company;
+        String providerOpen = "provider-existing-open-" + company;
+        var ownership = schema.jdbc.queryForMap("""
+                SELECT i.company_id,i.applicant_user_id,i.onboarding_attempt_id,i.provider_request_id,c.created_by
+                FROM fadada_corp_identity i JOIN company c ON c.id=i.company_id WHERE i.id=?
+                """, identity);
+
+        assertThat(as(7, () -> identities.adoptProviderBinding(identity, company, localClient, providerClient, providerOpen)).intValue()).isOne();
+
+        assertThat(schema.jdbc.queryForMap("""
+                SELECT i.company_id,i.applicant_user_id,i.onboarding_attempt_id,i.provider_request_id,c.created_by
+                FROM fadada_corp_identity i JOIN company c ON c.id=i.company_id WHERE i.id=?
+                """, identity)).isEqualTo(ownership);
+        assertThat(schema.jdbc.queryForMap("SELECT client_corp_id,open_corp_id FROM fadada_corp_identity WHERE id=?", identity))
+                .containsEntry("client_corp_id", providerClient).containsEntry("open_corp_id", providerOpen);
+        assertThat(service.current(company).getId()).isEqualTo(original.getId());
+        assertThat(service.current(company).getProviderRequestId()).isEqualTo(original.getProviderRequestId());
+
+        as(7, () -> { service.cancel(company, 7); return null; });
+        as(8, () -> service.draft(company, 8, request(company, "下一申请人资料", "乙法人")));
+        var replacement = as(8, () -> service.activate(company, 8)).attempt();
+
+        assertThat(replacement.getId()).isNotEqualTo(original.getId());
+        assertThat(replacement.getProviderRequestId()).isNotEqualTo(original.getProviderRequestId());
+        assertThat(identityId(company)).isEqualTo(identity);
+        assertThat(schema.jdbc.queryForMap("""
+                SELECT company_id,applicant_user_id,onboarding_attempt_id,provider_request_id,client_corp_id,open_corp_id
+                FROM fadada_corp_identity WHERE id=?
+                """, identity)).containsEntry("company_id", company).containsEntry("applicant_user_id", 8L)
+                .containsEntry("onboarding_attempt_id", replacement.getId())
+                .containsEntry("provider_request_id", replacement.getProviderRequestId())
+                .containsEntry("client_corp_id", providerClient).containsEntry("open_corp_id", providerOpen);
+        assertThat(schema.jdbc.queryForObject("SELECT created_by FROM company WHERE id=?", Long.class, company)).isEqualTo(7L);
+        assertThat(schema.jdbc.queryForObject("SELECT status FROM company_onboarding_attempt WHERE id=?", String.class, original.getId()))
+                .isEqualTo("CANCELLED");
+    }
+
+    @Test void concurrentCompaniesCannotAdoptTheSameProviderClientOrOpenIdentifier() throws Exception {
+        long firstCompany = company("PENDING", 7), secondCompany = company("PENDING", 8);
+        as(7, () -> service.draft(firstCompany, 7, request(firstCompany, "甲企业资料", "甲法人")));
+        as(7, () -> service.activate(firstCompany, 7));
+        as(8, () -> service.draft(secondCompany, 8, request(secondCompany, "乙企业资料", "乙法人")));
+        as(8, () -> service.activate(secondCompany, 8));
+        String providerClient = "racing-provider-client-" + firstCompany;
+        String providerOpen = "racing-provider-open-" + firstCompany;
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var ready = new CountDownLatch(2);
+            var start = new CountDownLatch(1);
+            var first = pool.submit(() -> contendForProviderBinding(ready, start, firstCompany, 7, providerClient, providerOpen));
+            var second = pool.submit(() -> contendForProviderBinding(ready, start, secondCompany, 8, providerClient, providerOpen));
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            long one = first.get(20, TimeUnit.SECONDS), two = second.get(20, TimeUnit.SECONDS);
+            assertThat(List.of(one, two)).filteredOn(id -> id > 0).hasSize(1);
+            long winner = one > 0 ? one : two;
+            long loser = winner == firstCompany ? secondCompany : firstCompany;
+            long losingIdentity = identityId(loser);
+            long losingUser = loser == firstCompany ? 7 : 8;
+            String losingClient = "tradepass-company-" + loser;
+            var winningBinding = schema.jdbc.queryForMap("SELECT * FROM fadada_corp_identity WHERE company_id=?", winner);
+            var losingBinding = schema.jdbc.queryForMap("SELECT * FROM fadada_corp_identity WHERE company_id=?", loser);
+            assertThat(winningBinding).containsEntry("client_corp_id", providerClient).containsEntry("open_corp_id", providerOpen);
+            assertThat(losingBinding).containsEntry("client_corp_id", losingClient).containsEntry("open_corp_id", null);
+            assertThat(schema.jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM fadada_corp_identity WHERE client_corp_id=? OR open_corp_id=?
+                    """, Long.class, providerClient, providerOpen)).isOne();
+
+            // Exercise the two unique indexes separately after the simultaneous collision.
+            assertThatThrownBy(() -> as(losingUser, () -> identities.adoptProviderBinding(losingIdentity, loser,
+                    losingClient, providerClient, "different-open-" + loser))).isInstanceOf(DuplicateKeyException.class);
+            assertThatThrownBy(() -> as(losingUser, () -> identities.adoptProviderBinding(losingIdentity, loser,
+                    losingClient, "different-client-" + loser, providerOpen))).isInstanceOf(DuplicateKeyException.class);
+            assertThat(schema.jdbc.queryForMap("SELECT * FROM fadada_corp_identity WHERE company_id=?", winner)).isEqualTo(winningBinding);
+            assertThat(schema.jdbc.queryForMap("SELECT * FROM fadada_corp_identity WHERE company_id=?", loser)).isEqualTo(losingBinding);
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test void providerBindingCasRejectsAStaleClientOrAnAlreadyDifferentOpenIdentifier() {
+        long company = company("PENDING", 7);
+        as(7, () -> service.draft(company, 7, request(company, "本次资料", "法人")));
+        as(7, () -> service.activate(company, 7));
+        long identity = identityId(company);
+        String localClient = "tradepass-company-" + company;
+        String providerClient = "cas-provider-client-" + company;
+        String providerOpen = "cas-provider-open-" + company;
+        var original = schema.jdbc.queryForMap("SELECT * FROM fadada_corp_identity WHERE id=?", identity);
+
+        assertThat(as(7, () -> identities.adoptProviderBinding(identity, company, "stale-client", providerClient, providerOpen)).intValue()).isZero();
+        assertThat(schema.jdbc.queryForMap("SELECT * FROM fadada_corp_identity WHERE id=?", identity)).isEqualTo(original);
+        assertThat(as(7, () -> identities.adoptProviderBinding(identity, company, localClient, providerClient, providerOpen)).intValue()).isOne();
+        var adopted = schema.jdbc.queryForMap("SELECT * FROM fadada_corp_identity WHERE id=?", identity);
+
+        assertThat(as(7, () -> identities.adoptProviderBinding(identity, company, localClient,
+                "stale-replacement-client", providerOpen)).intValue()).isZero();
+        assertThat(as(7, () -> identities.adoptProviderBinding(identity, company, providerClient,
+                "replacement-client", "different-provider-open")).intValue()).isZero();
+        assertThat(as(7, () -> identities.adoptProviderBinding(identity, company + 1, providerClient,
+                "wrong-company-client", providerOpen)).intValue()).isZero();
+        assertThat(schema.jdbc.queryForMap("SELECT * FROM fadada_corp_identity WHERE id=?", identity)).isEqualTo(adopted);
+    }
+
     @Test void previouslyEstablishedCompaniesCannotBeTakenOverEvenIfTheirVisibleStatusWasRejected() {
         for (String evidence : List.of("company", "member", "identity", "verifiedAt", "application")) {
             long company = company(evidence.equals("company") ? "VERIFIED" : "REJECTED", 7);
@@ -324,6 +435,20 @@ class MysqlCompanyOnboardingAttemptTest {
         start.await();
         try { return as(user, () -> service.activate(company, user)).changed() ? user : 0; }
         catch (BusinessException expectedBusySlot) { return 0; }
+    }
+
+    private static long contendForProviderBinding(CountDownLatch ready, CountDownLatch start, long company,
+                                                  long user, String providerClient, String providerOpen) throws InterruptedException {
+        ready.countDown();
+        start.await();
+        try {
+            return as(user, () -> identities.adoptProviderBinding(identityId(company), company,
+                    "tradepass-company-" + company, providerClient, providerOpen)) == 1 ? company : 0;
+        } catch (DuplicateKeyException expectedCollision) { return 0; }
+    }
+
+    private static long identityId(long company) {
+        return schema.jdbc.queryForObject("SELECT id FROM fadada_corp_identity WHERE company_id=?", Long.class, company);
     }
 
     private static long company(String status, long creator) {

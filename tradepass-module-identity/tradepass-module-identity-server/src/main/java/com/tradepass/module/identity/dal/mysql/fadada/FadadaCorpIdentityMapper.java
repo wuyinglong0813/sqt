@@ -4,6 +4,18 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 
 public interface FadadaCorpIdentityMapper extends BaseMapper<FadadaCorpIdentityDO> {
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE fadada_corp_identity
+            SET client_corp_id = #{providerClientCorpId}, open_corp_id = #{providerOpenCorpId}
+            WHERE id = #{id} AND company_id = #{companyId} AND client_corp_id = #{previousClientCorpId}
+              AND (open_corp_id IS NULL OR open_corp_id = '' OR open_corp_id = #{providerOpenCorpId})
+            """)
+    int adoptProviderBinding(@org.apache.ibatis.annotations.Param("id") Long id,
+            @org.apache.ibatis.annotations.Param("companyId") Long companyId,
+            @org.apache.ibatis.annotations.Param("previousClientCorpId") String previousClientCorpId,
+            @org.apache.ibatis.annotations.Param("providerClientCorpId") String providerClientCorpId,
+            @org.apache.ibatis.annotations.Param("providerOpenCorpId") String providerOpenCorpId);
+
     @org.apache.ibatis.annotations.Select("""
             SELECT * FROM fadada_corp_identity
             WHERE local_status IN ('VERIFIED', 'IN_PROGRESS', 'FAILED')

@@ -40,6 +40,8 @@ Postman → Import → 选择文件。也可以打开任一 JSON，复制全文�
 
 A05 会保存企业资料，A06 会绑定申请人，A03/A08 可申请认证链接，A04/A09 会同步并保存服务商状态，A11 会切换当前企业。每次只发一条，查看结果后再继续。集合设定 Runner 执行当前一条即停止，避免跳过本人办理步骤。
 
+已有法大大企业账号时，A08/A09 会通过服务端真实查询核对企业主体、开放标识和有效授权，再保存法大大已有的 `clientCorpId/openCorpId`。不同于本地初始生成编号的历史业务标识也可复用，无需逐家配置 Nacos。关联确认后仍独立核验当前申请人的法人或管理员身份；没有本人证据时继续待核验。
+
 认证链接由当前业务接口生成时带小程序返回路径，建议从本人手机小程序完成实名/授权，再在 Postman 查同步结果。Postman 不能替代本人刷脸。短时间重复同步可能读到约 30 秒内的缓存，不能根据相同返回判断没有调用或回调丢失。
 
 ## 4. 企业 auth-url 的几个结果
@@ -79,7 +81,7 @@ D 文件夹另外给出 `/user/get-auth-url` 和 `/corp/get-auth-url` 的原始�
 
 `companyAuthorizationReady` 是后端本次实时查询附带的状态，普通 GET 和部分冷却返回可能默认 false，不能仅凭它的 false 判定授权失效。应结合 `status/failureReason/organizationAuthorized` 与 B 的真实账号授权结果核对。
 
-个人 ID 与企业 ID 不可混用：`user_id` 是商签通用户 ID；`client_user_id=tradepass-user-{user_id}`；`company_id` 是商签通企业 ID；`client_corp_id=tradepass-company-{company_id}`；`open_user_id/open_corp_id` 才是同一法大大应用返回的开放标识。企业/成员长整数保持原文，不要在表格或 JS Number 中转写。
+个人 ID 与企业 ID 不可混用：`user_id` 是商签通用户 ID；`client_user_id=tradepass-user-{user_id}`；`company_id` 是商签通企业 ID。`tradepass-company-{company_id}` 是初始企业业务编号；复用既有账号后，服务端保存的 `clientCorpId` 可以是法大大返回的原编号，B05 的 `provider_client_corp_id` 用于查看该原编号。`open_user_id/open_corp_id` 是同一法大大应用返回的开放标识。企业/成员长整数保持原文，不要在表格或 JS Number 中转写。
 
 法大大企业 `authorized/identified` 不等于本次申请人已被确认是法人。可靠的同主体、同认证版本记录中，`operatorType=legal_rep` 且 `operatorId` 严格匹配当前已实名个人 `openUserId`，才是服务端法人关联核验的关键依据；还须满足其余账号、主体及状态条件。`deputy_auth`、同名或机构证书不能代替本人法人证据。首次新企业最终角色必须实际查看，不能预先承诺自动取得 LEGAL。
 
