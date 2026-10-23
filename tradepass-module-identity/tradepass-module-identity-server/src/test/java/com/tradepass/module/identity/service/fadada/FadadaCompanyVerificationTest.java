@@ -4,6 +4,7 @@ import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpSealDO;
 import com.tradepass.module.identity.service.certification.CompanyCertificationService;
+import com.tradepass.module.identity.service.company.CompanyOnboardingAttemptService;
 import com.tradepass.module.identity.service.permission.AccessControlService;
 
 import com.tradepass.module.identity.dal.mysql.company.CompanyMapper;
@@ -16,6 +17,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradepass.framework.fadada.config.FadadaProperties;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
+import com.tradepass.module.identity.dal.dataobject.company.CompanyOnboardingAttemptDO;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.framework.fadada.core.FadadaCompanyGateway;
 import com.tradepass.support.MybatisTestSupport;
@@ -482,6 +484,300 @@ class FadadaCompanyVerificationTest {
         verify(f.gateway).getCompany("local-3", "corp-3");
         verifyNoInteractions(f.certifications);
     }
+
+    @Test
+    void olderAttemptsSuccessCannotCompleteTheReplacementApplicationEvenForTheSameApplicant() {
+        var f = replacementApplicantFixture();
+        f.detail("legal_rep", "open-user-9", "identified");
+        var old = operatorCallback("legal_rep", "tradepass-user-9")
+                .put("eventTime", String.valueOf(System.currentTimeMillis() - 120000));
+
+        var result = f.service.syncCallback("local-3", "corp-3", old);
+
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.callbackObsolete()).isTrue();
+        assertThat(f.identity.getApplicantUserId()).isEqualTo(9L);
+        assertThat(f.identity.getProviderRequestId()).isEqualTo("replacement-application-9");
+        assertThat(f.identity.getAuthorizationEventAt()).isNull();
+        verifyNoInteractions(f.gateway, f.certifications);
+        verify(f.identities, never()).updateById(any(FadadaCorpIdentityDO.class));
+        verify(f.companies, never()).update(any(Wrapper.class));
+    }
+
+    @Test
+    void olderAttemptsFailureCannotRejectTheReplacementApplicationEvenForTheSameApplicant() {
+        var f = replacementApplicantFixture();
+        var old = operatorCallback("legal_rep", "tradepass-user-9")
+                .put("eventTime", String.valueOf(System.currentTimeMillis() - 120000))
+                .put("authResult", "fail").put("corpIdentProcessStatus", "failed")
+                .put("corpIdentFailedReason", "原申请人的历史认证未通过");
+
+        var result = f.service.syncCallback("local-3", "corp-3", old);
+
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.callbackObsolete()).isTrue();
+        assertThat(f.company.getCertificationStatus()).isEqualTo("PENDING_REVIEW");
+        assertThat(f.identity.getLocalStatus()).isEqualTo("IN_PROGRESS");
+        assertThat(f.identity.getFailureReason()).isNull();
+        assertThat(f.identity.getAuthorizationEventAt()).isNull();
+        verifyNoInteractions(f.gateway, f.certifications);
+        verify(f.identities, never()).updateById(any(FadadaCorpIdentityDO.class));
+        verify(f.companies, never()).update(any(Wrapper.class));
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"success", "fail"})
+    void anotherApplicantsRecentlyDeliveredCallbackCannotChangeTheCurrentApplication(String authResult) {
+        var f = replacementApplicantFixture();
+        f.detail("legal_rep", "open-user-9", "identified");
+        var anotherApplicant = operatorCallback("legal_rep", "tradepass-user-7")
+                .put("authResult", authResult);
+        if ("fail".equals(authResult)) {
+            anotherApplicant.put("corpIdentProcessStatus", "failed").put("corpIdentFailedReason", "原申请失败");
+        }
+
+        var result = f.service.syncCallback("local-3", "corp-3", anotherApplicant);
+
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.callbackObsolete()).isTrue();
+        assertThat(f.identity.getAuthorizationEventAt()).isNull();
+        verifyNoInteractions(f.gateway, f.certifications);
+        verify(f.identities, never()).updateById(any(FadadaCorpIdentityDO.class));
+        verify(f.companies, never()).update(any(Wrapper.class));
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"success", "fail"})
+    void anUnboundLegacyCallbackCannotBypassExistingOnboardingApplications(String authResult) {
+        var f = replacementApplicantFixture();
+        f.identity.setOnboardingAttemptId(null);
+        f.identity.setApplicantUserId(7L);
+        f.identity.setAuthorizationUserId(7L);
+        f.identity.setProviderRequestId("expired-legacy-application-7");
+        f.identity.setSubmittedAt(java.time.LocalDateTime.now().minusHours(2));
+        f.identity.setAuthorizationSubmittedAt(f.identity.getSubmittedAt());
+        when(f.attempts.current(3L)).thenReturn(null);
+        f.detail("legal_rep", "open-user-7", "identified");
+        var legacyCallback = operatorCallback("legal_rep", "tradepass-user-7")
+                .put("authResult", authResult);
+        if ("fail".equals(authResult)) {
+            legacyCallback.put("corpIdentProcessStatus", "failed")
+                    .put("corpIdentFailedReason", "过期旧申请的认证失败");
+        }
+
+        var result = f.service.syncCallback("local-3", "corp-3", legacyCallback);
+
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.callbackObsolete()).isTrue();
+        assertThat(f.identity.getOnboardingAttemptId()).isNull();
+        assertThat(f.identity.getApplicantUserId()).isEqualTo(7L);
+        assertThat(f.identity.getAuthorizationEventAt()).isNull();
+        assertThat(f.identity.getFailureReason()).isNull();
+        verifyNoInteractions(f.gateway, f.certifications);
+        verify(f.identities, never()).updateById(any(FadadaCorpIdentityDO.class));
+        verify(f.identities, never()).update(any(Wrapper.class));
+        verify(f.companies, never()).update(any(Wrapper.class));
+        verify(f.attempts, never()).complete(anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    void callbackCannotReviveAnExpiredOrCancelledApplication() {
+        var f = replacementApplicantFixture();
+        when(f.attempts.current(3L)).thenReturn(null);
+        var callback = operatorCallback("legal_rep", "tradepass-user-9");
+
+        var result = f.service.syncCallback("local-3", "corp-3", callback);
+
+        assertThat(result.callbackObsolete()).isTrue();
+        assertThat(f.identity.getLocalStatus()).isEqualTo("IN_PROGRESS");
+        verifyNoInteractions(f.gateway, f.certifications);
+        verify(f.identities, never()).updateById(any(FadadaCorpIdentityDO.class));
+        verify(f.companies, never()).update(any(Wrapper.class));
+    }
+
+    @Test
+    void aCurrentApplicantsCallbackCannotUseAnIdentityStillBoundToAnotherApplication() {
+        var f = replacementApplicantFixture();
+        f.identity.setOnboardingAttemptId(499L);
+        var callback = operatorCallback("legal_rep", "tradepass-user-9");
+
+        var result = f.service.syncCallback("local-3", "corp-3", callback);
+
+        assertThat(result.callbackObsolete()).isTrue();
+        assertThat(f.identity.getOnboardingAttemptId()).isEqualTo(499L);
+        assertThat(f.identity.getAuthorizationEventAt()).isNull();
+        verifyNoInteractions(f.gateway, f.certifications);
+        verify(f.identities, never()).updateById(any(FadadaCorpIdentityDO.class));
+        verify(f.companies, never()).update(any(Wrapper.class));
+    }
+
+    @Test
+    void replacementApplicantCannotReuseTheFormerApplicantsLegalIdentity() {
+        var f = replacementApplicantFixture();
+        f.detail("legal_rep", "open-user-7", "identified");
+
+        assertThat(f.service.sync(3L).status()).isEqualTo("IN_PROGRESS");
+
+        assertThat(f.identity.getApplicantUserId()).isEqualTo(9L);
+        assertThat(f.identity.getProviderRequestId()).isEqualTo("replacement-application-9");
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void aFailureWithoutCurrentApplicantEvidenceOnlyRequeriesTheCurrentApplication() {
+        var f = replacementApplicantFixture();
+        f.detailWithoutOperator("legal_rep");
+        var uncorrelatedFailure = companyCallback().put("authResult", "fail")
+                .put("corpIdentProcessStatus", "failed").put("corpIdentFailedReason", "不属于当前申请的历史失败");
+
+        var result = f.service.syncCallback("local-3", "corp-3", uncorrelatedFailure);
+
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(f.identity.getFailureReason()).doesNotContain("不属于当前申请的历史失败");
+        verify(f.gateway).getCompany("local-3", "corp-3");
+        verify(f.gateway).getIdentity("corp-3");
+        verifyNoInteractions(f.certifications);
+        verify(f.companies, never()).update(argThat((Wrapper<CompanyDO> wrapper) ->
+                wrapper instanceof com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<?> update
+                        && update.getSqlSet().contains("certification_status")));
+    }
+
+    @Test
+    void theFormerApplicantCannotStartOrSynchronizeTheReplacementApplicantsEnrollment() {
+        var f = replacementApplicantFixture();
+        doThrow(new BusinessException("其他申请人正在办理企业认证"))
+                .when(f.attempts).activate(3L, 7L);
+        doThrow(new BusinessException("本次企业认证申请已失效，请重新申请"))
+                .when(f.attempts).requireCurrent(3L, 7L);
+        AuthContext.set(7L, null);
+        try {
+            assertThatThrownBy(() -> f.service.createAuthUrl(3L)).hasMessageContaining("其他申请人");
+            assertThatThrownBy(() -> f.service.syncCurrent(3L)).hasMessageContaining("已失效");
+
+            assertThat(f.identity.getApplicantUserId()).isEqualTo(9L);
+            assertThat(f.identity.getAuthorizationUserId()).isEqualTo(9L);
+            assertThat(f.identity.getOnboardingAttemptId()).isEqualTo(501L);
+            verifyNoInteractions(f.gateway, f.certifications);
+            verify(f.identities, never()).updateById(any(FadadaCorpIdentityDO.class));
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void replacementApplicantCompletesOnlyTheirOwnApplicationWithIndependentProviderIdentity() {
+        var f = replacementApplicantFixture();
+        f.company.setName("前一个申请人的错误企业名称");
+        f.attempts.current(3L).setCompanyName("认证企业");
+        f.detail("legal_rep", "open-user-9", "identified");
+
+        assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
+
+        verify(f.personal).verifiedOpenUserId(9L);
+        verify(f.personal, never()).verifiedOpenUserId(7L);
+        verify(f.certifications).completeProviderCertification(eq(3L), eq(9L),
+                eq("replacement-application-9"), anyString(), eq(CertifiedApplicantRole.LEGAL));
+        verify(f.attempts).complete(3L, 9L, "replacement-application-9");
+        assertThat(f.company.getName()).isEqualTo("认证企业");
+        verify(f.certifications, never()).completeProviderCertification(eq(3L), eq(7L),
+                anyString(), anyString(), any());
+    }
+
+    @Test
+    void establishedCompanyConsentRenewalCannotActivateAReplacementOnboardingApplication() {
+        var f = new Fixture(false);
+        ((FadadaCompanyServiceImpl) f.service).setOnboardingAttemptService(f.attempts);
+        f.company.setCertificationStatus("VERIFIED");
+        f.identity.setLocalStatus("VERIFIED");
+        f.identity.setProviderRequestId("original-approved-application-7");
+        f.identity.setOnboardingAttemptId(401L);
+        f.documentedOperator("legal_rep", "open-user-7");
+        when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/renew-existing-company-consent");
+        AuthContext.set(9L, 3L);
+        try {
+            assertThat(f.service.createAuthUrl(3L).url()).isEqualTo("https://example.test/renew-existing-company-consent");
+
+            assertThat(f.identity.getApplicantUserId()).isEqualTo(7L);
+            assertThat(f.identity.getProviderRequestId()).isEqualTo("original-approved-application-7");
+            assertThat(f.identity.getOnboardingAttemptId()).isEqualTo(401L);
+            verify(f.attempts, never()).activate(anyLong(), anyLong());
+            verify(f.attempts, never()).complete(anyLong(), anyLong(), anyString());
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void completedEnrollmentThatReusedConsentStillProcessesCorporateRevocationWithoutAPageTimestamp() {
+        var f = replacementApplicantFixture();
+        f.company.setCertificationStatus("VERIFIED");
+        f.identity.setLocalStatus("VERIFIED");
+        f.identity.setOpenCorpId("corp-3");
+        f.identity.setBindingStatus("authorized");
+        f.identity.setAuthScopes("[\"ident_info\",\"organization\"]");
+        f.identity.setSubmittedAt(null);
+        f.identity.setAuthorizationSubmittedAt(null);
+        f.identity.setVerifiedAt(java.time.LocalDateTime.now().minusYears(1));
+        when(f.attempts.current(3L)).thenReturn(null);
+        when(f.attempts.isEstablished(f.company)).thenReturn(true);
+        var revocation = new ObjectMapper().createObjectNode().put("_verifiedEvent", "corp-cancel-authorization")
+                .put("eventTime", String.valueOf(System.currentTimeMillis()));
+
+        var result = f.service.syncCallback("local-3", "corp-3", revocation);
+
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.callbackObsolete()).isFalse();
+        assertThat(f.identity.getBindingStatus()).isEqualTo("unauthorized");
+        assertThat(f.identity.getAuthScopes()).isEqualTo("[]");
+        assertThat(f.identity.getAuthorizationEventType()).isEqualTo("corp-cancel-authorization");
+        assertThat(f.identity.getApplicantUserId()).isEqualTo(9L);
+        verify(f.identities).updateById(f.identity);
+        verifyNoInteractions(f.gateway, f.certifications);
+    }
+
+    @Test
+    void establishedCompanyRecoversCertificationAfterFailedRenewalWithoutReapprovingAnApplicant() {
+        var f = replacementApplicantFixture();
+        f.company.setCertificationStatus("REJECTED");
+        f.identity.setLocalStatus("FAILED");
+        f.identity.setVerifiedAt(java.time.LocalDateTime.now().minusYears(1));
+        when(f.attempts.current(3L)).thenReturn(null);
+        when(f.attempts.isEstablished(f.company)).thenReturn(true);
+        f.documentedOperator("legal_rep", "open-user-7");
+
+        assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
+
+        verify(f.companies).update(argThat((Wrapper<CompanyDO> wrapper) ->
+                wrapper instanceof com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<?> update
+                        && update.getSqlSet().contains("certification_status")
+                        && update.getParamNameValuePairs().containsValue("VERIFIED")));
+        verifyNoInteractions(f.personal, f.certifications);
+        verify(f.attempts, never()).complete(anyLong(), anyLong(), anyString());
+    }
+
+    private static Fixture replacementApplicantFixture() {
+        var f = new Fixture();
+        f.identity.setApplicantUserId(9L);
+        f.identity.setAuthorizationUserId(9L);
+        f.identity.setOnboardingAttemptId(501L);
+        f.identity.setProviderRequestId("replacement-application-9");
+        var started = java.time.LocalDateTime.now().minusSeconds(30);
+        f.identity.setSubmittedAt(started);
+        f.identity.setAuthorizationSubmittedAt(started);
+        var attempt = new CompanyOnboardingAttemptDO();
+        attempt.setId(501L);
+        attempt.setCompanyId(3L);
+        attempt.setApplicantUserId(9L);
+        attempt.setProviderRequestId("replacement-application-9");
+        attempt.setStartedAt(started);
+        attempt.setExpiresAt(started.plusDays(1));
+        attempt.setStatus("ACTIVE");
+        when(f.attempts.current(3L)).thenReturn(attempt);
+        when(f.attempts.hasAttempts(3L)).thenReturn(true);
+        when(f.attempts.ownsCurrent(3L, 9L)).thenReturn(true);
+        when(f.attempts.hasPendingAttempt(3L, 9L)).thenReturn(true);
+        ((FadadaCompanyServiceImpl) f.service).setOnboardingAttemptService(f.attempts);
+        when(f.personal.verifiedOpenUserId(9L)).thenReturn("open-user-9");
+        return f;
+    }
+
     @Test
     void disabledOrIncompleteAuthorizationDoesNotQueryPrivateIdentityOrGrantMembership() {
         for (String state : List.of("disable", "", "unknown", "missing-scopes", "unauthorized")) {
@@ -1301,6 +1597,7 @@ class FadadaCompanyVerificationTest {
         final CompanyDO company = new CompanyDO();
         final FadadaProperties properties = new FadadaProperties();
         final AccessControlService accessControl = mock(AccessControlService.class);
+        final CompanyOnboardingAttemptService attempts = mock(CompanyOnboardingAttemptService.class);
         final FadadaCompanyService service;
         Fixture() { this(true); }
         Fixture(boolean providerConfirmed) {

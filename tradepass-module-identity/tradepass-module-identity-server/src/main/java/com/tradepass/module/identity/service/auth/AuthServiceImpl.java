@@ -7,6 +7,8 @@ import com.tradepass.framework.common.pojo.TradePassDtos;
 import com.tradepass.module.identity.dal.dataobject.permission.PermDefDO;
 import com.tradepass.module.identity.service.permission.AccessControlService;
 import com.tradepass.module.identity.service.permission.RolePermissionService;
+import com.tradepass.module.identity.service.company.CompanyOnboardingAttemptService;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import com.tradepass.module.trade.api.document.BusinessDocumentOperations;
 import com.tradepass.module.trade.api.document.BusinessDocumentOperations.*;
@@ -23,6 +25,7 @@ import com.tradepass.framework.common.pojo.TradePassDtos.MePayload;
 import com.tradepass.framework.common.pojo.TradePassDtos.MemberInfo;
 import com.tradepass.framework.common.pojo.TradePassDtos.UserProfile;
 import com.tradepass.module.identity.controller.app.auth.vo.BindCompanyReqVO;
+import com.tradepass.module.identity.controller.app.company.vo.CompanySubmitReqVO;
 import com.tradepass.module.identity.controller.app.auth.vo.BindPhoneReqVO;
 import com.tradepass.module.identity.controller.app.auth.vo.SwitchCompanyReqVO;
 import com.tradepass.module.identity.controller.app.auth.vo.SwitchUserReqVO;
@@ -63,6 +66,10 @@ public class AuthServiceImpl implements AuthService {
     private final AuthSessionService authSessionService;
     private final ExperienceTestAccountService experienceTestAccountService;
     private final boolean devEnabled;
+    private CompanyOnboardingAttemptService onboardingAttempts;
+
+    @Autowired
+    public void setOnboardingAttempts(CompanyOnboardingAttemptService value) { this.onboardingAttempts = value; }
 
     public AuthServiceImpl(SysUserMapper sysUserMapper,
                        CompanyMapper companyMapper,
@@ -253,9 +260,40 @@ public class AuthServiceImpl implements AuthService {
     public MePayload bindCompany(BindCompanyReqVO request) {
         long userId = AuthContext.userId();
         long companyId = parseId(request.id());
-        CompanyDO company = companyMapper.selectById(companyId);
+        CompanyDO company = onboardingAttempts == null ? companyMapper.selectById(companyId) : companyMapper.selectByIdForUpdate(companyId);
         if (company == null) {
             throw new BusinessException("企业不存在，请先提交企业资料");
+        }
+        if (onboardingAttempts != null && !onboardingAttempts.isEstablished(company)) {
+            if (!onboardingAttempts.hasAttempts(companyId) && java.util.Objects.equals(company.getCreatedBy(), userId)) {
+                onboardingAttempts.draft(companyId, userId, new CompanySubmitReqVO(null, company.getName(), company.getCreditCode(),
+                        company.getLegalPersonName(), company.getRegisteredAddress(), company.getContactPhone(), company.getBankName(), company.getBankAccount()));
+            }
+            var attempt = onboardingAttempts.requireAttempt(companyId, userId);
+            if (!java.util.Objects.equals(attempt.getCompanyName(), request.name())
+                    || !java.util.Objects.equals(attempt.getCreditCode(), request.creditCode())
+                    || !java.util.Objects.equals(attempt.getLegalPersonName(), request.legalPersonName())) {
+                throw new BusinessException("企业资料与本人入驻申请不一致，请重新保存企业资料");
+            }
+            CompanyMemberDO existing = companyMemberMapper.selectOne(new LambdaQueryWrapper<CompanyMemberDO>()
+                    .eq(CompanyMemberDO::getCompanyId, companyId).eq(CompanyMemberDO::getUserId, userId).last("LIMIT 1"));
+            if (existing == null) {
+                CompanyMemberDO candidate = new CompanyMemberDO();
+                candidate.setCompanyId(companyId); candidate.setUserId(userId); candidate.setRoleCode("LEGAL_CANDIDATE");
+                candidate.setRoleCodes("[\"LEGAL_CANDIDATE\"]"); candidate.setIsLegalPerson(false); candidate.setIsAdministrator(false);
+                candidate.setStatus("PENDING"); companyMemberMapper.insert(candidate);
+            } else if (!"PENDING".equals(existing.getStatus()) || !"LEGAL_CANDIDATE".equals(existing.getRoleCode())) {
+                throw new BusinessException("原成员状态已变化，请通过企业邀请或人工认领流程加入");
+            }
+            MePayload result = buildMe(userId, companyId);
+            return new MePayload(result.user(), onboardingAttempts.profile(company, attempt), result.member(), result.companies());
+        }
+        if (onboardingAttempts != null) {
+            CompanyMemberDO member = companyMemberMapper.selectOne(new LambdaQueryWrapper<CompanyMemberDO>()
+                    .eq(CompanyMemberDO::getCompanyId, companyId).eq(CompanyMemberDO::getUserId, userId)
+                    .eq(CompanyMemberDO::getStatus, "ACTIVE").last("LIMIT 1"));
+            if (member == null) throw new BusinessException("企业已正式开通，请通过企业邀请或独立认领流程加入");
+            return buildMe(userId, companyId);
         }
         if (!company.getName().equals(request.name())
                 || !company.getCreditCode().equals(request.creditCode())
@@ -349,6 +387,16 @@ public class AuthServiceImpl implements AuthService {
             String phone = user == null ? "" : user.getPhone();
             UserProfile profile = new UserProfile(String.valueOf(userId), "demo-openid", phone, nick, null, "GUEST");
             return new MePayload(profile, fallbackCompany(), null, companies);
+        }
+        if (onboardingAttempts != null && !"ACTIVE".equals(member.memberStatus())) {
+            CompanyDO selected = effectiveCompanyId == null ? null : companyMapper.selectById(effectiveCompanyId);
+            CompanyProfile own = fallbackCompany();
+            if (selected != null && !onboardingAttempts.isEstablished(selected)
+                    && onboardingAttempts.hasPendingAttempt(selected.getId(), userId)) {
+                own = onboardingAttempts.profile(selected, onboardingAttempts.requireAttempt(selected.getId(), userId));
+            }
+            UserProfile candidateProfile = new UserProfile(String.valueOf(userId), "demo-openid", member.phone(), member.userName(), null, "GUEST");
+            return new MePayload(candidateProfile, own, member, companies);
         }
         CompanyProfile company = effectiveCompanyId == null ? null : toCompanyProfile(companyMapper.selectById(effectiveCompanyId));
         UserProfile profile = new UserProfile(member.userId(), "demo-openid", member.phone(), member.userName(),

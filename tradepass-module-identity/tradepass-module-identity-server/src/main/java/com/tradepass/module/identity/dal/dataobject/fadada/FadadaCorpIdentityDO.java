@@ -33,6 +33,7 @@ public class FadadaCorpIdentityDO {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
+    private Long onboardingAttemptId;
     private Long authorizationUserId;
     private LocalDateTime authorizationSubmittedAt;
     private LocalDateTime authorizationConfirmedAt;
@@ -87,6 +88,8 @@ public class FadadaCorpIdentityDO {
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    public Long getOnboardingAttemptId() { return onboardingAttemptId; }
+    public void setOnboardingAttemptId(Long value) { this.onboardingAttemptId = value; }
     public Long getAuthorizationUserId() { return authorizationUserId; }
     public void setAuthorizationUserId(Long value) { this.authorizationUserId = value; }
     public LocalDateTime getAuthorizationSubmittedAt() { return authorizationSubmittedAt; }

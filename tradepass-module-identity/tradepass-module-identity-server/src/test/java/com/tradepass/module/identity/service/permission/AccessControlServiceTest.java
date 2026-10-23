@@ -12,6 +12,7 @@ import com.tradepass.module.identity.dal.dataobject.permission.RoleDefDO;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import com.tradepass.module.identity.dal.mysql.counterparty.CounterpartyRelationMapper;
 import com.tradepass.module.identity.dal.mysql.permission.RoleDefMapper;
+import com.tradepass.module.identity.service.company.CompanyOnboardingAttemptService;
 import com.tradepass.support.MybatisTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -151,6 +152,44 @@ class AccessControlServiceTest {
         assertThatThrownBy(() -> service.requireCompanyProfileAccess(9L))
                 .isInstanceOf(BusinessException.class)
                 .hasMessage("无权访问企业敏感资料");
+    }
+
+    @Test
+    void cancelledApplicantCannotUseAStaleCandidateToAccessOrOperateANewApplication() {
+        var attempts = mock(CompanyOnboardingAttemptService.class);
+        when(attempts.hasAttempts(3L)).thenReturn(true);
+        when(attempts.hasPendingAttempt(3L, 7L)).thenReturn(false);
+        ((AccessControlServiceImpl) service).setOnboardingAttemptService(attempts);
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+
+        assertThatThrownBy(() -> service.requireLegalOrClaim(3L)).hasMessageContaining("申请已失效");
+        assertThatThrownBy(() -> service.requireMemberOrClaim(3L)).hasMessageContaining("申请已失效");
+        assertThatThrownBy(() -> service.requireCompanyProfileAccess(3L)).hasMessage("无权访问企业敏感资料");
+    }
+
+    @Test
+    void aNewPendingApplicantOnlyGetsRestrictedCompanyProfileAccess() {
+        var attempts = mock(CompanyOnboardingAttemptService.class);
+        when(attempts.hasAttempts(3L)).thenReturn(true);
+        when(attempts.hasPendingAttempt(3L, 7L)).thenReturn(true);
+        ((AccessControlServiceImpl) service).setOnboardingAttemptService(attempts);
+
+        assertThat(service.requireCompanyProfileAccess(3L)).isEqualTo(CompanyProfileAccess.MEMBER);
+        // One check for ACTIVE membership, then one for the authenticated candidate.
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(0L, 1L);
+        assertThatCode(() -> service.requireLegalOrClaim(3L)).doesNotThrowAnyException();
+        assertThat(service.hasPermission(3L, "company_manage")).isFalse();
+    }
+
+    @Test
+    void formalLegalMemberKeepsSensitiveAccessAfterItsOnboardingAttemptIsCompleted() {
+        var attempts = mock(CompanyOnboardingAttemptService.class);
+        when(attempts.hasAttempts(3L)).thenReturn(true);
+        ((AccessControlServiceImpl) service).setOnboardingAttemptService(attempts);
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        assertThat(service.requireCompanyProfileAccess(3L)).isEqualTo(CompanyProfileAccess.SENSITIVE_OWNER);
+        assertThatCode(() -> service.requireLegalOrClaim(3L)).doesNotThrowAnyException();
     }
 
     @Test

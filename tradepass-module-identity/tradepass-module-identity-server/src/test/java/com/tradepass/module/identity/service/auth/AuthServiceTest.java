@@ -22,6 +22,9 @@ import com.tradepass.module.identity.controller.app.auth.vo.SwitchUserReqVO;
 import com.tradepass.module.identity.controller.app.auth.vo.WechatLoginReqVO;
 import com.tradepass.module.trade.api.document.dto.TodoItem;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
+import com.tradepass.module.identity.dal.dataobject.company.CompanyOnboardingAttemptDO;
+import com.tradepass.module.identity.service.company.CompanyOnboardingAttemptService;
+import com.tradepass.framework.common.pojo.TradePassDtos.CompanyProfile;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
 import com.tradepass.module.trade.api.document.dto.BusinessDocumentRespDTO;
 import com.tradepass.module.identity.dal.dataobject.permission.PermDefDO;
@@ -354,6 +357,74 @@ class AuthServiceTest {
 
         service.logout("Bearer switched-token");
         verify(sessionService).revoke("Bearer switched-token");
+    }
+
+    @Test
+    void aValidIndependentAttemptCanBindOnlyAPendingCandidate() {
+        AuthServiceImpl service = (AuthServiceImpl) service(false);
+        CompanyOnboardingAttemptService attempts = mock(CompanyOnboardingAttemptService.class);
+        service.setOnboardingAttempts(attempts); AuthContext.set(7L, null);
+        CompanyDO company = company(3L, "原草稿名称", 8L); company.setCertificationStatus("PENDING"); company.setBankAccount("OTHER-BANK");
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+        CompanyOnboardingAttemptDO attempt = new CompanyOnboardingAttemptDO();
+        attempt.setCompanyName("本人申报名称"); attempt.setCreditCode("CODE3"); attempt.setLegalPersonName("申报法人");
+        when(attempts.requireAttempt(3L, 7L)).thenReturn(attempt);
+        when(attempts.profile(company, attempt)).thenReturn(new CompanyProfile("3", "本人申报名称", "CODE3", "申报法人", "PENDING", "NOT_STARTED", "NOT_STARTED", "NOT_UPLOADED"));
+        when(userMapper.selectById(7L)).thenReturn(phoneBindingUser());
+
+        MePayload result = service.bindCompany(new BindCompanyReqVO("3", "本人申报名称", "CODE3", "申报法人", null, null, null, null));
+        var capture = org.mockito.ArgumentCaptor.forClass(CompanyMemberDO.class);
+        verify(memberMapper).insert(capture.capture());
+        assertThat(capture.getValue().getStatus()).isEqualTo("PENDING");
+        assertThat(capture.getValue().getRoleCode()).isEqualTo("LEGAL_CANDIDATE");
+        assertThat(capture.getValue().getIsLegalPerson()).isFalse();
+        assertThat(capture.getValue().getIsAdministrator()).isFalse();
+        assertThat(result.company().name()).isEqualTo("本人申报名称");
+        assertThat(result.company().bankAccount()).isNull();
+    }
+
+    @Test
+    void bindingWithoutAnApplicationCannotCreateAPendingMember() {
+        AuthServiceImpl service = (AuthServiceImpl) service(false);
+        CompanyOnboardingAttemptService attempts = mock(CompanyOnboardingAttemptService.class);
+        service.setOnboardingAttempts(attempts); AuthContext.set(7L, null);
+        CompanyDO company = company(3L, "企业", 8L); company.setCertificationStatus("CANCELLED");
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+        when(attempts.requireAttempt(3L, 7L)).thenThrow(new BusinessException("本次企业认证申请已失效，请重新申请"));
+        assertThatThrownBy(() -> service.bindCompany(new BindCompanyReqVO("3", "企业", "CODE3", "法人", null, null, null, null)))
+                .hasMessageContaining("已失效");
+        verify(memberMapper, never()).insert(any(CompanyMemberDO.class));
+    }
+
+    @Test
+    void onlyTheOriginalCreatorCanImportALegacyDraftBeforeBinding() {
+        AuthServiceImpl service = (AuthServiceImpl) service(false);
+        CompanyOnboardingAttemptService attempts = mock(CompanyOnboardingAttemptService.class);
+        service.setOnboardingAttempts(attempts); AuthContext.set(7L, null);
+        CompanyDO company = company(3L, "原本人草稿", 7L); company.setCertificationStatus("PENDING");
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+        CompanyOnboardingAttemptDO attempt = new CompanyOnboardingAttemptDO();
+        attempt.setCompanyName("原本人草稿"); attempt.setCreditCode("CODE3"); attempt.setLegalPersonName("法人");
+        when(attempts.requireAttempt(3L, 7L)).thenReturn(attempt);
+        when(userMapper.selectById(7L)).thenReturn(phoneBindingUser());
+        service.bindCompany(new BindCompanyReqVO("3", "原本人草稿", "CODE3", "法人", null, null, null, null));
+        verify(attempts).draft(org.mockito.ArgumentMatchers.eq(3L), org.mockito.ArgumentMatchers.eq(7L), any());
+    }
+
+    @Test
+    void stalePendingCandidateCannotReflectTheSharedCompanyBankData() {
+        AuthServiceImpl service = (AuthServiceImpl) service(false);
+        CompanyOnboardingAttemptService attempts = mock(CompanyOnboardingAttemptService.class);
+        service.setOnboardingAttempts(attempts); AuthContext.set(7L, 3L);
+        CompanyDO company = company(3L, "别人已开通的企业", 8L); company.setBankAccount("SECRET-BANK");
+        when(companyMapper.selectById(3L)).thenReturn(company);
+        when(memberMapper.selectMemberInfo(7L, 3L)).thenReturn(memberRow(7L, "LEGAL_CANDIDATE", "PENDING"));
+        when(attempts.isEstablished(company)).thenReturn(true);
+        MePayload result = service.me();
+        assertThat(result.company().name()).isEqualTo("未加入企业");
+        assertThat(result.company().bankAccount()).isNull();
+        assertThat(result.user().currentCompanyId()).isNull();
+        assertThat(result.user().currentRole()).isEqualTo("GUEST");
     }
 
     private AuthService service(boolean devEnabled) {

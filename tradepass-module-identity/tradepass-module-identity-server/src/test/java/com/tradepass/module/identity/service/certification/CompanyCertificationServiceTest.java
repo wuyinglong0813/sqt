@@ -1,6 +1,7 @@
 package com.tradepass.module.identity.service.certification;
 
 import com.tradepass.module.identity.service.company.TenantBootstrapService;
+import com.tradepass.module.identity.service.company.CompanyOnboardingAttemptService;
 import com.tradepass.module.identity.service.permission.AccessControlService;
 
 import com.tradepass.framework.audit.core.AuditLogService;
@@ -14,6 +15,7 @@ import com.tradepass.module.identity.api.certification.dto.CertificationApplicat
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
 import com.tradepass.module.identity.dal.dataobject.certification.CompanyCertificationApplicationDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
+import com.tradepass.module.identity.dal.dataobject.company.CompanyOnboardingAttemptDO;
 import com.tradepass.module.identity.dal.mysql.certification.CompanyCertificationApplicationMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
@@ -21,6 +23,8 @@ import com.tradepass.support.MybatisTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import com.tradepass.module.identity.service.certification.CompanyCertificationService.CertifiedApplicantRole;
 
 import java.time.LocalDateTime;
@@ -33,6 +37,11 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.ArgumentMatchers.argThat;
 
 class CompanyCertificationServiceTest {
     private CompanyMapper companyMapper;
@@ -41,6 +50,7 @@ class CompanyCertificationServiceTest {
     private AccessControlService accessControlService;
     private TenantBootstrapService tenantBootstrapService;
     private AuditLogService auditLogService;
+    private CompanyOnboardingAttemptService onboardingAttempts;
 
     @BeforeEach
     void setUp() {
@@ -51,6 +61,7 @@ class CompanyCertificationServiceTest {
         accessControlService = mock(AccessControlService.class);
         tenantBootstrapService = mock(TenantBootstrapService.class);
         auditLogService = mock(AuditLogService.class);
+        onboardingAttempts = mock(CompanyOnboardingAttemptService.class);
         when(memberMapper.update(any(Wrapper.class))).thenReturn(1);
         when(applicationMapper.update(any(Wrapper.class))).thenReturn(1);
         doAnswer(invocation -> {
@@ -82,6 +93,217 @@ class CompanyCertificationServiceTest {
         verify(tenantBootstrapService).initialize(3L, 7L);
         verify(auditLogService).logAs(3L, 7L, "COMPANY_CERTIFICATION", 18L,
                 "APPROVE", "体验测试模拟认证自动审核");
+    }
+
+    @Test
+    void managedSubmissionUsesItsCurrentRequestInsteadOfAnotherPendingLegacyApplication() {
+        CompanyDO company = company();
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+        var attempt = activeAttempt();
+        when(onboardingAttempts.hasAttempts(3L)).thenReturn(true);
+        when(onboardingAttempts.requireCurrent(3L, 7L)).thenReturn(attempt);
+        CompanyCertificationApplicationDO unrelated = application("SUBMITTED");
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenAnswer(invocation -> {
+            var query = (LambdaQueryWrapper<CompanyCertificationApplicationDO>) invocation.getArgument(0);
+            query.getSqlSegment();
+            return query.getParamNameValuePairs().containsValue(attempt.getProviderRequestId()) ? null : unrelated;
+        });
+
+        var result = managedService(false, "").submit(3L);
+
+        assertThat(result.providerRequestId()).isEqualTo(attempt.getProviderRequestId());
+        assertThat(result.companyName()).isEqualTo(attempt.getCompanyName());
+        verify(applicationMapper).insert(argThat((CompanyCertificationApplicationDO inserted) ->
+                attempt.getProviderRequestId().equals(inserted.getProviderRequestId())
+                        && inserted.getCompanyId() == 3L && inserted.getApplicantUserId() == 7L));
+        verifyNoInteractions(memberMapper, tenantBootstrapService);
+    }
+
+    @Test
+    void draftApplicantCannotSubmitCertificationWhileAnotherApplicantOwnsTheActiveAttempt() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(onboardingAttempts.hasAttempts(3L)).thenReturn(true);
+        doThrow(new BusinessException("本次企业认证申请已失效，请重新申请"))
+                .when(onboardingAttempts).requireCurrent(3L, 7L);
+
+        assertThatThrownBy(() -> managedService(false, "").submit(3L)).hasMessageContaining("已失效");
+
+        verifyNoInteractions(applicationMapper, memberMapper, tenantBootstrapService, auditLogService);
+        verify(companyMapper, never()).update(any(Wrapper.class));
+    }
+
+    @Test
+    void managedSubmissionCannotReopenACompletedCertificationRequest() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        var attempt = activeAttempt();
+        when(onboardingAttempts.hasAttempts(3L)).thenReturn(true);
+        when(onboardingAttempts.requireCurrent(3L, 7L)).thenReturn(attempt);
+        var rejected = application("REJECTED");
+        rejected.setProviderRequestId(attempt.getProviderRequestId());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(rejected);
+
+        assertThatThrownBy(() -> managedService(false, "").submit(3L)).hasMessageContaining("已结束");
+
+        verify(applicationMapper, never()).insert(any(CompanyCertificationApplicationDO.class));
+        verifyNoInteractions(memberMapper, tenantBootstrapService, auditLogService);
+    }
+
+    @Test
+    void reviewReloadsCancellationUnderTheCompanyLockInsteadOfUsingItsEarlierSnapshot() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        var stale = application("SUBMITTED");
+        var cancelled = application("CANCELLED");
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(stale, cancelled);
+
+        assertThatThrownBy(() -> service(false, "secret").review("secret",
+                new CertificationReviewReqVO("corp-3", "REJECTED", "旧申请驳回")))
+                .hasMessageContaining("已完成");
+
+        var order = inOrder(applicationMapper, companyMapper);
+        order.verify(applicationMapper).selectOne(any(Wrapper.class));
+        order.verify(companyMapper).selectByIdForUpdate(3L);
+        order.verify(applicationMapper).selectOne(argThat((Wrapper<CompanyCertificationApplicationDO> query) ->
+                query.getSqlSegment().contains("FOR UPDATE")));
+        verify(companyMapper, never()).update(any(Wrapper.class));
+        verify(applicationMapper, never()).update(any(Wrapper.class));
+        verifyNoInteractions(memberMapper, tenantBootstrapService, auditLogService);
+    }
+
+    @Test
+    void anOldRequestFromTheSameApplicantCannotRejectTheirReplacementApplication() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(application("SUBMITTED"));
+        when(onboardingAttempts.hasAttempts(3L)).thenReturn(true);
+        when(onboardingAttempts.requireCurrent(3L, 7L)).thenReturn(activeAttempt());
+
+        assertThatThrownBy(() -> managedService(false, "secret").review("secret",
+                new CertificationReviewReqVO("corp-3", "REJECTED", "旧轮次驳回")))
+                .hasMessageContaining("替代");
+
+        assertNoCertificationOutcomeWritten();
+    }
+
+    @Test
+    void anExpiredOrDifferentApplicantsRequestCannotRejectTheCurrentApplication() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(application("SUBMITTED"));
+        when(onboardingAttempts.hasAttempts(3L)).thenReturn(true);
+        doThrow(new BusinessException("本次企业认证申请已失效，请重新申请"))
+                .when(onboardingAttempts).requireCurrent(3L, 7L);
+
+        assertThatThrownBy(() -> managedService(false, "secret").review("secret",
+                new CertificationReviewReqVO("corp-3", "REJECTED", "旧申请驳回")))
+                .hasMessageContaining("已失效");
+
+        assertNoCertificationOutcomeWritten();
+    }
+
+    @Test
+    void anUnfinishedLegacyRequestCannotRejectAnAlreadyEstablishedEnterprise() {
+        var company = company();
+        company.setCertificationStatus("VERIFIED");
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(application("SUBMITTED"));
+
+        assertThatThrownBy(() -> service(false, "secret").review("secret",
+                new CertificationReviewReqVO("corp-3", "REJECTED", "迟到的旧拒绝")))
+                .hasMessageContaining("已正式开通");
+
+        assertNoCertificationOutcomeWritten();
+    }
+
+    @Test
+    void theCurrentManagedRequestCanRecordItsOwnRejectionWithoutGrantingAnyRole() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        var attempt = activeAttempt();
+        var pending = application("SUBMITTED");
+        pending.setProviderRequestId(attempt.getProviderRequestId());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(pending);
+        when(onboardingAttempts.hasAttempts(3L)).thenReturn(true);
+        when(onboardingAttempts.requireCurrent(3L, 7L)).thenReturn(attempt);
+
+        var result = managedService(false, "secret").review("secret",
+                new CertificationReviewReqVO(attempt.getProviderRequestId(), "REJECTED", "本轮资料不完整"));
+
+        assertThat(result.status()).isEqualTo("REJECTED");
+        verify(companyMapper).update(argThat((Wrapper<CompanyDO> wrapper) -> {
+            var update = (com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<CompanyDO>) wrapper;
+            return update.getSqlSet().contains("certification_status")
+                    && update.getParamNameValuePairs().containsValue("REJECTED");
+        }));
+        verifyNoInteractions(memberMapper, tenantBootstrapService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"SUBMITTED", "REJECTED"})
+    void anOldProviderResultCannotPromoteTheApplicantAfterTheirRequestWasReplaced(String status) {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(application(status));
+        when(onboardingAttempts.hasAttempts(3L)).thenReturn(true);
+        when(onboardingAttempts.requireCurrent(3L, 7L)).thenReturn(activeAttempt());
+
+        assertThatThrownBy(() -> managedService(false, "").completeProviderCertification(
+                3L, 7L, "corp-3", "旧轮次的迟到结果", CertifiedApplicantRole.ADMIN))
+                .hasMessageContaining("替代");
+
+        assertNoCertificationOutcomeWritten();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"SUBMITTED", "REJECTED"})
+    void anUnapprovedOldProviderRequestCannotGrantMembershipToAnEstablishedEnterprise(String status) {
+        var company = company();
+        company.setCertificationStatus("VERIFIED");
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(application(status));
+
+        assertThatThrownBy(() -> managedService(false, "").completeProviderCertification(
+                3L, 7L, "corp-3", "过期的内部结果", CertifiedApplicantRole.ADMIN))
+                .hasMessageContaining("不能重新授予");
+
+        assertNoCertificationOutcomeWritten();
+    }
+
+    @Test
+    void currentManagedProviderProofCanApproveOnlyItsCurrentCertificationRequest() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        var attempt = activeAttempt();
+        var pending = application("SUBMITTED");
+        pending.setProviderRequestId(attempt.getProviderRequestId());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(pending);
+        when(onboardingAttempts.hasAttempts(3L)).thenReturn(true);
+        when(onboardingAttempts.requireCurrent(3L, 7L)).thenReturn(attempt);
+
+        managedService(false, "").completeProviderCertification(
+                3L, 7L, attempt.getProviderRequestId(), "本轮独立身份已核验", CertifiedApplicantRole.ADMIN);
+
+        assertThat(pending.getStatus()).isEqualTo("APPROVED");
+        verify(tenantBootstrapService).initialize(3L, 7L);
+        // The Fadada caller completes the attempt after this transactionally joined approval.
+        verify(onboardingAttempts, never()).complete(3L, 7L, attempt.getProviderRequestId());
+    }
+
+    @Test
+    void historicalApprovedRequestStillRestoresCertificationWithoutRegrantingMembership() {
+        var company = company();
+        company.setCertificationStatus("REJECTED");
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(application("APPROVED"));
+        when(onboardingAttempts.hasAttempts(3L)).thenReturn(true);
+        when(onboardingAttempts.isEstablished(company)).thenReturn(true);
+
+        managedService(false, "").completeProviderCertification(
+                3L, 7L, "corp-3", "当前企业认证事实已恢复", CertifiedApplicantRole.ADMIN);
+
+        verify(companyMapper).update(any(Wrapper.class));
+        verify(onboardingAttempts, never()).requireCurrent(3L, 7L);
+        verifyNoInteractions(memberMapper, tenantBootstrapService);
+    }
+
+    private void assertNoCertificationOutcomeWritten() {
+        verify(companyMapper, never()).update(any(Wrapper.class));
+        verify(applicationMapper, never()).update(any(Wrapper.class));
+        verifyNoInteractions(memberMapper, tenantBootstrapService, auditLogService);
     }
 
     @Test
@@ -493,6 +715,25 @@ class CompanyCertificationServiceTest {
     private CompanyCertificationService service(boolean autoApprove, String token) {
         return new CompanyCertificationServiceImpl(companyMapper, memberMapper, applicationMapper,
                 accessControlService, tenantBootstrapService, auditLogService, autoApprove, token);
+    }
+
+    private CompanyCertificationServiceImpl managedService(boolean autoApprove, String token) {
+        var service = (CompanyCertificationServiceImpl) service(autoApprove, token);
+        service.setOnboardingAttemptService(onboardingAttempts);
+        return service;
+    }
+
+    private CompanyOnboardingAttemptDO activeAttempt() {
+        var attempt = new CompanyOnboardingAttemptDO();
+        attempt.setId(501L);
+        attempt.setCompanyId(3L);
+        attempt.setApplicantUserId(7L);
+        attempt.setProviderRequestId("FDD-ATT-current-7");
+        attempt.setCompanyName("本人的重新申请企业");
+        attempt.setStatus("ACTIVE");
+        attempt.setStartedAt(LocalDateTime.now().minusMinutes(1));
+        attempt.setExpiresAt(LocalDateTime.now().plusMinutes(29));
+        return attempt;
     }
 
     private CompanyDO company() {

@@ -13,9 +13,11 @@ import com.tradepass.module.identity.dal.dataobject.permission.RoleDefDO;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import com.tradepass.module.identity.dal.mysql.counterparty.CounterpartyRelationMapper;
 import com.tradepass.module.identity.dal.mysql.permission.RoleDefMapper;
+import com.tradepass.module.identity.service.company.CompanyOnboardingAttemptService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.HashSet;
 import java.util.ArrayList;
@@ -34,6 +36,12 @@ public class AccessControlServiceImpl implements AccessControlService {
     private final RoleDefMapper roleDefMapper;
     private final RolePermissionService rolePermissionService;
     private final ObjectMapper objectMapper;
+    private CompanyOnboardingAttemptService onboardingAttempts;
+
+    @Autowired
+    public void setOnboardingAttemptService(CompanyOnboardingAttemptService onboardingAttempts) {
+        this.onboardingAttempts = onboardingAttempts;
+    }
 
     public AccessControlServiceImpl(CompanyMemberMapper companyMemberMapper,
                                 CounterpartyRelationMapper counterpartyRelationMapper,
@@ -86,6 +94,10 @@ public class AccessControlServiceImpl implements AccessControlService {
     }
 
     public void requireMemberOrClaim(long companyId) {
+        if (managedOnboarding(companyId) && !isActiveMember(companyId, AuthContext.userId())
+                && !onboardingAttempts.hasPendingAttempt(companyId, AuthContext.userId())) {
+            throw new BusinessException("本人的企业入驻申请已失效，请重新提交申请");
+        }
         boolean allowed = companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, companyId)
                 .eq(CompanyMemberDO::getUserId, AuthContext.userId())
@@ -100,6 +112,15 @@ public class AccessControlServiceImpl implements AccessControlService {
      */
     public CompanyProfileAccess requireCompanyProfileAccess(long targetCompanyId) {
         long userId = AuthContext.userId();
+        if (managedOnboarding(targetCompanyId)) {
+            // Applying for a company must not disclose a previous applicant's bank/contact data.
+            if (onboardingAttempts.hasPendingAttempt(targetCompanyId, userId)) {
+                return CompanyProfileAccess.MEMBER;
+            }
+            if (!isActiveMember(targetCompanyId, userId)) {
+                throw new BusinessException("无权访问企业敏感资料");
+            }
+        }
         boolean sensitiveOwner = companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, targetCompanyId)
                 .eq(CompanyMemberDO::getUserId, userId)
@@ -125,6 +146,10 @@ public class AccessControlServiceImpl implements AccessControlService {
     }
 
     public void requireLegalOrClaim(long companyId) {
+        if (managedOnboarding(companyId) && !isActiveMember(companyId, AuthContext.userId())
+                && !onboardingAttempts.hasPendingAttempt(companyId, AuthContext.userId())) {
+            throw new BusinessException("本人的企业入驻申请已失效，请重新提交申请");
+        }
         boolean allowed = companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, companyId)
                 .eq(CompanyMemberDO::getUserId, AuthContext.userId())
@@ -140,6 +165,10 @@ public class AccessControlServiceImpl implements AccessControlService {
     public void requireCertificationOperator(long companyId) {
         if (hasPermission(companyId, "company_manage")) return;
         requireLegalOrClaim(companyId);
+    }
+
+    private boolean managedOnboarding(long companyId) {
+        return onboardingAttempts != null && onboardingAttempts.hasAttempts(companyId);
     }
 
     public void requirePermission(long companyId, String permission) {

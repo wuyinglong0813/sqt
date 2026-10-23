@@ -44,6 +44,7 @@ BEGIN
         ('tradepass_staging_identity', 'counterparty_relation'),
         ('tradepass_staging_identity', 'auth_session'),
         ('tradepass_staging_identity', 'company_certification_application'),
+        ('tradepass_staging_identity', 'company_onboarding_attempt'),
         ('tradepass_staging_identity', 'fadada_user_identity'),
         ('tradepass_staging_identity', 'fadada_corp_identity'),
         ('tradepass_staging_identity', 'fadada_corp_seal'),

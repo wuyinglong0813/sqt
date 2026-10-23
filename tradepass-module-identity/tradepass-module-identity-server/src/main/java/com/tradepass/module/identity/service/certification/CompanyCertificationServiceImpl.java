@@ -1,6 +1,7 @@
 package com.tradepass.module.identity.service.certification;
 
 import com.tradepass.module.identity.service.company.TenantBootstrapService;
+import com.tradepass.module.identity.service.company.CompanyOnboardingAttemptService;
 import com.tradepass.module.identity.service.permission.AccessControlService;
 
 import com.tradepass.framework.audit.core.AuditLogService;
@@ -16,10 +17,12 @@ import com.tradepass.module.identity.api.certification.dto.CertificationApplicat
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
 import com.tradepass.module.identity.dal.dataobject.certification.CompanyCertificationApplicationDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
+import com.tradepass.module.identity.dal.dataobject.company.CompanyOnboardingAttemptDO;
 import com.tradepass.module.identity.dal.mysql.certification.CompanyCertificationApplicationMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,6 +50,12 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
     private final AuditLogService auditLogService;
     private final boolean caMockEnabled;
     private final String callbackToken;
+    private CompanyOnboardingAttemptService onboardingAttempts;
+
+    @Autowired
+    public void setOnboardingAttemptService(CompanyOnboardingAttemptService onboardingAttempts) {
+        this.onboardingAttempts = onboardingAttempts;
+    }
 
     public CompanyCertificationServiceImpl(CompanyMapper companyMapper,
                                        CompanyMemberMapper companyMemberMapper,
@@ -69,20 +78,24 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
     @Transactional
     public CertificationApplicationRespDTO submit(long companyId) {
         long userId = AuthContext.userId();
-        accessControlService.requireLegalOrClaim(companyId);
         CompanyDO company = requireCompany(companyId);
-        CompanyCertificationApplicationDO pending = applicationMapper.selectOne(
-                new LambdaQueryWrapper<CompanyCertificationApplicationDO>()
-                        .eq(CompanyCertificationApplicationDO::getCompanyId, companyId)
-                        .eq(CompanyCertificationApplicationDO::getApplicantUserId, userId)
-                        .eq(CompanyCertificationApplicationDO::getStatus, "SUBMITTED")
-                        .orderByDesc(CompanyCertificationApplicationDO::getId)
-                        .last("LIMIT 1"));
+        accessControlService.requireLegalOrClaim(companyId);
+        if (established(company)) throw new BusinessException("企业已完成认证");
+        CompanyOnboardingAttemptDO attempt = onboardingAttempts != null && onboardingAttempts.hasAttempts(companyId)
+                ? onboardingAttempts.requireCurrent(companyId, userId) : null;
+        LambdaQueryWrapper<CompanyCertificationApplicationDO> query = new LambdaQueryWrapper<CompanyCertificationApplicationDO>()
+                .eq(CompanyCertificationApplicationDO::getCompanyId, companyId)
+                .eq(CompanyCertificationApplicationDO::getApplicantUserId, userId);
+        if (attempt == null) query.eq(CompanyCertificationApplicationDO::getStatus, "SUBMITTED");
+        else query.eq(CompanyCertificationApplicationDO::getProviderRequestId, attempt.getProviderRequestId());
+        CompanyCertificationApplicationDO pending = applicationMapper.selectOne(query
+                .orderByDesc(CompanyCertificationApplicationDO::getId).last("LIMIT 1 FOR UPDATE"));
+        String companyName = attempt == null ? company.getName() : attempt.getCompanyName();
         if (pending != null) {
-            return toPayload(pending, company.getName());
-        }
-        if ("VERIFIED".equals(company.getCertificationStatus())) {
-            throw new BusinessException("企业已完成认证");
+            if (!"SUBMITTED".equals(pending.getStatus())) {
+                throw new BusinessException("本次企业认证申请已结束，请重新申请");
+            }
+            return toPayload(pending, companyName);
         }
         if (caMockEnabled && (!"VERIFIED".equals(company.getRealNameStatus())
                 || !"VERIFIED".equals(company.getFaceStatus()))) {
@@ -93,7 +106,8 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
         application.setCompanyId(companyId);
         application.setApplicantUserId(userId);
         String requestPrefix = caMockEnabled ? "MOCK-CA-" : "CERT-";
-        application.setProviderRequestId(requestPrefix + UUID.randomUUID().toString().replace("-", ""));
+        application.setProviderRequestId(attempt == null
+                ? requestPrefix + UUID.randomUUID().toString().replace("-", "") : attempt.getProviderRequestId());
         application.setStatus("SUBMITTED");
         application.setSubmittedAt(LocalDateTime.now());
         applicationMapper.insert(application);
@@ -104,8 +118,9 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
 
         if (caMockEnabled) {
             approve(application, company, "体验测试模拟认证自动审核", CertifiedApplicantRole.LEGAL);
+            if (attempt != null) onboardingAttempts.complete(companyId, userId, application.getProviderRequestId());
         }
-        return toPayload(application, company.getName());
+        return toPayload(application, companyName);
     }
 
     @Transactional
@@ -136,6 +151,10 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
         if (role == null) throw new BusinessException("企业认证经办人身份尚未确认");
         CompanyDO company = requireCompany(companyId);
         CompanyCertificationApplicationDO application = requireProviderApplication(companyId, applicantUserId, providerRequestId);
+        if (!"APPROVED".equals(application.getStatus())) {
+            if (established(company)) throw new BusinessException("企业已正式开通，旧认证申请不能重新授予成员身份");
+            currentReviewAttempt(company, application);
+        }
         if ("APPROVED".equals(application.getStatus())) {
             // Only the original, explicitly recorded ADMIN approval may be supplemented by
             // newly proven LEGAL evidence. Preserve its history and all later role settings.
@@ -164,7 +183,7 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
         CompanyCertificationApplicationDO application = applicationMapper.selectOne(
                 new LambdaQueryWrapper<CompanyCertificationApplicationDO>()
                         .eq(CompanyCertificationApplicationDO::getProviderRequestId, providerRequestId)
-                        .last("LIMIT 1"));
+                        .last("LIMIT 1 FOR UPDATE"));
         if (application == null) {
             application = new CompanyCertificationApplicationDO();
             application.setCompanyId(companyId);
@@ -272,17 +291,26 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
             throw new BusinessException("认证申请不存在");
         }
         CompanyDO company = requireCompany(application.getCompanyId());
+        // The identifier lookup above can establish a REPEATABLE_READ snapshot before
+        // waiting for cancellation or a replacement application to release the company.
+        application = applicationMapper.selectOne(new LambdaQueryWrapper<CompanyCertificationApplicationDO>()
+                .eq(CompanyCertificationApplicationDO::getProviderRequestId, request.providerRequestId())
+                .eq(CompanyCertificationApplicationDO::getCompanyId, company.getId()).last("LIMIT 1 FOR UPDATE"));
+        if (application == null) throw new BusinessException("认证申请状态已变化，请刷新后重试");
         if (!"SUBMITTED".equals(application.getStatus())) {
             if (request.decision().equals(application.getStatus())) {
                 return toPayload(application, company.getName());
             }
             throw new BusinessException("认证申请已完成，不能重复变更结果");
         }
+        if (established(company)) throw new BusinessException("企业已正式开通，旧认证申请不能变更当前企业状态");
+        CompanyOnboardingAttemptDO attempt = currentReviewAttempt(company, application);
         if ("APPROVED".equals(request.decision())) {
             // This legacy callback carries no operator identity evidence. A shared secret alone
             // cannot prove that the applicant is the legal representative or an authorized agent.
             if (!caMockEnabled) throw new BusinessException("请通过企业认证状态同步核验经办人身份后开通企业");
             approve(application, company, request.reason(), CertifiedApplicantRole.LEGAL);
+            if (attempt != null) onboardingAttempts.complete(company.getId(), application.getApplicantUserId(), application.getProviderRequestId());
         } else {
             if (request.reason() == null || request.reason().isBlank()) {
                 throw new BusinessException("驳回认证时必须填写原因");
@@ -290,6 +318,21 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
             reject(application, company, request.reason());
         }
         return toPayload(application, company.getName());
+    }
+
+    private boolean established(CompanyDO company) {
+        return "VERIFIED".equals(company.getCertificationStatus())
+                || onboardingAttempts != null && onboardingAttempts.isEstablished(company);
+    }
+
+    private CompanyOnboardingAttemptDO currentReviewAttempt(CompanyDO company,
+                                                           CompanyCertificationApplicationDO application) {
+        if (onboardingAttempts == null || !onboardingAttempts.hasAttempts(company.getId())) return null;
+        CompanyOnboardingAttemptDO attempt = onboardingAttempts.requireCurrent(company.getId(), application.getApplicantUserId());
+        if (!java.util.Objects.equals(attempt.getProviderRequestId(), application.getProviderRequestId())) {
+            throw new BusinessException("认证申请已被新的入驻申请替代，不能变更当前企业状态");
+        }
+        return attempt;
     }
 
     private void approve(CompanyCertificationApplicationDO application, CompanyDO company, String reason,

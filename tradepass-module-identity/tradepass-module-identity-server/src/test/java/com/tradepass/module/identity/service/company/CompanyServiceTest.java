@@ -31,6 +31,7 @@ import com.tradepass.module.identity.api.company.dto.InviteResult;
 import com.tradepass.module.identity.api.company.dto.JoinResult;
 import com.tradepass.module.identity.dal.dataobject.certification.CompanyCertificationApplicationDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
+import com.tradepass.module.identity.dal.dataobject.company.CompanyOnboardingAttemptDO;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyInviteDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
@@ -228,7 +229,7 @@ class CompanyServiceTest {
     @Test
     void returnsCompanyOrExplainsMissingCompany() {
         CompanyDO company = company(3L, "当前企业");
-        when(companyMapper.selectById(3L)).thenReturn(company);
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
         assertThat(service.getCompany("3").name()).isEqualTo("当前企业");
 
         assertThatThrownBy(() -> service.getCompany("99"))
@@ -242,7 +243,7 @@ class CompanyServiceTest {
         company.setContactPhone("13800001234");
         company.setBankName("测试银行");
         company.setBankAccount("6222021234567890123");
-        when(companyMapper.selectById(9L)).thenReturn(company);
+        when(companyMapper.selectByIdForUpdate(9L)).thenReturn(company);
         when(accessControl.requireCompanyProfileAccess(9L))
                 .thenReturn(AccessControlOperations.CompanyProfileAccess.COUNTERPARTY);
 
@@ -411,6 +412,7 @@ class CompanyServiceTest {
     void drivesCertificationAndSealStatusCommands() {
         CompanyDO company = company(3L, "当前企业");
         when(companyMapper.selectById(3L)).thenReturn(company);
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
 
         assertThat(service.submitCertification("3").id()).isEqualTo("3");
         assertThat(service.verifyRealName(new VerificationReqVO("3")).name()).isEqualTo("当前企业");
@@ -890,6 +892,62 @@ class CompanyServiceTest {
         verify(memberMapper).update(any(Wrapper.class));
         assertThat(realAccessControl.hasPermission(3L, "all")).isFalse();
         assertThatThrownBy(() -> realAccessControl.requireLegal(3L)).hasMessage("无权操作：仅法人可执行");
+    }
+
+    @Test
+    void anotherVerifiedApplicantSavesOwnDraftWithoutChangingTheCompanyOrBank() {
+        CompanyOnboardingAttemptService attempts = mock(CompanyOnboardingAttemptService.class);
+        ((CompanyServiceImpl) service).setOnboardingAttempts(attempts);
+        CompanyDO company = company(9L, "原草稿名称");
+        company.setCreatedBy(8L); company.setCertificationStatus("PENDING"); company.setBankAccount("ORIGINAL-BANK");
+        when(companyMapper.selectOne(any(Wrapper.class))).thenReturn(company);
+        CompanySubmitReqVO request = new CompanySubmitReqVO(null, "本人申报名称", "CODE-9", "本人申报法人", null, null, null, "OWN-BANK");
+        CompanyOnboardingAttemptDO draft = new CompanyOnboardingAttemptDO();
+        when(attempts.draft(9L, 7L, request)).thenReturn(draft);
+        CompanyProfile expected = new CompanyProfile("9", "本人申报名称", "CODE-9", "本人申报法人", null, null, null, "OWN-BANK", "PENDING", "NOT_STARTED", "NOT_STARTED", "NOT_UPLOADED");
+        when(attempts.profile(company, draft)).thenReturn(expected);
+
+        assertThat(service.submitCompany(request)).isEqualTo(expected);
+        verify(attempts).draft(9L, 7L, request);
+        verify(companyMapper, org.mockito.Mockito.never()).updateById(any(CompanyDO.class));
+        assertThat(company.getName()).isEqualTo("原草稿名称");
+        assertThat(company.getCreatedBy()).isEqualTo(8L);
+        assertThat(company.getBankAccount()).isEqualTo("ORIGINAL-BANK");
+    }
+
+    @Test
+    void anEstablishedCompanyCannotBeTakenOverAfterFailedRenewal() {
+        CompanyOnboardingAttemptService attempts = mock(CompanyOnboardingAttemptService.class);
+        ((CompanyServiceImpl) service).setOnboardingAttempts(attempts);
+        CompanyDO company = company(9L, "已开通企业"); company.setCertificationStatus("REJECTED"); company.setCreatedBy(8L);
+        when(companyMapper.selectOne(any(Wrapper.class))).thenReturn(company);
+        when(attempts.isEstablished(company)).thenReturn(true);
+        org.mockito.Mockito.doThrow(new BusinessException("仅法人可操作")).when(accessControl).requireLegal(9L);
+
+        assertThatThrownBy(() -> service.submitCompany(new CompanySubmitReqVO(null, "已开通企业", "CODE-9", "法人")))
+                .hasMessage("仅法人可操作");
+        verify(attempts, org.mockito.Mockito.never()).draft(anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void applicantReadsOwnSnapshotAndCancelsOnlyOwnAttempt() {
+        CompanyOnboardingAttemptService attempts = mock(CompanyOnboardingAttemptService.class);
+        ((CompanyServiceImpl) service).setOnboardingAttempts(attempts);
+        CompanyDO company = company(9L, "他人草稿"); company.setCertificationStatus("PENDING");
+        company.setBankAccount("OTHER-BANK"); when(companyMapper.selectByIdForUpdate(9L)).thenReturn(company);
+        when(attempts.hasPendingAttempt(9L, 7L)).thenReturn(true);
+        CompanyOnboardingAttemptDO own = new CompanyOnboardingAttemptDO();
+        when(attempts.requireAttempt(9L, 7L)).thenReturn(own);
+        CompanyProfile ownProfile = new CompanyProfile("9", "本人草稿", "CODE-9", "法人", "PENDING", "NOT_STARTED", "NOT_STARTED", "NOT_UPLOADED");
+        when(attempts.profile(company, own)).thenReturn(ownProfile);
+        assertThat(service.getCompany("9")).isEqualTo(ownProfile);
+        verify(companyMapper).selectByIdForUpdate(9L);
+        verify(companyMapper, org.mockito.Mockito.never()).selectById(9L);
+        when(attempts.hasAttempts(9L)).thenReturn(true);
+        service.cancelOnboarding("9");
+        verify(attempts).cancel(9L, 7L);
+        verify(companyMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        verify(corpIdentityMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
     }
 
     private CompanyDO company(long id, String name) {

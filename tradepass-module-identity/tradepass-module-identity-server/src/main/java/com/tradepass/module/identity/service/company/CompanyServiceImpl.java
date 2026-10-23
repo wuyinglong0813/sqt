@@ -84,6 +84,7 @@ public class CompanyServiceImpl implements CompanyService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private FadadaPersonalIdentityService personalIdentityService;
     private ApplicationEventPublisher events;
+    private CompanyOnboardingAttemptService onboardingAttempts;
 
     public CompanyServiceImpl(CompanyMapper companyMapper,
                           CompanyMemberMapper companyMemberMapper,
@@ -121,6 +122,9 @@ public class CompanyServiceImpl implements CompanyService {
     }
 
     @Autowired
+    public void setOnboardingAttempts(CompanyOnboardingAttemptService value) { this.onboardingAttempts = value; }
+
+    @Autowired
     public void setEventPublisher(ApplicationEventPublisher events) { this.events = events; }
 
     public List<CompanySearchSummary> searchCompanies(String keyword) {
@@ -143,11 +147,16 @@ public class CompanyServiceImpl implements CompanyService {
                 .stream().map(this::toCompanySearchSummary).toList();
     }
 
+    @Transactional
     public CompanyProfile getCompany(String id) {
         long companyId = parseId(id);
-        CompanyDO company = companyMapper.selectById(companyId);
+        CompanyDO company = companyMapper.selectByIdForUpdate(companyId);
         if (company == null) {
             throw new BusinessException("企业不存在");
+        }
+        if (onboardingAttempts != null && onboardingAttempts.hasPendingAttempt(companyId, AuthContext.userId())
+                && !onboardingAttempts.isEstablished(company)) {
+            return onboardingAttempts.profile(company, onboardingAttempts.requireAttempt(companyId, AuthContext.userId()));
         }
         AccessControlOperations.CompanyProfileAccess access = accessControlService.requireCompanyProfileAccess(companyId);
         return access == AccessControlOperations.CompanyProfileAccess.SENSITIVE_OWNER
@@ -157,6 +166,25 @@ public class CompanyServiceImpl implements CompanyService {
 
     /** Includes unfinished submissions even if the subsequent claim request was interrupted. */
     public List<CompanyProfile> myOnboardingCompanies() {
+        if (onboardingAttempts != null) {
+            var profiles = new java.util.LinkedHashMap<Long, CompanyProfile>();
+            for (var attempt : onboardingAttempts.list(AuthContext.userId())) {
+                if (!List.of("DRAFT", "ACTIVE").contains(attempt.getStatus())
+                        || !onboardingAttempts.hasPendingAttempt(attempt.getCompanyId(), AuthContext.userId())) continue;
+                CompanyDO company = companyMapper.selectById(attempt.getCompanyId());
+                if (company != null && !onboardingAttempts.isEstablished(company)) {
+                    profiles.putIfAbsent(company.getId(), onboardingAttempts.profile(company, attempt));
+                }
+            }
+            // Older users may have stopped after saving company, before the new attempt mechanism existed.
+            for (CompanyDO company : companyMapper.selectList(new LambdaQueryWrapper<CompanyDO>()
+                    .eq(CompanyDO::getCreatedBy, AuthContext.userId())
+                    .in(CompanyDO::getCertificationStatus, List.of("PENDING", "PENDING_REVIEW", "REJECTED"))
+                    .orderByDesc(CompanyDO::getId))) {
+                if (!onboardingAttempts.hasAttempts(company.getId())) profiles.putIfAbsent(company.getId(), toCompanyProfile(company));
+            }
+            return List.copyOf(profiles.values());
+        }
         return companyMapper.selectList(new LambdaQueryWrapper<CompanyDO>()
                         .eq(CompanyDO::getCreatedBy, AuthContext.userId())
                         .in(CompanyDO::getCertificationStatus, List.of("PENDING", "PENDING_REVIEW", "REJECTED"))
@@ -167,6 +195,11 @@ public class CompanyServiceImpl implements CompanyService {
     @Transactional
     public void cancelOnboarding(String id) {
         long companyId = parseId(id);
+        if (onboardingAttempts != null && onboardingAttempts.hasAttempts(companyId)) {
+            onboardingAttempts.cancel(companyId, AuthContext.userId());
+            auditLogService.log(companyId, "COMPANY_CERTIFICATION", companyId, "CANCEL", "申请人取消本次企业入驻申请");
+            return;
+        }
         CompanyDO company = companyId > 0 ? companyMapper.selectByIdForUpdate(companyId) : null;
         if (company == null) throw new BusinessException("企业不存在");
         long userId = AuthContext.userId();
@@ -217,6 +250,31 @@ public class CompanyServiceImpl implements CompanyService {
     @Transactional
     public CompanyProfile submitCompany(CompanySubmitReqVO request) {
         CompanyDO company = companyMapper.selectOne(new LambdaQueryWrapper<CompanyDO>().eq(CompanyDO::getCreditCode, request.creditCode()).last("LIMIT 1 FOR UPDATE"));
+        if (onboardingAttempts != null) {
+            if (company == null) {
+                personalIdentityService.requireCurrentVerified();
+                company = new CompanyDO();
+                company.setName(request.name()); company.setCreditCode(request.creditCode()); company.setLegalPersonName(request.legalPersonName());
+                company.setCreatedBy(AuthContext.userId()); company.setCertificationStatus("PENDING");
+                company.setRealNameStatus("NOT_STARTED"); company.setFaceStatus("NOT_STARTED"); company.setSealStatus("NOT_UPLOADED");
+                company.setRegisteredAddress(trim(request.registeredAddress())); company.setContactPhone(trim(request.contactPhone()));
+                company.setBankName(trim(request.bankName())); company.setBankAccount(trim(request.bankAccount()));
+                companyMapper.insert(company);
+            }
+            if (!onboardingAttempts.isEstablished(company)) {
+                var attempt = onboardingAttempts.draft(company.getId(), AuthContext.userId(), request);
+                return onboardingAttempts.profile(company, attempt);
+            }
+            accessControlService.requireLegal(company.getId());
+            if (!java.util.Objects.equals(trim(company.getName()), trim(request.name()))
+                    || !java.util.Objects.equals(trim(company.getLegalPersonName()), trim(request.legalPersonName()))) {
+                throw new BusinessException("认证中或已认证的企业名称及法人信息不能直接修改，请先处理企业认证变更");
+            }
+            company.setRegisteredAddress(trim(request.registeredAddress())); company.setContactPhone(trim(request.contactPhone()));
+            company.setBankName(trim(request.bankName())); company.setBankAccount(trim(request.bankAccount()));
+            companyMapper.updateById(company);
+            return toCompanyProfile(company);
+        }
         if (company == null) {
             if (personalIdentityService != null) {
                 PersonalIdentityRespDTO identity = personalIdentityService.requireCurrentVerified();

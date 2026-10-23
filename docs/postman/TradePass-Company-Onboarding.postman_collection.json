@@ -1,0 +1,1450 @@
+{
+  "info": {
+    "_postman_id": "204ae71a-3925-4d98-a54b-1be4060408c9",
+    "name": "商签通企业入驻｜逐步请求与结果（2026-10-20）",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "按当前仓库源码整理。A 是小程序实际业务流程，B 是法大大原始查询，C 是恢复/可选入口，D 是法大大原始授权模板。先导入配套 Environment 并选中，再逐条点击 Send；每条发送后看 Body / Visualize / Test Results。Examples 全为结构示例，没有冒充实时结果。创建、绑定、认证、同步及切换会保存业务状态。人工实名和企业授权需本人在服务页面完成；此集合每次只执行一条，不连续跑完整 Runner。凭据全部留空；签名与 SDK 5.8.7.0428.3 一致。A 文件夹无需法大大密钥，B/D 文件夹才需要。"
+  },
+  "auth": {
+    "type": "noauth"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// 每次只观察一个请求。Send 不受影响，Runner 在当前请求后停止。",
+          "if (pm.execution && pm.execution.setNextRequest) pm.execution.setNextRequest(null);",
+          "function required(key) {",
+          "  const value = pm.variables.get(key);",
+          "  if (value === undefined || value === null || String(value).trim() === '') {",
+          "    throw new Error('请先在选中的 Environment 中填写：' + key);",
+          "  }",
+          "  return String(value);",
+          "}",
+          "const templateUrl = pm.request.url.toString();",
+          "for (const match of templateUrl.matchAll(/{{([^}]+)}}/g)) required(match[1]);",
+          "function renderJson(template) {",
+          "  // 字符串正确转义；memberId 等数字原样发送，避免 64 位整数精度丢失。",
+          "  const body = template.replace(/\"{{([^}]+)}}\"/g, (_, key) => JSON.stringify(required(key)))",
+          "    .replace(/{{([^}]+)}}/g, (_, key) => {",
+          "      const value = required(key);",
+          "      if (!/^[0-9]+$/.test(value)) throw new Error(key + ' 必须是整数数字文本');",
+          "      return value;",
+          "    });",
+          "  JSON.parse(body);",
+          "  return body;",
+          "}",
+          "const provider = /^[BD][0-9]/.test(pm.info.requestName);",
+          "if (!provider) {",
+          "  pm.request.headers.upsert({key: 'Authorization', value: required('tradepass_token')});",
+          "  if (pm.request.body && pm.request.body.mode === 'raw') {",
+          "    pm.request.body.update(renderJson(pm.request.body.raw));",
+          "  }",
+          "} else {",
+          "  const utf8 = new TextEncoder();",
+          "  const hex = bytes => Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, '0')).join('');",
+          "  async function hmac(key, message) {",
+          "    const imported = await crypto.subtle.importKey('raw', key,",
+          "      {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);",
+          "    return crypto.subtle.sign('HMAC', imported, utf8.encode(message));",
+          "  }",
+          "  const tokenRequest = templateUrl.endsWith('/service/get-access-token');",
+          "  const legacy = pm.info.requestName.startsWith('B07 ');",
+          "  const headers = {",
+          "    'X-FASC-App-Id': required('fdd_app_id'),",
+          "    'X-FASC-Sign-Type': 'HMAC-SHA256',",
+          "    'X-FASC-Timestamp': String(Date.now()),",
+          "    'X-FASC-Nonce': pm.variables.replaceIn('{{$guid}}').replace(/-/g, '')",
+          "  };",
+          "  // 5.0 必须同时从 HTTP 头和待签名参数中省略版本头。",
+          "  pm.request.headers.remove('X-FASC-Api-SubVersion');",
+          "  if (!legacy) headers['X-FASC-Api-SubVersion'] = '5.1';",
+          "  if (tokenRequest) headers['X-FASC-Grant-Type'] = 'client_credential';",
+          "  else headers['X-FASC-AccessToken'] = required('fdd_access_token');",
+          "  const signing = Object.assign({}, headers);",
+          "  if (!tokenRequest) {",
+          "    const field = pm.request.body.urlencoded.find(p => p.key === 'bizContent' && !p.disabled);",
+          "    if (!field) throw new Error('缺少 bizContent');",
+          "    const body = renderJson(field.value);",
+          "    pm.request.body.urlencoded.upsert({key: 'bizContent', value: body, type: 'text'});",
+          "    signing.bizContent = body;",
+          "  }",
+          "  const sorted = Object.keys(signing).sort().map(k => k + '=' + signing[k]).join('&');",
+          "  const digest = hex(await crypto.subtle.digest('SHA-256', utf8.encode(sorted)));",
+          "  const key = await hmac(utf8.encode(required('fdd_app_secret')), headers['X-FASC-Timestamp']);",
+          "  headers['X-FASC-Sign'] = hex(await hmac(key, digest));",
+          "  Object.entries(headers).forEach(([key, value]) => pm.request.headers.upsert({key, value}));",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('HTTP 2xx', () => pm.expect(pm.response.code).to.be.within(200, 299));",
+          "let result;",
+          "try { result = pm.response.json(); } catch (_) {",
+          "  pm.test('响应是 JSON', () => { throw new Error('请查看 Response Body，可能是网关或登录错误'); });",
+          "}",
+          "if (result) {",
+          "  const isFdd = /^[BD][0-9]/.test(pm.info.requestName);",
+          "  const ok = isFdd ? String(result.code) === '100000' : result.code === 0;",
+          "  pm.test(isFdd ? '法大大业务 code=100000' : '商签通业务 code=0', () => pm.expect(ok).to.eql(true));",
+          "  const data = result.data || {};",
+          "  const state = data.status || (data.identity && data.identity.status) || data.certificationStatus || '';",
+          "  let next = '查看 Body 的完整返回，并阅读当前请求 Description 中的判断条件。';",
+          "  if (!ok) next = '接口业务失败。先看 message/msg，不继续依赖该结果的步骤。';",
+          "  else if (state === 'VERIFIED') next = '当前身份已确认；企业流程仍需检查成员激活及切换企业。';",
+          "  else if (state === 'IDENTITY_VERIFICATION_REQUIRED') next = '已有企业授权，但本人企业身份依据不足。执行 A09 查看 failureReason。';",
+          "  else if (state === 'AUTHORIZATION_REQUIRED') next = '仍需企业超管完成授权；空链接不能视为成功。';",
+          "  else if (data.url || data.authUrl) next = '用对应服务页面办理认证/授权，完成后执行同步请求。';",
+          "  else if (['IN_PROGRESS','PENDING','PENDING_REVIEW','NOT_STARTED'].includes(state)) next = '尚未完成入驻。根据当前步骤继续；同步存在 30 秒冷却。';",
+          "  const summary = {",
+          "    request: pm.info.requestName, http: pm.response.code, code: String(result.code),",
+          "    message: result.message || result.msg || '', state,",
+          "    reason: data.failureReason || (data.identity && data.identity.failureReason) || '', next,",
+          "    requestId: pm.response.headers.get('X-FASC-Request-Id') || result.requestId || ''",
+          "  };",
+          "  // 不把完整实名响应、令牌、手机号或证件号写入 Console。",
+          "  pm.visualizer.set('<style>body{font:15px sans-serif;line-height:1.8;padding:20px}h2{font-size:20px}th{text-align:left;padding-right:24px}td{white-space:pre-wrap;word-break:break-all}</style><h2>{{request}}</h2><table><tr><th>HTTP / 业务码</th><td>{{http}} / {{code}}</td></tr><tr><th>接口消息</th><td>{{message}}</td></tr><tr><th>当前状态</th><td>{{state}}</td></tr><tr><th>待处理原因</th><td>{{reason}}</td></tr><tr><th>下一步</th><td>{{next}}</td></tr><tr><th>服务商请求号</th><td>{{requestId}}</td></tr></table><p>完整真实结果见 Body；Examples 是结构示例。</p>', summary);",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "A 商签通接口：按入驻顺序逐条发送",
+      "description": "从 A01 开始，已实名可跳过 A03/A04；未通过 A09 不切换企业。除 A11 外不发送 X-Company-Id。",
+      "item": [
+        {
+          "name": "A01 当前登录人：确认账号与手机号",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/me",
+            "description": "准备：从已登录小程序取 tradepass_token，原样填写，不加 Bearer。看 data.user.id / phone。自动生成 client_user_id=tradepass-user-{用户ID}。未绑定手机号需先用手机小程序绑定。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。"
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"user_id\": \"user.id\", \"phone\": \"user.phone\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  if (r.data.user && r.data.user.id) pm.environment.set('client_user_id', 'tradepass-user-' + r.data.user.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A02 查询个人实名状态",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/fadada/users/me/identity",
+            "description": "先看 data.providerEnabled/status/bindingStatus/identStatus/failureReason。status=VERIFIED 可跳过 A03、A04，直接 A05。该 GET 只读取本地身份记录；需要主动查询法大大时使用 A04。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。"
+          },
+          "response": [
+            {
+              "name": "结构示例（非实测）：已实名，可跳到 A05",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "{{tradepass_token}}"
+                  }
+                ],
+                "url": "{{tradepass_base_url}}/fadada/users/me/identity",
+                "description": "先看 data.providerEnabled/status/bindingStatus/identStatus/failureReason。status=VERIFIED 可跳过 A03、A04，直接 A05。该 GET 只读取本地身份记录；需要主动查询法大大时使用 A04。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。"
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ok\",\n  \"data\": {\n    \"providerEnabled\": true,\n    \"status\": \"VERIFIED\",\n    \"bindingStatus\": \"authorized\",\n    \"identStatus\": \"identified\",\n    \"verifiedName\": \"示例姓名\",\n    \"failureReason\": \"\"\n  }\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"personal_status\": \"status\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A03 未实名时：获取个人认证链接",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/fadada/users/me/auth-url",
+            "description": "未实名才发送。看 data.authUrl；有链接则由本人在对应服务页面完成实名和授权。当前服务返回链接带小程序回跳，建议在手机小程序完成，Postman 负责观察和同步。无链接时检查 data.identity.status，可能已授权或正待同步。内部调用 /user/get-auth-url；必要时 /user/get 和 /user/get-identity-info。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "结构示例（非实测）：需本人办理",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "{{tradepass_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{tradepass_base_url}}/fadada/users/me/auth-url",
+                "description": "未实名才发送。看 data.authUrl；有链接则由本人在对应服务页面完成实名和授权。当前服务返回链接带小程序回跳，建议在手机小程序完成，Postman 负责观察和同步。无链接时检查 data.identity.status，可能已授权或正待同步。内部调用 /user/get-auth-url；必要时 /user/get 和 /user/get-identity-info。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ok\",\n  \"data\": {\n    \"authUrl\": \"https://服务商域名/一次性认证链接\",\n    \"identity\": {\n      \"status\": \"IN_PROGRESS\"\n    }\n  }\n}"
+            },
+            {
+              "name": "结构示例（非实测）：已完成，无需重复认证",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "{{tradepass_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{tradepass_base_url}}/fadada/users/me/auth-url",
+                "description": "未实名才发送。看 data.authUrl；有链接则由本人在对应服务页面完成实名和授权。当前服务返回链接带小程序回跳，建议在手机小程序完成，Postman 负责观察和同步。无链接时检查 data.identity.status，可能已授权或正待同步。内部调用 /user/get-auth-url；必要时 /user/get 和 /user/get-identity-info。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ok\",\n  \"data\": {\n    \"authUrl\": null,\n    \"identity\": {\n      \"status\": \"VERIFIED\"\n    }\n  }\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"personal_auth_url\": \"authUrl\", \"personal_status\": \"identity.status\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A04 个人办理完成后：同步实名结果",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/fadada/users/me/identity/sync",
+            "description": "本人完成服务页面后发送。必须看 data.status=VERIFIED，再创建企业。内部通常查询 /user/get 和 /user/get-identity-info；未完成记录受约 30 秒查询冷却影响，短时间重发可能拿到缓存。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"personal_status\": \"status\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A05 保存营业执照资料，取得企业ID",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/companies",
+            "description": "会创建或恢复本人待认证企业记录。先填 company_name、credit_code、legal_person_name，个人须已 VERIFIED。自动保存 company_id 及服务商 client_corp_id=tradepass-company-{企业ID}。本步骤成功只表示资料保存。相同信用代码会查已有记录，接口不能作为任意新建测试。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{company_name}}\",\n  \"creditCode\": \"{{credit_code}}\",\n  \"legalPersonName\": \"{{legal_person_name}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "结构示例（非实测）：已保存，尚未入驻",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "{{tradepass_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{tradepass_base_url}}/companies",
+                "description": "会创建或恢复本人待认证企业记录。先填 company_name、credit_code、legal_person_name，个人须已 VERIFIED。自动保存 company_id 及服务商 client_corp_id=tradepass-company-{企业ID}。本步骤成功只表示资料保存。相同信用代码会查已有记录，接口不能作为任意新建测试。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"{{company_name}}\",\n  \"creditCode\": \"{{credit_code}}\",\n  \"legalPersonName\": \"{{legal_person_name}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ok\",\n  \"data\": {\n    \"id\": \"2100000000000000001\",\n    \"name\": \"示例企业有限公司\",\n    \"creditCode\": \"营业执照信用代码\",\n    \"legalPersonName\": \"示例姓名\",\n    \"certificationStatus\": \"PENDING\",\n    \"realNameStatus\": \"NOT_STARTED\",\n    \"faceStatus\": \"NOT_STARTED\",\n    \"sealStatus\": \"NOT_UPLOADED\"\n  }\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"company_id\": \"id\", \"company_name\": \"name\", \"credit_code\": \"creditCode\", \"legal_person_name\": \"legalPersonName\", \"company_certification_status\": \"certificationStatus\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  if (r.data.id) { pm.environment.set('client_corp_id', 'tradepass-company-' + r.data.id); pm.environment.unset('open_corp_id'); }",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A06 绑定本次入驻申请人",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/me/company",
+            "description": "创建资料后必须执行的独立请求。body 使用 A05 的真实返回。申请人起初为 LEGAL_CANDIDATE、成员 PENDING，不开通法人权限。看 data.member 与 data.companies；实际响应可能在未激活时不返回 member。中断恢复可用 C01 查询本人待办，再执行此步。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"{{company_id}}\",\n  \"name\": \"{{company_name}}\",\n  \"creditCode\": \"{{credit_code}}\",\n  \"legalPersonName\": \"{{legal_person_name}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "A07 读取企业认证记录（办理前）",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/identity",
+            "description": "看 data.status/statusText/failureReason。只是本地认证记录，尚无记录时通常为 NOT_STARTED；不能据此断定法大大企业尚未实名。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。"
+          },
+          "response": []
+        },
+        {
+          "name": "A08 办理企业入驻：复用授权或取得认证链接",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/auth-url",
+            "description": "服务端先查询已有企业授权：/corp/get（必要时按信用代码回查），已有授权再查企业实名及申请人；缺失时才调用 /corp/get-auth-url。看 data.url/status。url 有值：由本人继续服务页面；url=null 且 VERIFIED：去 A09 确认；IDENTITY_VERIFICATION_REQUIRED：已有授权但申请人证据不足；AUTHORIZATION_REQUIRED：仍缺授权。空链接不等于完成，也不要为取得链接反复发送。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "结构示例（非实测）：需本人办理企业认证/授权",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "{{tradepass_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/auth-url",
+                "description": "服务端先查询已有企业授权：/corp/get（必要时按信用代码回查），已有授权再查企业实名及申请人；缺失时才调用 /corp/get-auth-url。看 data.url/status。url 有值：由本人继续服务页面；url=null 且 VERIFIED：去 A09 确认；IDENTITY_VERIFICATION_REQUIRED：已有授权但申请人证据不足；AUTHORIZATION_REQUIRED：仍缺授权。空链接不等于完成，也不要为取得链接反复发送。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ok\",\n  \"data\": {\n    \"url\": \"https://服务商域名/一次性企业链接\",\n    \"scene\": \"company\",\n    \"status\": \"IN_PROGRESS\"\n  }\n}"
+            },
+            {
+              "name": "结构示例（非实测）：已有授权，但本人身份仍待核验",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "{{tradepass_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/auth-url",
+                "description": "服务端先查询已有企业授权：/corp/get（必要时按信用代码回查），已有授权再查企业实名及申请人；缺失时才调用 /corp/get-auth-url。看 data.url/status。url 有值：由本人继续服务页面；url=null 且 VERIFIED：去 A09 确认；IDENTITY_VERIFICATION_REQUIRED：已有授权但申请人证据不足；AUTHORIZATION_REQUIRED：仍缺授权。空链接不等于完成，也不要为取得链接反复发送。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ok\",\n  \"data\": {\n    \"url\": null,\n    \"scene\": \"company\",\n    \"status\": \"IDENTITY_VERIFICATION_REQUIRED\"\n  }\n}"
+            },
+            {
+              "name": "结构示例（非实测）：服务端已确认",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "{{tradepass_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/auth-url",
+                "description": "服务端先查询已有企业授权：/corp/get（必要时按信用代码回查），已有授权再查企业实名及申请人；缺失时才调用 /corp/get-auth-url。看 data.url/status。url 有值：由本人继续服务页面；url=null 且 VERIFIED：去 A09 确认；IDENTITY_VERIFICATION_REQUIRED：已有授权但申请人证据不足；AUTHORIZATION_REQUIRED：仍缺授权。空链接不等于完成，也不要为取得链接反复发送。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ok\",\n  \"data\": {\n    \"url\": null,\n    \"scene\": \"company\",\n    \"status\": \"VERIFIED\"\n  }\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"company_auth_url\": \"url\", \"company_auth_result_status\": \"status\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A09 同步企业认证与申请人核验结果",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/identity/sync",
+            "description": "人工办理完 A08 后发送；已有授权分支也在这里看结果。内部 /corp/get → /corp/get-identity-info 5.1，必要时独立 5.0；核对申请人时还可能查询个人和企业成员。看 status、failureReason、companyAuthorizationReady、organizationAuthorized、enabledSealCount。只有本地 status=VERIFIED 才继续 A10/A11；企业授权就绪本身不证明本人法人身份。受约 30 秒冷却影响。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [
+            {
+              "name": "结构示例（非实测）：企业授权有效，本人身份仍待核验",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "{{tradepass_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/identity/sync",
+                "description": "人工办理完 A08 后发送；已有授权分支也在这里看结果。内部 /corp/get → /corp/get-identity-info 5.1，必要时独立 5.0；核对申请人时还可能查询个人和企业成员。看 status、failureReason、companyAuthorizationReady、organizationAuthorized、enabledSealCount。只有本地 status=VERIFIED 才继续 A10/A11；企业授权就绪本身不证明本人法人身份。受约 30 秒冷却影响。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ok\",\n  \"data\": {\n    \"enabled\": true,\n    \"companyId\": \"2100000000000000001\",\n    \"status\": \"IN_PROGRESS\",\n    \"failureReason\": \"示例：尚未取得当前申请人的法人本人或企业管理员核验依据\",\n    \"companyAuthorizationReady\": true,\n    \"organizationAuthorized\": false,\n    \"enabledSealCount\": 0\n  }\n}"
+            },
+            {
+              "name": "结构示例（非实测）：本地认证通过",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "{{tradepass_token}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/identity/sync",
+                "description": "人工办理完 A08 后发送；已有授权分支也在这里看结果。内部 /corp/get → /corp/get-identity-info 5.1，必要时独立 5.0；核对申请人时还可能查询个人和企业成员。看 status、failureReason、companyAuthorizationReady、organizationAuthorized、enabledSealCount。只有本地 status=VERIFIED 才继续 A10/A11；企业授权就绪本身不证明本人法人身份。受约 30 秒冷却影响。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"code\": 0,\n  \"message\": \"ok\",\n  \"data\": {\n    \"enabled\": true,\n    \"companyId\": \"2100000000000000001\",\n    \"status\": \"VERIFIED\",\n    \"failureReason\": \"\",\n    \"companyAuthorizationReady\": true,\n    \"organizationAuthorized\": true,\n    \"enabledSealCount\": 1\n  }\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"company_identity_status\": \"status\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A10 查询企业主体最终状态",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/companies/{{company_id}}",
+            "description": "看 data.certificationStatus=VERIFIED。若 A09 未通过，保留原企业继续处理，不重建。印章设置与入驻状态分开，sealStatus 不是本人法人身份的证据。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。"
+          },
+          "response": []
+        },
+        {
+          "name": "A11 认证通过后：切换到本次企业",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/me/switch-company",
+            "description": "仅在本地企业认证 VERIFIED、当前成员已激活后发送；这会更新账号当前企业。看 data.user.currentCompanyId、data.member.memberStatus、roleCode。LEGAL 是法人，ADMIN 是管理员，不因企业认证成功自动认定为 LEGAL。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{company_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"current_company_id\": \"user.currentCompanyId\", \"member_status\": \"member.memberStatus\", \"current_role\": \"member.roleCode\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A12 再查账号：确认入驻和角色",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/me",
+            "description": "最终看 currentCompanyId 是否等于 company_id、company.certificationStatus 是否 VERIFIED、member.memberStatus 是否 ACTIVE，并检查 member.roleCode。LEGAL_CANDIDATE 或 PENDING 仍未开通。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。"
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"current_company_id\": \"user.currentCompanyId\", \"member_status\": \"member.memberStatus\", \"current_role\": \"member.roleCode\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "B 法大大原始查询：查看后台所依据的结果",
+      "description": "需要同一部署应用的 AppId/AppSecret，全部自动签名。不会办理新的实名或企业授权，也不会把结果写回商签通；后台实际仍可能受缓存和异步回调影响。",
+      "item": [
+        {
+          "name": "B01 获取法大大访问令牌",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/service/get-access-token",
+            "description": "只在需要查看服务商原始响应时使用 B 文件夹。填写 fdd_app_id / fdd_app_secret；脚本按项目固定 SDK 生成签名并保存 fdd_access_token。法大大成功码为 100000。令牌失效 100002 时重发 B01，再重发失败请求。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": []
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  const mapping = {\"fdd_access_token\": \"accessToken\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "B02 查询当前个人账号与授权",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/user/get",
+            "description": "client_user_id 由 A01 自动生成，也可填写部署实际值。看 openUserId、bindingStatus=authorized、identStatus=identified、availableStatus=enable、authScope 含 ident_info。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"clientUserId\": \"{{client_user_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  const mapping = {\"open_user_id\": \"openUserId\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "B03 查询个人实名详情",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/user/get-identity-info",
+            "description": "看 openUserId/identStatus/userIdentInfo.userName/fddId。本接口可能返回完整个人证件字段；Collection 不保存完整响应到环境变量。本人唯一标识用于和企业经办人严格比对。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"openUserId\": \"{{open_user_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  const mapping = {\"person_fdd_id\": \"fddId\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "B04 按本地企业业务ID查询授权",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/corp/get",
+            "description": "client_corp_id 由 A05 自动生成。看 clientCorpId/openCorpId/bindingStatus/identStatus/availableStatus/authScope。210032 是尚未查到当前企业授权，可继续 B05 回查信用代码；不是企业一定未实名。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"clientCorpId\": \"{{client_corp_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  const mapping = {\"open_corp_id\": \"openCorpId\", \"provider_client_corp_id\": \"clientCorpId\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "B05 必要时：按信用代码回查已有企业授权",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/corp/get",
+            "description": "按 credit_code 查询同一应用内已有企业。可发现服务商原有 clientCorpId 不同的情况。保存 provider_client_corp_id 供对照，不覆盖本地 client_corp_id，不自动重绑。商签通仍会核对主体、账号关联和申请人。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"corpIdentNo\": \"{{credit_code}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  const mapping = {\"open_corp_id\": \"openCorpId\", \"provider_client_corp_id\": \"clientCorpId\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "B06 查询企业实名详情 5.1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/corp/get-identity-info",
+            "description": "看 corpIdentStatus、corpIdentInfo.corpName/corpIdentNo/legalRepName、corpIdentMethod、identSuccessTime。operatorId/operatorType 可能缺失；5.1 返回字段非空也不能脱离服务端可信规则直接授予法人。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"openCorpId\": \"{{open_corp_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "B07 必要时：独立查询企业实名详情 5.0",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/corp/get-identity-info",
+            "description": "同一路径，HTTP 和签名中均不传 X-FASC-Api-SubVersion。比对同一 openCorpId、企业、法人名、认证方式和成功时间。有效 operatorType=legal_rep 且 operatorId 等于当前个人 openUserId 才是法人关联的关键证据。deputy_auth 表示原代理人，空 operatorId 不能推断本人。应用是否支持仍以真实结果为准；后台是否走该分支还取决于当前代码条件。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"openCorpId\": \"{{open_corp_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "B08 可选：按本人ID查询企业成员",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/corp/member/get-by-openId",
+            "description": "属于申请人身份核验相关的成员查询。看 memberId；查询成功不等于法人身份。自动以原始文本保存 memberId，避免 64 位整数被 JavaScript 四舍五入。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"openCorpId\": \"{{open_corp_id}}\",\n  \"openUserId\": \"{{open_user_id}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  const mapping = {};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  const match = pm.response.text().match(/\"memberId\"\\s*:\\s*(?:\"([0-9]+)\"|([0-9]+))/);",
+                  "  if (match) pm.environment.set('member_id', match[1] || match[2]); else pm.environment.unset('member_id');",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "B09 可选：查询成员详情与实际角色",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/corp/member/get-detail",
+            "description": "需 organization 授权。看 memberStatus=activated、fddId、roleType 等。和 B03 的个人 fddId 核对，姓名/手机号不足以证明本人；超管/管理员权限也不等于法人身份。memberId 在请求中按整数原样传输。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"openCorpId\": \"{{open_corp_id}}\",\n  \"memberId\": {{member_id}}\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "B10 可选：查询已有印章",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/seal/get-seal-info-list",
+            "description": "需 seal_info 授权。商签通会在返回列表中过滤，只取 entityType=primary 的主企业印章。返回 0 个印章不等于企业未入驻，实际签署前仍需设置或授权。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"openCorpId\": \"{{open_corp_id}}\",\n  \"listPageNo\": 1,\n  \"listPageSize\": 100\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "C 中断恢复与可选接口",
+      "item": [
+        {
+          "name": "C01 中断恢复：本人待完成企业",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/me/company-onboarding",
+            "description": "不会自动选择数组中的企业，避免选错。手动把要继续的 data[i].id/name/creditCode/legalPersonName 填入 company_id/company_name/credit_code/legal_person_name，client_corp_id 填 tradepass-company-{company_id}，再从 A06 继续。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。"
+          },
+          "response": []
+        },
+        {
+          "name": "C02 可选：绑定微信手机号",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/auth/bind-phone",
+            "description": "仅当 A01 无手机号时需要。wechat_phone_code 必须来自本人手机小程序 getPhoneNumber 的临时代码，不是手机号、短信验证码或 wx.login code；已绑定可跳过。实际通常直接在小程序绑定后重发 A01。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phoneCode\": \"{{wechat_phone_code}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "C03 可选：查看法人身份既有记录",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/legal-representative/sync",
+            "description": "已有企业成员申请法人身份时使用，需要相应成员/认领资格；不是首次入驻必经接口。仅同步现有可靠记录，不会启动法人刷脸。看 status=VERIFIED 或 REVIEW_REQUIRED/IN_PROGRESS 及 message。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "D 法大大原始授权模板：独立调试时使用",
+      "description": "展示后台发出的核心法大大业务参数。正常入驻用 A，独立直调不会执行对应商签通本地申请写入；实际服务链接可由本人办理。需部署真实 callback_url，模板省略可选小程序回跳参数。",
+      "item": [
+        {
+          "name": "D01 原始模板：获取个人认证授权链接",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/user/get-auth-url",
+            "description": "这是商签通调用法大大的原始业务请求模板。日常入驻从 A03 发起，以便保存本地认证申请状态；独立直调不会执行商签通 createAuthUrl 的本地写入。callback_url 须填部署真实回调地址。此模板省略可选 redirectMiniAppUrl；实际小程序调用会额外传 URL 编码后的个人 service-return 路径。先执行 B01。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"clientUserId\": \"{{client_user_id}}\",\n  \"accountName\": \"{{phone}}\",\n  \"authScopes\": [\n    \"ident_info\"\n  ],\n  \"callbackUrl\": \"{{callback_url}}\"\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  const mapping = {\"provider_personal_auth_url\": \"authUrl\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "D02 原始模板：获取企业认证授权链接",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "url": "{{fdd_base_url}}/corp/get-auth-url",
+            "description": "这是 A08 在确实缺少可复用授权时发送的核心法大大请求模板。正常入驻应走 A08，由商签通保存申请人和本次授权上下文；不要在同一次认证过程中交替用 A08/D02 反复创建链接。callback_url 填部署真实回调地址。此模板省略可选 redirectMiniAppUrl；实际小程序调用还传 URL 编码后的 company service-return 路径。没有预填法人姓名，也没有强制指定法人或代理人认证分支；最终身份须从实际服务商结果核验。先执行 B01。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "bizContent",
+                  "value": "{\n  \"clientCorpId\": \"{{client_corp_id}}\",\n  \"clientUserId\": \"{{client_user_id}}\",\n  \"accountName\": \"{{phone}}\",\n  \"corpNonEditableInfo\": [\n    \"corpName\",\n    \"corpIdentNo\"\n  ],\n  \"authScopes\": [\n    \"ident_info\",\n    \"seal_info\",\n    \"signtask_init\",\n    \"signtask_info\",\n    \"signtask_file\",\n    \"organization\"\n  ],\n  \"callbackUrl\": \"{{callback_url}}\",\n  \"corpIdentInfo\": {\n    \"corpName\": \"{{company_name}}\",\n    \"corpIdentNo\": \"{{credit_code}}\"\n  }\n}",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (String(r.code) === '100000' && r.data) {",
+                  "  const mapping = {\"provider_company_auth_url\": \"authUrl\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
