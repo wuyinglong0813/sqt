@@ -36,9 +36,9 @@ class MysqlRetailOwnedMigrationTest {
         jdbc.update("INSERT INTO warehouse(id,company_id,name,created_by) VALUES (987654,3,'existing warehouse',7)");
 
         var flyway = Flyway.configure().dataSource(source).locations(location).load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(role.equals("business") ? 4 : 1);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(role.equals("business") ? 5 : 1);
         flyway.validate();
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(role.equals("business") ? "6" : "3");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(role.equals("business") ? "7" : "3");
         assertThat(jdbc.queryForObject("SELECT name FROM warehouse WHERE id=987654", String.class))
                 .isEqualTo("existing warehouse");
         assertThat(jdbc.queryForObject("""

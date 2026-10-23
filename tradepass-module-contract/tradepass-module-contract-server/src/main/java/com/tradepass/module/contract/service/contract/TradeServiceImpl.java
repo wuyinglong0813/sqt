@@ -92,9 +92,6 @@ public class TradeServiceImpl implements TradeService {
     private ContractDirectoryService contractDirectory;
 
     @Autowired(required = false)
-    private com.tradepass.module.contract.service.abolish.ContractAbolishPresentationService abolishPresentation;
-
-    @Autowired(required = false)
     private com.tradepass.module.contract.service.signing.ContractSigningPresentationService signingPresentation;
 
     @Autowired(required = false)
@@ -389,10 +386,9 @@ public class TradeServiceImpl implements TradeService {
         requireContractReadPermission(companyId);
         var sales = contractSales(companyId);
         var contracts = partyContracts(companyId, trim(counterpartyName), null, null, 1000, 0);
-        var progress = abolishProgress(contracts);
         var signing = signingProgress(contracts);
         return contracts.stream().map(contract -> toReadContractPayload(contract, companyId,
-                sales.get(String.valueOf(contract.getId())), progress.get(contract.getId()), signing.get(contract.getId()))).toList();
+                sales.get(String.valueOf(contract.getId())), signing.get(contract.getId()))).toList();
     }
 
     public PagePayload<ContractRespDTO> pageContracts(String counterpartyName, String status, String viewerDirection, int page, int size) {
@@ -407,10 +403,9 @@ public class TradeServiceImpl implements TradeService {
         long offset = (long) (normalizedPage - 1) * normalizedSize;
         var sales = contractSales(companyId);
         var contracts = partyContracts(companyId, cleanName, cleanStatus, cleanDirection, normalizedSize, offset);
-        var progress = abolishProgress(contracts);
         var signing = signingProgress(contracts);
         List<ContractRespDTO> items = contracts.stream().map(contract -> toReadContractPayload(contract, companyId,
-                sales.get(String.valueOf(contract.getId())), progress.get(contract.getId()), signing.get(contract.getId()))).toList();
+                sales.get(String.valueOf(contract.getId())), signing.get(contract.getId()))).toList();
         return PagePayload.of(items, total, normalizedPage, normalizedSize);
     }
 
@@ -442,11 +437,8 @@ public class TradeServiceImpl implements TradeService {
 
     private ContractRespDTO toReadContractPayload(TradeContractDO contract, long companyId,
             com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales sales) {
-        return toReadContractPayload(contract, companyId, sales, abolishProgress(List.of(contract)).get(contract.getId()));
-    }
-
-    private Map<Long, String> abolishProgress(List<TradeContractDO> contracts) {
-        return abolishPresentation == null ? Map.of() : abolishPresentation.statusTexts(contracts);
+        return toReadContractPayload(contract, companyId, sales,
+                signingProgress(List.of(contract)).get(contract.getId()));
     }
 
     private Map<Long, com.tradepass.module.contract.service.signing.ContractSigningPresentationService.Progress>
@@ -455,17 +447,11 @@ public class TradeServiceImpl implements TradeService {
     }
 
     private ContractRespDTO toReadContractPayload(TradeContractDO contract, long companyId,
-            com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales sales, String statusText) {
-        return toReadContractPayload(contract, companyId, sales, statusText,
-                signingProgress(List.of(contract)).get(contract.getId()));
-    }
-
-    private ContractRespDTO toReadContractPayload(TradeContractDO contract, long companyId,
-            com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales sales, String statusText,
+            com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales sales,
             com.tradepass.module.contract.service.signing.ContractSigningPresentationService.Progress signing) {
         boolean fullContent = accessControlService.hasPermission(companyId, "contract_view")
                 || accessControlService.hasPermission(companyId, "contract_sign");
-        var result = toContractPayload(contract, companyId, fullContent, sales).withAbolishProgress(statusText);
+        var result = toContractPayload(contract, companyId, fullContent, sales);
         return signing == null ? result : result.withSigningProgress(signing.status(), signing.text());
     }
 

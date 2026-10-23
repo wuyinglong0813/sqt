@@ -56,6 +56,7 @@ class SigningMemberPreflightTest {
         task.setInitiatorCompanyId(3L); task.setCounterpartyCompanyId(4L);
         task.setInitiatorActorId("supplier"); task.setCounterpartyActorId("buyer");
         when(contracts.selectByIdForUpdate(12L)).thenReturn(contract);
+        when(contracts.selectById(12L)).thenReturn(contract);
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
         AuthContext.set(7L, 3L);
     }
@@ -105,14 +106,14 @@ class SigningMemberPreflightTest {
     }
 
     @Test
-    void missingMembershipDoesNotCreateAnAbolishIntentOrRemoteAgreement() {
+    void localVoidDoesNotRequireProviderMembershipOrCreateAnAgreement() {
         contract.setStatus("ACTIVE");
         when(jdbc.queryForList(contains("action_type = 'VOID'"), eq(Long.class), eq(12L))).thenReturn(List.of(1L));
         doThrow(new BusinessException("请先完成电子签企业成员激活"))
                 .when(companies).requireCurrentSigningMember(3L);
 
-        assertThatThrownBy(() -> service.abolishUrl(12L, "双方协商作废")).hasMessageContaining("成员激活");
+        assertThatThrownBy(() -> service.abolishUrl(12L, "双方协商作废")).hasMessageContaining("商签通内由双方确认");
 
-        verifyNoInteractions(gateway, intents);
+        verifyNoInteractions(gateway, intents, companies);
     }
 }

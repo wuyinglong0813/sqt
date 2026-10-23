@@ -70,13 +70,15 @@ class ContractSigningFlowTest {
 
     @AfterEach void clear() { AuthContext.clear(); }
 
-    @Test void approvedRequestStillRequiresElectronicAbolishAndExplainsTheNextStep() {
+    @Test void activeContractsNeverOfferAnElectronicAbolishSignature() {
         contract.setStatus("ACTIVE"); task.setProviderStatus("task_finished");
         when(jdbc.queryForObject(contains("action_type = 'VOID'"), eq(Long.class), eq(12L))).thenReturn(1L);
-        assertThat(service.current(12L).statusText()).isEqualTo("待签署作废协议");
-        assertThat(service.current(12L).canSign()).isTrue();
-        assertThat(contract.getStatus()).isEqualTo("ACTIVE");
-        verifyNoInteractions(trade, gateway);
+        var result = service.current(12L);
+        assertThat(result.statusText()).isEqualTo("履约中");
+        assertThat(result.canSign()).isFalse();
+        assertThat(result.canAbolish()).isTrue();
+        assertThat(result.abolishApproved()).isFalse();
+        verifyNoInteractions(trade, gateway, jdbc);
     }
 
     @Test void revokedOriginalSynchronizesTheLocalContractEvenWithoutAChildRecord() {
@@ -119,7 +121,7 @@ class ContractSigningFlowTest {
         assertThat(task.getInitiatorSignStatus()).isEqualTo("signed");
         assertThat(task.getCounterpartySignStatus()).isEqualTo("signed");
         assertThat(result.abolishApproved()).isFalse();
-        assertThat(result.statusText()).isEqualTo("已签署并归档");
+        assertThat(result.statusText()).isEqualTo("履约中");
         verifyNoInteractions(trade);
         verify(gateway, never()).abolish(anyString(), anyString(), anyString(), anyString());
     }
@@ -145,17 +147,13 @@ class ContractSigningFlowTest {
         verify(tasks, never()).updateById(any(FadadaContractSignTaskDO.class));
     }
 
-    @Test void alreadyRevokedOriginalCannotCreateAnotherAbolishTask() {
+    @Test void oldAbolishUrlCannotCreateOrChargeForAProviderAgreement() {
         contract.setStatus("ACTIVE"); task.setProviderStatus("task_finished");
-        when(gateway.status("original")).thenReturn(new FadadaSigningGateway.TaskStatus("original", "revoked", List.of()));
-        assertThatThrownBy(() -> service.abolishUrl(12L, "双方同意作废")).hasMessageContaining("已完成作废");
-        assertThat(contract.getStatus()).isEqualTo("VOIDED");
-        assertThat(task.getProviderStatus()).isEqualTo("revoked");
-        verify(trade).voidAfterElectronicAbolish(12L, 1, 7L);
-        verify(tasks).updateById(task);
-        verify(intents, never()).begin(any());
-        verify(gateway, never()).abolish(anyString(), anyString(), anyString(), anyString());
-        verify(gateway, never()).actorUrl(anyString(), anyString(), anyString(), anyString());
+        assertThatThrownBy(() -> service.abolishUrl(12L, "双方同意作废")).hasMessageContaining("商签通内由双方确认");
+        assertThat(contract.getStatus()).isEqualTo("ACTIVE");
+        assertThat(task.getProviderStatus()).isEqualTo("task_finished");
+        verifyNoInteractions(gateway, intents, trade);
+        verify(tasks, never()).updateById(any(FadadaContractSignTaskDO.class));
     }
 
     private void resumedContractWithRetiredChild(String childStatus) {
@@ -184,13 +182,6 @@ class ContractSigningFlowTest {
         when(gateway.status("child")).thenReturn(new FadadaSigningGateway.TaskStatus("child", "task_finished", List.of(), "unrelated", null));
         assertThatThrownBy(() -> service.syncCurrent(12L)).hasMessageContaining("对应关系");
         verifyNoInteractions(trade);
-    }
-
-    @Test void invalidAbolishReasonDoesNotOpenAnUncertainCreationIntent() {
-        contract.setStatus("ACTIVE");
-        assertThatThrownBy(() -> service.abolishUrl(12L, "字".repeat(201))).hasMessageContaining("200字");
-        verify(intents, never()).begin(any());
-        verify(gateway, never()).abolish(anyString(), anyString(), anyString(), anyString());
     }
 
     @Test void anUnpreparedContractIsActionableOnlyByItsInitiator() {
@@ -228,47 +219,6 @@ class ContractSigningFlowTest {
         assertThat(service.current(12L).canSign()).isFalse();
     }
 
-    @Test void recoveryPendingBlocksNewAbolishUrls() {
-        contract.setStatus("ACTIVE"); task.setAbolishedSignTaskId("abolish");
-        when(jdbc.queryForObject(anyString(), eq(Long.class), eq(12L))).thenReturn(1L);
-        when(jdbc.queryForList(contains("action_type = 'RESUME'"), eq(Long.class), eq(12L))).thenReturn(List.of(2L));
-        assertThat(service.current(12L).canSign()).isFalse();
-        assertThatThrownBy(() -> service.abolishUrl(12L, "测试")).hasMessageContaining("恢复履约");
-        verifyNoInteractions(gateway);
-    }
-
-    @Test void failureToOpenAbolishPageKeepsItsCreatedProviderId() {
-        contract.setStatus("ACTIVE");
-        when(jdbc.queryForObject(contains("action_type = 'VOID'"), eq(Long.class), eq(12L))).thenReturn(1L);
-        when(gateway.abolish(anyString(), anyString(), anyString(), anyString())).thenReturn("abolish");
-        when(gateway.actorUrl(anyString(), anyString(), anyString(), anyString())).thenThrow(new IllegalStateException("timeout"));
-        assertThatThrownBy(() -> service.abolishUrl(12L, "测试")).hasMessageContaining("任务已保留");
-        assertThat(task.getAbolishedSignTaskId()).isEqualTo("abolish");
-        verify(tasks).update(eq(task), any(Wrapper.class));
-    }
-
-    @Test void creationTimeoutMarksUncertaintyAndPreventsBlindRetry() {
-        contract.setStatus("ACTIVE");
-        when(jdbc.queryForObject(contains("action_type = 'VOID'"), eq(Long.class), eq(12L))).thenReturn(1L);
-        when(gateway.abolish(anyString(), anyString(), anyString(), anyString())).thenThrow(new IllegalStateException("timeout"));
-        assertThatThrownBy(() -> service.abolishUrl(12L, "测试")).hasMessageContaining("结果尚未确认");
-        assertThat(task.getProviderStatus()).isEqualTo("ABOLISH_CREATION_UNCERTAIN");
-        assertThatThrownBy(() -> service.abolishUrl(12L, "测试")).hasMessageContaining("结果尚未确认");
-        verify(gateway, times(1)).abolish(anyString(), anyString(), anyString(), anyString());
-    }
-
-    @Test void providerCallIsPrecededByDurableIntentAndConfirmedOnlyAfterTaskSave() {
-        contract.setStatus("ACTIVE");
-        when(gateway.abolish(anyString(), anyString(), anyString(), anyString())).thenReturn("abolish");
-        when(gateway.actorUrl(anyString(), anyString(), anyString(), anyString())).thenReturn("https://example.test/sign");
-        service.abolishUrl(12L, "测试");
-        var order = inOrder(intents, gateway, tasks);
-        order.verify(intents).begin(task);
-        order.verify(gateway).abolish(anyString(), anyString(), anyString(), anyString());
-        order.verify(tasks).update(eq(task), any(Wrapper.class));
-        order.verify(intents).confirm("intent", "abolish");
-    }
-
     @Test void orphanedProviderChildIsRecoveredOnlyFromBidirectionalProviderEvidence() {
         contract.setStatus("ACTIVE"); task.setArchivedAt(java.time.LocalDateTime.now());
         task.setInitiatorSignStatus("signed"); task.setCounterpartySignStatus("signed");
@@ -294,11 +244,10 @@ class ContractSigningFlowTest {
         verify(intents, times(1)).confirm("intent", "child");
     }
 
-    @Test void anUnconfirmedIntentWithoutProviderChildCannotBeRetried() {
-        contract.setStatus("ACTIVE");
-        when(intents.pending(task)).thenReturn(List.of(new ContractAbolishIntentService.PendingIntent("intent", null)));
-        assertThatThrownBy(() -> service.abolishUrl(12L, "测试")).hasMessageContaining("结果尚未确认");
-        verify(gateway, never()).abolish(anyString(), anyString(), anyString(), anyString());
+    @Test void oldUncertainCreationDoesNotReopenTheRetiredAbolishEndpoint() {
+        contract.setStatus("ACTIVE"); task.setProviderStatus("ABOLISH_CREATION_UNCERTAIN");
+        assertThatThrownBy(() -> service.abolishUrl(12L, "测试")).hasMessageContaining("商签通内由双方确认");
+        verifyNoInteractions(gateway, intents);
     }
 
     @Test void mismatchedRemoteParentCannotConfirmAnOrphanedChild() {
@@ -348,4 +297,43 @@ class ContractSigningFlowTest {
         assertThatThrownBy(() -> service.syncBySignTaskId("retired")).hasMessageContaining("对应关系");
         verify(trade, never()).voidAfterElectronicAbolish(anyLong(), anyInt(), anyLong());
     }
+    @ParameterizedTest
+    @ValueSource(strings = {"task_finished", "ABOLISH_CREATION_UNCERTAIN", "ABOLISH_sign_progress"})
+    void localVoidStaysReadOnlyWithoutQueryingOrChangingTheProvider(String oldProviderStatus) {
+        contract.setStatus("VOIDED"); task.setProviderStatus(oldProviderStatus);
+        task.setArchivedAt(java.time.LocalDateTime.now());
+        task.setLastError("历史作废任务创建失败");
+        var membership = mock(com.tradepass.module.contract.service.membership.MembershipService.class);
+        ((FadadaContractSigningServiceImpl) service).setMembershipService(membership);
+        var result = service.syncCurrent(12L);
+        service.syncBySignTaskId("original");
+        service.requireCallbackSettled("original", "sign-task-finished");
+        assertThat(result.status()).isEqualTo("VOIDED_LOCAL");
+        assertThat(result.statusText()).isEqualTo("已作废");
+        assertThat(result.canSign()).isFalse();
+        assertThat(result.canAbolish()).isFalse();
+        assertThat(result.abolishApproved()).isFalse();
+        assertThat(result.signedFileArchived()).isTrue();
+        assertThat(result.lastError()).isNull();
+        assertThat(task.getProviderStatus()).isEqualTo(oldProviderStatus);
+        verifyNoInteractions(gateway, intents, membership, trade);
+        verify(tasks, never()).updateById(any(FadadaContractSignTaskDO.class));
+    }
+
+    @Test void anUnknownHistoricalChildCallbackCannotRewriteALocallyVoidedContract() {
+        contract.setStatus("VOIDED"); task.setProviderStatus("task_finished");
+        task.setInitiatorSignStatus("signed"); task.setCounterpartySignStatus("signed");
+        when(tasks.selectOne(any(Wrapper.class))).thenReturn(null, task);
+        when(gateway.status("old-child")).thenReturn(new FadadaSigningGateway.TaskStatus(
+                "old-child", "sign_progress", List.of(), "original", null));
+        service.syncBySignTaskId("old-child");
+        assertThat(task.getProviderStatus()).isEqualTo("task_finished");
+        assertThat(task.getInitiatorSignStatus()).isEqualTo("signed");
+        assertThat(task.getCounterpartySignStatus()).isEqualTo("signed");
+        verifyNoInteractions(intents, trade);
+        verify(gateway, never()).status("original");
+        verify(tasks, never()).updateById(any(FadadaContractSignTaskDO.class));
+        verify(tasks, never()).update(any(FadadaContractSignTaskDO.class), any(Wrapper.class));
+    }
+
 }

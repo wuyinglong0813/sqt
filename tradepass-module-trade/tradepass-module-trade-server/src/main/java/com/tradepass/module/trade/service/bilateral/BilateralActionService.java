@@ -9,7 +9,6 @@ import com.tradepass.module.trade.api.bilateral.BilateralActionOperations.*;
 import com.tradepass.module.trade.service.approval.ApprovalService;
 import com.tradepass.module.trade.service.inventory.SalesOrderInventoryService;
 import com.tradepass.module.contract.api.abolish.ContractAbolishRecoveryOperations;
-import com.tradepass.module.contract.api.abolish.ContractAbolishRecoveryOperations.*;
 import com.tradepass.module.identity.api.permission.AccessControlOperations;
 import com.tradepass.module.identity.api.permission.AccessControlOperations.*;
 import com.tradepass.framework.audit.core.AuditLogService;

@@ -25,6 +25,8 @@ import com.tradepass.support.MybatisTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
@@ -78,6 +80,35 @@ class ContractSigningPreparationTest {
     }
 
     @AfterEach void clear() { AuthContext.clear(); }
+
+    @ParameterizedTest @ValueSource(strings = {"SALE", "PURCHASE"})
+    void newSigningAlwaysChargesTheContractInitiatorRegardlessOfTradeDirection(String direction) {
+        contract.setDirection(direction);
+        when(gateway.createTask(any())).thenReturn(new FadadaSigningGateway.CreatedTask("new-task", "file", "doc"));
+        when(gateway.status("new-task")).thenReturn(new FadadaSigningGateway.TaskStatus("new-task", "sign_progress", List.of()));
+        when(gateway.actorUrl(anyString(), anyString(), anyString(), anyString())).thenReturn("https://example.test/sign");
+        service.signUrl(12L);
+        verify(membership).reserve(argThat(company -> company.getId().equals(3L)), eq(12L), eq(1), anyString(), anyString());
+        verify(gateway).createTask(argThat(command -> command.initiatorOpenCorpId().equals("corp-3")
+                && command.counterpartyOpenCorpId().equals("corp-4")));
+        verify(membership).confirm(eq(9L), any());
+    }
+
+    @Test void recipientSignsTheExistingTaskWithoutReservingOrChargingQuota() {
+        var existing = new FadadaContractSignTaskDO(); existing.setId(20L); existing.setContractId(12L);
+        existing.setVersionNo(1); existing.setSignTaskId("original"); existing.setInitiatorCompanyId(3L);
+        existing.setCounterpartyCompanyId(4L); existing.setInitiatorActorId("supplier"); existing.setCounterpartyActorId("buyer");
+        existing.setInitiatorSignStatus("signed");
+        when(tasks.selectOne(any(Wrapper.class))).thenReturn(existing);
+        when(gateway.status("original")).thenReturn(new FadadaSigningGateway.TaskStatus("original", "sign_progress",
+                List.of(new FadadaSigningGateway.ActorStatus("supplier", "signed"))));
+        when(gateway.actorUrl(anyString(), anyString(), anyString(), anyString())).thenReturn("https://example.test/sign");
+        AuthContext.set(8L, 4L);
+        service.signUrl(12L);
+        verifyNoInteractions(pdf, membership);
+        verify(gateway, never()).createTask(any());
+        verify(gateway).actorUrl(eq("original"), eq("buyer"), anyString(), anyString());
+    }
 
     @Test void confirmedFilePreparationFailureReleasesQuotaAndAllowsAnotherAttempt() {
         when(gateway.createTask(any())).thenThrow(new FadadaTaskPreparationException("文件处理失败，请重试"));

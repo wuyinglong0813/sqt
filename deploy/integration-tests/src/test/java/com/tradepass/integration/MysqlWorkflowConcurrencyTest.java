@@ -516,11 +516,13 @@ class MysqlWorkflowConcurrencyTest {
         assertThat(events.restoreLegacyPayload(id, "{}", LocalDateTime.now())).isZero();
     }
 
-    @Test void noBusinessTableRequiresDatabaseGeneratedIds() {
-        assertThat(jdbc.queryForObject("""
-                SELECT COUNT(*) FROM information_schema.columns
+    @Test void onlyMembershipLedgersUseDatabaseGeneratedIdsAndUsersKeepApplicationIds() {
+        // These JDBC ledgers intentionally omit IDs on insert; every other table uses application IDs.
+        assertThat(jdbc.queryForList("""
+                SELECT table_name FROM information_schema.columns
                 WHERE table_schema = DATABASE() AND extra LIKE '%auto_increment%'
-                """, Integer.class)).isZero();
+                ORDER BY table_name
+                """, String.class)).containsExactly("membership_policy_history", "membership_signing_usage");
         SysUserDO first = new SysUserDO(); first.setOpenid("id-test-" + ApplicationIds.next()); first.setStatus("ACTIVE");
         users.insert(first);
         assertThat(first.getId()).isGreaterThan(9007199254740991L);
@@ -683,7 +685,7 @@ class MysqlWorkflowConcurrencyTest {
         assertThat(contracts.selectById(contractId).getStatus()).isEqualTo("COMPLETED");
     }
 
-    @Test void recoveryNeedsBothCompaniesAndRetainsCancelledProviderTaskForCallbacks() {
+    @Test void approvedElectronicContractVoidsLocallyWithoutTouchingProviderTask() {
         long contractId = documents.selectById(documentId).getContractId();
         jdbc.update("UPDATE business_document SET status='VOIDED' WHERE id=?", documentId);
         long taskId = IDS.incrementAndGet();
@@ -700,27 +702,21 @@ class MysqlWorkflowConcurrencyTest {
         service.setAbolishRecoveryService(new ContractAbolishRecoveryOperationsImpl(new ContractAbolishRecoveryServiceImpl(contracts, signingTasks, gateway, access, jdbc)));
         @SuppressWarnings("unchecked")
         var voidRequest = (Map<String, Object>) asCompany(3, () -> service.request("CONTRACT", contractId, "VOID", "作废", false));
+        assertThatThrownBy(() -> asCompany(3, () -> service.decide((Long) voidRequest.get("id"), "APPROVE", "")))
+                .hasMessageContaining("仅对方");
         asCompany(4, () -> service.decide((Long) voidRequest.get("id"), "APPROVE", ""));
-        @SuppressWarnings("unchecked")
-        var recovery = (Map<String, Object>) asCompany(3, () -> service.request("CONTRACT", contractId, "RESUME", "继续履约", false));
-        long recoveryId = (Long) recovery.get("id");
-        assertThatThrownBy(() -> asCompany(3, () -> service.decide(recoveryId, "APPROVE", ""))).hasMessageContaining("仅对方");
-        when(gateway.status(abolish)).thenReturn(
-                new com.tradepass.framework.fadada.core.FadadaSigningGateway.TaskStatus(abolish, "sign_progress", List.of()),
-                new com.tradepass.framework.fadada.core.FadadaSigningGateway.TaskStatus(abolish, "task_terminated", List.of()));
-        when(gateway.status(original)).thenReturn(
-                new com.tradepass.framework.fadada.core.FadadaSigningGateway.TaskStatus(original, "task_finished", List.of()));
-        asCompany(4, () -> service.decide(recoveryId, "APPROVE", ""));
-        assertThat(contracts.selectById(contractId).getStatus()).isEqualTo("ACTIVE");
-        assertThat(service.isContractReadOnly(com.tradepass.module.contract.convert.contract.TradeContractConvert.INSTANCE.toDTO(contracts.selectById(contractId)))).isFalse();
-        assertThat(signingTasks.selectById(taskId).getAbolishedSignTaskId()).isNull();
-        assertThat(jdbc.queryForObject("SELECT contract_id FROM fadada_cancelled_abolish_task WHERE sign_task_id=?",
-                Long.class, abolish)).isEqualTo(contractId);
+        assertThat(contracts.selectById(contractId).getStatus()).isEqualTo("VOIDED");
+        assertThat(service.isContractReadOnly(com.tradepass.module.contract.convert.contract.TradeContractConvert.INSTANCE.toDTO(contracts.selectById(contractId)))).isTrue();
+        assertThat(signingTasks.selectById(taskId).getAbolishedSignTaskId()).isEqualTo(abolish);
+        assertThat(signingTasks.selectById(taskId).getProviderStatus()).isEqualTo("abolishing");
         assertThat(jdbc.queryForObject("SELECT status FROM bilateral_action_request WHERE id=?",
-                String.class, (Long) voidRequest.get("id"))).isEqualTo("CANCELLED");
+                String.class, (Long) voidRequest.get("id"))).isEqualTo("APPROVED");
+        assertThatThrownBy(() -> asCompany(3, () -> service.request("CONTRACT", contractId, "RESUME", "继续履约", false)))
+                .isInstanceOf(BusinessException.class);
+        verifyNoInteractions(gateway);
     }
 
-    @Test void durableAbolishIntentSurvivesParentRollbackAndPreventsUnsafeRecovery() {
+    @Test void legacyDurableIntentSurvivesRollbackButCannotReopenProviderRecovery() {
         long contractId = documents.selectById(documentId).getContractId();
         long taskId = IDS.incrementAndGet();
         jdbc.update("""
@@ -746,11 +742,11 @@ class MysqlWorkflowConcurrencyTest {
         var gateway = mock(com.tradepass.framework.fadada.core.FadadaSigningGateway.class);
         var recovery = new ContractAbolishRecoveryServiceImpl(contracts, signingTasks, gateway, mock(AccessControlOperations.class), jdbc);
         assertThatThrownBy(() -> asCompany(4, () -> { recovery.resumeAfterBilateralApproval(contractId); return null; }))
-                .hasMessageContaining("创建结果尚未确认");
+                .hasMessageContaining("不能恢复履约");
         verifyNoInteractions(gateway);
     }
 
-    @Test void stalePermissionSnapshotCannotRestartAbolishAfterRecoveryCommits() throws Exception {
+    @Test void staleApprovedVoidSnapshotCannotCreateProviderTask() throws Exception {
         long contractId = documents.selectById(documentId).getContractId();
         long actionId = IDS.incrementAndGet();
         jdbc.update("""
@@ -784,7 +780,7 @@ class MysqlWorkflowConcurrencyTest {
             committed.countDown();
             assertThatThrownBy(() -> oldRequest.get().get(10, TimeUnit.SECONDS))
                     .isInstanceOf(ExecutionException.class).hasCauseInstanceOf(BusinessException.class)
-                    .hasStackTraceContaining("请先由双方确认");
+                    .hasStackTraceContaining("商签通内由双方确认");
             verifyNoInteractions(gateway);
         } finally { committed.countDown(); pool.shutdownNow(); pool.awaitTermination(10, TimeUnit.SECONDS); }
     }

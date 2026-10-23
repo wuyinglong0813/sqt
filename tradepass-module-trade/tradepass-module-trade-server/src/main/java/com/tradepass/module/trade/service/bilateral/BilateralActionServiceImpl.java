@@ -10,7 +10,6 @@ import com.tradepass.module.trade.service.approval.ApprovalService;
 import com.tradepass.module.trade.service.inventory.SalesOrderInventoryService;
 
 import com.tradepass.module.contract.api.abolish.ContractAbolishRecoveryOperations;
-import com.tradepass.module.contract.api.abolish.ContractAbolishRecoveryOperations.*;
 import com.tradepass.module.identity.api.permission.AccessControlOperations;
 import com.tradepass.module.identity.api.permission.AccessControlOperations.*;
 import com.tradepass.framework.audit.core.AuditLogService;
@@ -29,7 +28,6 @@ import com.tradepass.module.contract.api.contract.ContractReader.*;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -59,12 +57,9 @@ public class BilateralActionServiceImpl implements BilateralActionService {
     private final ReconciliationAccountOperations reconciliationAccountService;
     private final SalesOrderInventoryService inventoryService;
     private final ApprovalService approvalService;
-    private ContractAbolishRecoveryOperations abolishRecoveryService;
 
-    @Autowired
-    public void setAbolishRecoveryService(ContractAbolishRecoveryOperations service) {
-        this.abolishRecoveryService = service;
-    }
+    // Retained for callers compiled against the former provider recovery flow.
+    public void setAbolishRecoveryService(ContractAbolishRecoveryOperations service) { }
 
     public BilateralActionServiceImpl(JdbcTemplate jdbc,
                                   ContractReader contractMapper,
@@ -223,9 +218,6 @@ public class BilateralActionServiceImpl implements BilateralActionService {
                 WHERE contract_id = ? AND status = 'PENDING'
                 """, Long.class, contract.getId());
         if (count != null && count > 0) throw new BusinessException("合同正在等待双方处理，暂不允许修改");
-        if (hasElectronicAbolishApproval(contract.getId())) {
-            throw new BusinessException("合同正在签署作废协议，暂不允许修改");
-        }
     }
 
     public boolean isContractReadOnly(TradeContractRespDTO contract) {
@@ -235,7 +227,7 @@ public class BilateralActionServiceImpl implements BilateralActionService {
                 SELECT COUNT(1) FROM bilateral_action_request
                 WHERE contract_id = ? AND status = 'PENDING'
                 """, Long.class, contract.getId());
-        return count != null && count > 0 || hasElectronicAbolishApproval(contract.getId());
+        return count != null && count > 0;
     }
 
     private void validateRequest(Target target, String actionType, boolean riskConfirmed) {
@@ -246,14 +238,7 @@ public class BilateralActionServiceImpl implements BilateralActionService {
             throw new BusinessException("该合同已有待处理的双方申请，请处理完成后再操作");
         }
         if (RESUME.equals(actionType)) {
-            if (!CONTRACT.equals(target.bizType()) || !"ACTIVE".equals(target.status())
-                    || !hasElectronicAbolishApproval(target.contract().getId())) {
-                throw new BusinessException("仅已同意作废、尚未完成作废签署的合同可以申请恢复履约");
-            }
-            return;
-        }
-        if (hasElectronicAbolishApproval(target.contract().getId())) {
-            throw new BusinessException("合同已进入作废协议签署，不能再发起其他处理");
+            throw new BusinessException("合同作废经双方同意后立即生效，不支持恢复履约；待确认的作废申请可由申请人撤回");
         }
         if (END.equals(actionType)) {
             if (!CONTRACT.equals(target.bizType())) throw new BusinessException("仅合同可以申请结束");
@@ -265,24 +250,28 @@ public class BilateralActionServiceImpl implements BilateralActionService {
         if (!VOID.equals(actionType)) throw new BusinessException("申请类型不正确");
         if (CONTRACT.equals(target.bizType())) {
             if (!"ACTIVE".equals(target.status())) throw new BusinessException("仅履约中的合同可以申请作废");
-            long effectiveChildren = count("""
-                    SELECT COUNT(1) FROM business_document
-                    WHERE contract_id = ? AND deleted_at IS NULL
-                      AND status IN ('DRAFT', 'ISSUED', 'REJECTED', 'ACKNOWLEDGED', 'INBOUNDED')
-                    """, target.contract().getId()) + count("""
-                    SELECT COUNT(1) FROM contract_attachment
-                    WHERE contract_id = ? AND deleted_at IS NULL
-                      AND category IN ('PAYMENT_VOUCHER', 'INVOICE')
-                      AND status IN ('PENDING_CONFIRMATION', 'REJECTED', 'APPROVED')
-                    """, target.contract().getId());
-            if (effectiveChildren > 0) {
-                throw new BusinessException("合同仍有未清理的单据、发票或转款凭证，请先撤回、删除或作废后再处理合同");
-            }
+            requireNoEffectiveChildren(target.contract().getId());
         } else if (ATTACHMENT.equals(target.bizType()) && !"APPROVED".equals(target.status())) {
             throw new BusinessException("仅已通过的资料可以申请作废");
         } else if (BUSINESS_DOCUMENT.equals(target.bizType())
                 && !List.of("ACKNOWLEDGED", "INBOUNDED").contains(target.status())) {
             throw new BusinessException("仅已确认的单据可以申请作废");
+        }
+    }
+
+    private void requireNoEffectiveChildren(Long contractId) {
+        long effectiveChildren = count("""
+                    SELECT COUNT(1) FROM business_document
+                    WHERE contract_id = ? AND deleted_at IS NULL
+                      AND status IN ('DRAFT', 'ISSUED', 'REJECTED', 'ACKNOWLEDGED', 'INBOUNDED')
+                    """, contractId) + count("""
+                    SELECT COUNT(1) FROM contract_attachment
+                    WHERE contract_id = ? AND deleted_at IS NULL
+                      AND category IN ('PAYMENT_VOUCHER', 'INVOICE')
+                      AND status IN ('PENDING_CONFIRMATION', 'REJECTED', 'APPROVED')
+                    """, contractId);
+        if (effectiveChildren > 0) {
+            throw new BusinessException("合同仍有未清理的单据、发票或转款凭证，请先撤回、删除或作废后再处理合同");
         }
     }
 
@@ -308,20 +297,10 @@ public class BilateralActionServiceImpl implements BilateralActionService {
         LocalDateTime approvedAt = LocalDateTime.now();
         if (CONTRACT.equals(action.bizType())) {
             if (RESUME.equals(action.actionType())) {
-                if (abolishRecoveryService == null) throw new BusinessException("恢复履约服务暂不可用");
-                abolishRecoveryService.resumeAfterBilateralApproval(action.contractId());
-                return;
+                throw new BusinessException("合同作废后不支持恢复履约，请拒绝或撤回该历史恢复申请");
             }
             if (END.equals(action.actionType())) requireNoUnfinishedChildren(action.contractId());
-            if (VOID.equals(action.actionType())) {
-                Long electronicTaskCount = contractState != null ? contractState.electronicTaskCount(action.contractId()) : jdbc.queryForObject("""
-                        SELECT COUNT(1) FROM fadada_contract_sign_task
-                        WHERE contract_id = ? AND sign_task_id IS NOT NULL
-                        """, Long.class, action.contractId());
-                // New electronically signed contracts continue into the provider abolish task.
-                // Historical contracts keep the original local bilateral void behavior.
-                if (electronicTaskCount != null && electronicTaskCount > 0) return;
-            }
+            if (VOID.equals(action.actionType())) requireNoEffectiveChildren(action.contractId());
             String nextStatus = VOID.equals(action.actionType()) ? "VOIDED" : "COMPLETED";
             int updated = contractState != null ? contractState.changeActiveStatus(action.bizId(), nextStatus) : jdbc.update("""
                     UPDATE trade_contract SET status = ?, updated_at = CURRENT_TIMESTAMP
@@ -478,26 +457,6 @@ public class BilateralActionServiceImpl implements BilateralActionService {
             accessControlService.requireAnyPermission(companyId,
                     "contract_sign", "order_create", "sales_order_receive", "inventory_receive");
         }
-    }
-
-    private boolean hasElectronicAbolishApproval(Long contractId) {
-        if (contractState != null) {
-            return count("""
-                    SELECT COUNT(1) FROM bilateral_action_request
-                    WHERE contract_id = ? AND biz_type = 'CONTRACT' AND action_type = 'VOID' AND status = 'APPROVED'
-                    """, contractId) > 0 && contractState.electronicTaskCount(contractId) > 0;
-        }
-        return count("""
-                SELECT COUNT(1)
-                FROM bilateral_action_request action_request
-                INNER JOIN fadada_contract_sign_task sign_task
-                    ON sign_task.contract_id = action_request.contract_id
-                   AND sign_task.sign_task_id IS NOT NULL
-                WHERE action_request.contract_id = ?
-                  AND action_request.biz_type = 'CONTRACT'
-                  AND action_request.action_type = 'VOID'
-                  AND action_request.status = 'APPROVED'
-                """, contractId) > 0;
     }
 
     private long count(String sql, Long contractId) {
