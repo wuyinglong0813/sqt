@@ -3,7 +3,7 @@
     "_postman_id": "204ae71a-3925-4d98-a54b-1be4060408c9",
     "name": "商签通企业入驻｜逐步请求与结果（2026-10-20）",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "按当前仓库源码整理。A 是小程序实际业务流程，B 是法大大原始查询，C 是恢复/可选入口，D 是法大大原始授权模板。先导入配套 Environment 并选中，再逐条点击 Send；每条发送后看 Body / Visualize / Test Results。Examples 全为结构示例，没有冒充实时结果。创建、绑定、认证、同步及切换会保存业务状态。人工实名和企业授权需本人在服务页面完成；此集合每次只执行一条，不连续跑完整 Runner。凭据全部留空；签名与 SDK 5.8.7.0428.3 一致。A 文件夹无需法大大密钥，B/D 文件夹才需要。"
+    "description": "按当前仓库源码整理。A 是小程序实际业务流程，B 是法大大原始查询，C 是恢复/可选入口，D 是法大大原始授权模板，E 是已入驻企业的法人自主认领（无需邀请）。先导入配套 Environment 并选中，再逐条点击 Send；每条发送后看 Body / Visualize / Test Results。Examples 全为结构示例，没有冒充实时结果。创建、绑定、认证、同步及切换会保存业务状态。人工实名和企业授权需本人在服务页面完成；此集合每次只执行一条，不连续跑完整 Runner。凭据全部留空；签名与 SDK 5.8.7.0428.3 一致。A 文件夹无需法大大密钥，B/D 文件夹才需要。"
   },
   "auth": {
     "type": "noauth"
@@ -99,6 +99,7 @@
           "  let next = '查看 Body 的完整返回，并阅读当前请求 Description 中的判断条件。';",
           "  if (!ok) next = '接口业务失败。先看 message/msg，不继续依赖该结果的步骤。';",
           "  else if (state === 'VERIFIED') next = '当前身份已确认；企业流程仍需检查成员激活及切换企业。';",
+          "  else if (state === 'REVIEW_REQUIRED') next = '尚缺本人法人证明，不会开通法人权限；查看 data.message。此接口不发起新刷脸。';",
           "  else if (state === 'IDENTITY_VERIFICATION_REQUIRED') next = '已有企业授权，但本人企业身份依据不足。执行 A09 查看 failureReason。';",
           "  else if (state === 'AUTHORIZATION_REQUIRED') next = '仍需企业超管完成授权；空链接不能视为成功。';",
           "  else if (data.url || data.authUrl) next = '用对应服务页面办理认证/授权，完成后执行同步请求。';",
@@ -106,7 +107,7 @@
           "  const summary = {",
           "    request: pm.info.requestName, http: pm.response.code, code: String(result.code),",
           "    message: result.message || result.msg || '', state,",
-          "    reason: data.failureReason || (data.identity && data.identity.failureReason) || '', next,",
+          "    reason: data.failureReason || data.message || (data.identity && data.identity.failureReason) || '', next,",
           "    requestId: pm.response.headers.get('X-FASC-Request-Id') || result.requestId || ''",
           "  };",
           "  // 不把完整实名响应、令牌、手机号或证件号写入 Console。",
@@ -119,7 +120,7 @@
   "item": [
     {
       "name": "A 商签通接口：按入驻顺序逐条发送",
-      "description": "从 A01 开始，已实名可跳过 A03/A04；未通过 A09 不切换企业。除 A11 外不发送 X-Company-Id。",
+      "description": "从 A01 开始，已实名可跳过 A03/A04；未通过 A09 不切换企业。A11/A12 带 X-Company-Id；已正式开通企业的法人认领使用 E 文件夹。",
       "item": [
         {
           "name": "A01 当前登录人：确认账号与手机号",
@@ -833,7 +834,7 @@
               }
             ],
             "url": "{{tradepass_base_url}}/me/switch-company",
-            "description": "仅在本地企业认证 VERIFIED、当前成员已激活后发送；这会更新账号当前企业。看 data.user.currentCompanyId、data.member.memberStatus、roleCode。LEGAL 是法人，ADMIN 是管理员，不因企业认证成功自动认定为 LEGAL。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "description": "认证通过且成员 ACTIVE 后，返回所选企业的当前账号信息。此接口不授予新角色，也不持久保存服务端会话中的企业选择；后续企业请求继续发送 X-Company-Id: {{company_id}}。看 data.user.currentCompanyId 和 data.member.roleCode/memberStatus。",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"companyId\": \"{{company_id}}\"\n}",
@@ -874,10 +875,14 @@
               {
                 "key": "Authorization",
                 "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}"
               }
             ],
             "url": "{{tradepass_base_url}}/me",
-            "description": "最终看 currentCompanyId 是否等于 company_id、company.certificationStatus 是否 VERIFIED、member.memberStatus 是否 ACTIVE，并检查 member.roleCode。LEGAL_CANDIDATE 或 PENDING 仍未开通。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。"
+            "description": "带 X-Company-Id 查询本次企业，确认 data.user.currentCompanyId、data.company.certificationStatus 和 data.member.roleCode/memberStatus。"
           },
           "response": [],
           "event": [
@@ -1321,7 +1326,7 @@
           "response": []
         },
         {
-          "name": "C03 可选：查看法人身份既有记录",
+          "name": "C03 可选：法人自主认领（无需成员邀请）",
           "request": {
             "method": "POST",
             "header": [
@@ -1335,7 +1340,7 @@
               }
             ],
             "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/legal-representative/sync",
-            "description": "已有企业成员申请法人身份时使用，需要相应成员/认领资格；不是首次入驻必经接口。仅同步现有可靠记录，不会启动法人刷脸。看 status=VERIFIED 或 REVIEW_REQUIRED/IN_PROGRESS 及 message。\n\n点击 Send 后：Body 看原始结果；Visualize 看当前状态与下一步；Test Results 看 HTTP 和业务码。",
+            "description": "已正式开通企业的法人使用本人 Token 发起；先确保个人实名 VERIFIED，不要求已经是企业成员，也无需管理员邀请或审批。只有服务端实时证据将本人和本企业 legal_rep 关联后，才创建或激活 LEGAL/ACTIVE 成员；已有其他 ACTIVE 法人须另行办理变更。VERIFIED 才可切换企业，REVIEW_REQUIRED/IN_PROGRESS 不会开通权限。本接口同步既有可信记录，不会发起新的法人刷脸；法大大仅有他人代理人记录时仍需补充本人法人证明。",
             "body": {
               "mode": "raw",
               "raw": "{}",
@@ -1432,6 +1437,146 @@
                   "const r = pm.response.json();",
                   "if (String(r.code) === '100000' && r.data) {",
                   "  const mapping = {\"provider_company_auth_url\": \"authUrl\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "E 已入驻企业：法人自主认领（无需邀请）",
+      "description": "使用法人自己的商签通 Token。个人实名通过后 E01查找→手动选择company_id→E02核验→VERIFIED后E03/E04。认领不新增另一家企业，不要求现管理员邀请；法大大证据不足时仍待核验。",
+      "item": [
+        {
+          "name": "E01 法人查找已入驻企业",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/companies/search?keyword={{credit_code}}",
+            "description": "使用法人自己的 Token，先完成 A01-A04 的个人实名检查。按信用代码查找已正式入驻企业，只返回企业 ID、名称和脱敏信用代码。核对目标后手动把 data[i].id 填入 company_id；不自动选中结果，不修改企业资料，不发送 A05/A06。"
+          },
+          "response": []
+        },
+        {
+          "name": "E02 本人法人核验并认领企业",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/fadada/companies/{{company_id}}/legal-representative/sync",
+            "description": "已正式开通企业的法人使用本人 Token 发起；先确保个人实名 VERIFIED，不要求已经是企业成员，也无需管理员邀请或审批。只有服务端实时证据将本人和本企业 legal_rep 关联后，才创建或激活 LEGAL/ACTIVE 成员；已有其他 ACTIVE 法人须另行办理变更。VERIFIED 才可切换企业，REVIEW_REQUIRED/IN_PROGRESS 不会开通权限。本接口同步既有可信记录，不会发起新的法人刷脸；法大大仅有他人代理人记录时仍需补充本人法人证明。",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "E03 认领通过后进入企业",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/me/switch-company",
+            "description": "仅当 E02 的 data.status=VERIFIED 后执行。看 data.member.roleCode=LEGAL、memberStatus=ACTIVE；企业已有管理员继续保留。后续请求仍发送 X-Company-Id。",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"companyId\": \"{{company_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"current_company_id\": \"user.currentCompanyId\", \"member_status\": \"member.memberStatus\", \"current_role\": \"member.roleCode\"};",
+                  "  for (const [key, path] of Object.entries(mapping)) {",
+                  "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
+                  "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",
+                  "    else pm.environment.unset(key);",
+                  "  }",
+                  "  ",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "E04 核对本人法人身份与权限",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "{{tradepass_token}}"
+              },
+              {
+                "key": "X-Company-Id",
+                "value": "{{company_id}}"
+              }
+            ],
+            "url": "{{tradepass_base_url}}/me",
+            "description": "带 X-Company-Id 查询本次企业，确认 data.user.currentCompanyId、data.company.certificationStatus 和 data.member.roleCode/memberStatus。"
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const r = pm.response.json();",
+                  "if (r.code === 0 && r.data) {",
+                  "  const mapping = {\"current_company_id\": \"user.currentCompanyId\", \"member_status\": \"member.memberStatus\", \"current_role\": \"member.roleCode\"};",
                   "  for (const [key, path] of Object.entries(mapping)) {",
                   "    const value = path.split('.').reduce((item, field) => item == null ? undefined : item[field], r.data);",
                   "    if (value !== undefined && value !== null && value !== '') pm.environment.set(key, String(value));",

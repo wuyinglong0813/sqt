@@ -160,8 +160,8 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
             // newly proven LEGAL evidence. Preserve its history and all later role settings.
             if (role == CertifiedApplicantRole.LEGAL && application.getReviewReason() != null
                     && ADMIN_APPROVAL_REASONS.contains(application.getReviewReason())) {
-                // Both automatic recovery and the explicit sync page share one claim ID.
-                // Switching entry points must not bypass a later revocation of that claim.
+                // Automatic supplementation keeps one stable claim ID, so replaying the
+                // original ADMIN approval cannot bypass a later revocation of that claim.
                 completeLegalClaim(companyId, applicantUserId, "FDD-LEGAL-" + companyId + "-" + applicantUserId);
                 return;
             }
@@ -200,12 +200,22 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
         return application;
     }
 
-    /** The caller must hold the company lock for the check and the subsequent provider-backed promotion. */
+    /** Eligibility only. No membership is created until the caller proves this person's current LEGAL identity. */
+    @Transactional
     public void requireLegalClaim(long companyId, long userId) {
+        CompanyDO company = requireCompany(companyId);
+        if (!"VERIFIED".equals(company.getCertificationStatus())) {
+            throw new BusinessException("请先完成企业认证，再办理独立法人认领");
+        }
+        requireVacantLegalPosition(companyId, userId);
+    }
+
+    /** Historical automatic supplementation must never restore a removed member. */
+    private void requireLegacyActiveLegalClaim(long companyId, long userId) {
         requireCompany(companyId);
         if (companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, companyId).eq(CompanyMemberDO::getUserId, userId)
-                .eq(CompanyMemberDO::getStatus, "ACTIVE")) != 1) {
+                .eq(CompanyMemberDO::getStatus, "ACTIVE").last("FOR UPDATE")) != 1) {
             throw new BusinessException("请先通过企业成员邀请加入本企业，并等待管理员审批");
         }
         requireVacantLegalPosition(companyId, userId);
@@ -216,7 +226,8 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
                 .eq(CompanyMemberDO::getCompanyId, companyId).ne(CompanyMemberDO::getUserId, userId)
                 .eq(CompanyMemberDO::getStatus, "ACTIVE")
                 .and(q -> q.eq(CompanyMemberDO::getRoleCode, "LEGAL").or().eq(CompanyMemberDO::getIsLegalPerson, true)
-                        .or().apply("JSON_CONTAINS(role_codes, JSON_QUOTE({0}))", "LEGAL"))) > 0) {
+                        .or().apply("JSON_CONTAINS(role_codes, JSON_QUOTE({0}))", "LEGAL"))
+                .last("FOR UPDATE")) > 0) {
             throw new BusinessException("本企业已有法人，请联系现法人办理变更，不能通过补充核验替换");
         }
     }
@@ -224,7 +235,7 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
     /** Called only after current provider evidence uniquely links this account to the legal representative. */
     @Transactional
     public void completeLegalClaim(long companyId, long userId, String providerRequestId) {
-        requireLegalClaim(companyId, userId);
+        requireLegacyActiveLegalClaim(companyId, userId);
         CompanyCertificationApplicationDO application = requireProviderApplication(companyId, userId, providerRequestId);
         if (!List.of("SUBMITTED", "REJECTED", "APPROVED").contains(application.getStatus())) {
             throw new BusinessException("企业认证申请状态无效，请联系管理员核验");
@@ -239,6 +250,70 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
             auditLogService.logAs(companyId, userId, "COMPANY_CERTIFICATION", application.getId(),
                     "LEGAL_CLAIM", "认证服务已核实法人身份及本人账号；保留既有角色和自定义权限");
         }
+    }
+
+    /** Invoked only by the explicit claim path after fresh provider evidence proves LEGAL for this exact user. */
+    @Transactional
+    public void completeIndependentLegalClaim(long companyId, long userId, String providerRequestId) {
+        requireLegalClaim(companyId, userId);
+        CompanyMemberDO member = companyMemberMapper.selectOne(new LambdaQueryWrapper<CompanyMemberDO>()
+                .eq(CompanyMemberDO::getCompanyId, companyId).eq(CompanyMemberDO::getUserId, userId)
+                .last("LIMIT 1 FOR UPDATE"));
+        if (member != null && "ACTIVE".equals(member.getStatus()) && "LEGAL".equals(member.getRoleCode())
+                && Boolean.TRUE.equals(member.getIsLegalPerson())) {
+            markCompanyVerified(companyId);
+            return;
+        }
+        CompanyCertificationApplicationDO application = requireProviderApplication(companyId, userId, providerRequestId);
+        if ("APPROVED".equals(application.getStatus())) {
+            throw new BusinessException("该次法人核验已完成，但成员身份已变更，请重新办理独立核验");
+        }
+        if (!List.of("SUBMITTED", "REJECTED").contains(application.getStatus())) {
+            throw new BusinessException("企业认证申请状态无效，请联系管理员核验");
+        }
+        if (member == null) {
+            member = new CompanyMemberDO();
+            member.setCompanyId(companyId); member.setUserId(userId);
+            member.setRoleCode("LEGAL"); member.setRoleCodes("[\"LEGAL\"]"); member.setStatus("ACTIVE");
+            member.setIsLegalPerson(true); member.setIsAdministrator(false);
+            try {
+                if (companyMemberMapper.insert(member) != 1) throw new BusinessException("成员状态已变化，请刷新后重新核验");
+            } catch (org.springframework.dao.DuplicateKeyException conflict) {
+                throw new BusinessException("成员状态已变化，请刷新后重新核验");
+            }
+        } else {
+            LinkedHashSet<String> roles = new LinkedHashSet<>();
+            if (member.getRoleCode() != null && !member.getRoleCode().isBlank()) roles.add(member.getRoleCode());
+            try {
+                if (member.getRoleCodes() != null && !member.getRoleCodes().isBlank()) {
+                    List<String> existing = objectMapper.readValue(member.getRoleCodes(), new TypeReference<>() { });
+                    if (existing == null || existing.stream().anyMatch(code -> code == null || code.isBlank())) {
+                        throw new IllegalArgumentException();
+                    }
+                    roles.addAll(existing);
+                }
+                roles.remove("LEGAL_CANDIDATE"); roles.remove("GUEST"); roles.add("LEGAL");
+            } catch (Exception invalid) {
+                throw new BusinessException("成员角色配置格式错误，请联系管理员核验");
+            }
+            String roleCodes;
+            try { roleCodes = objectMapper.writeValueAsString(roles); }
+            catch (Exception invalid) { throw new BusinessException("成员角色配置格式错误，请联系管理员核验"); }
+            int changed = companyMemberMapper.update(new LambdaUpdateWrapper<CompanyMemberDO>()
+                    .eq(CompanyMemberDO::getId, member.getId())
+                    .eq(CompanyMemberDO::getCompanyId, companyId).eq(CompanyMemberDO::getUserId, userId)
+                    .eq(CompanyMemberDO::getStatus, member.getStatus())
+                    .eq(CompanyMemberDO::getRoleCode, member.getRoleCode())
+                    .apply("COALESCE(role_codes, JSON_ARRAY()) = CAST({0} AS JSON)",
+                            member.getRoleCodes() == null ? "[]" : member.getRoleCodes())
+                    .set(CompanyMemberDO::getRoleCode, "LEGAL").set(CompanyMemberDO::getRoleCodes, roleCodes)
+                    .set(CompanyMemberDO::getStatus, "ACTIVE").set(CompanyMemberDO::getIsLegalPerson, true));
+            if (changed != 1) throw new BusinessException("成员状态已变化，请刷新后重新核验");
+        }
+        markCompanyVerified(companyId);
+        finish(application, "APPROVED", "企业法人本人已通过独立核验并认领企业");
+        auditLogService.logAs(companyId, userId, "COMPANY_CERTIFICATION", application.getId(),
+                "LEGAL_CLAIM", "认证服务已独立核实法人本人；创建或激活本人成员，保留既有成员和权限");
     }
 
     private boolean promoteActiveLegalMember(long companyId, long userId, boolean allowPromotion) {

@@ -421,7 +421,7 @@ class FadadaCompanyVerificationTest {
         AuthContext.set(7L, 3L);
         try {
             assertThat(f.service.syncLegalRepresentative(3L).status()).isEqualTo("VERIFIED");
-            verify(f.certifications).completeLegalClaim(3L, 7L, "FDD-LEGAL-3-7");
+            verify(f.certifications).completeIndependentLegalClaim(eq(3L), eq(7L), matches("FDD-LEGAL-[a-f0-9]{32}"));
             assertThat(f.identity.getOperatorType()).isEqualTo("legal_rep");
         } finally { AuthContext.clear(); }
     }
@@ -437,7 +437,7 @@ class FadadaCompanyVerificationTest {
         AuthContext.set(7L, 3L);
         try {
             assertThat(f.service.syncLegalRepresentative(3L).status()).isEqualTo("REVIEW_REQUIRED");
-            verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
+            verify(f.certifications, never()).completeIndependentLegalClaim(anyLong(), anyLong(), anyString());
         } finally { AuthContext.clear(); }
     }
 
@@ -911,7 +911,7 @@ class FadadaCompanyVerificationTest {
         AuthContext.set(9L, 3L);
         try {
             assertThat(f.service.syncLegalRepresentative(3L).status()).isEqualTo("IN_PROGRESS");
-            verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
+            verify(f.certifications, never()).completeIndependentLegalClaim(anyLong(), anyLong(), anyString());
         } finally { AuthContext.clear(); }
     }
 
@@ -1224,7 +1224,7 @@ class FadadaCompanyVerificationTest {
         try {
             var result = f.service.syncLegalRepresentative(3L);
             assertThat(result.status()).isEqualTo("deputy_auth".equals(type) ? "REVIEW_REQUIRED" : "IN_PROGRESS");
-            verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
+            verify(f.certifications, never()).completeIndependentLegalClaim(anyLong(), anyLong(), anyString());
             assertThat(f.identity.getApplicantUserId()).isEqualTo(7L);
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
     }
@@ -1243,7 +1243,7 @@ class FadadaCompanyVerificationTest {
             assertThat(result.status()).isEqualTo("REVIEW_REQUIRED");
             assertThat(result.message()).contains("企业管理身份已确认", "尚无可确认", "联系平台支持")
                     .doesNotContain("当前认证记录为授权经办人", "选择法人本人认证");
-            verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
+            verify(f.certifications, never()).completeIndependentLegalClaim(anyLong(), anyLong(), anyString());
             verify(f.gateway, never()).createAuthUrl(any());
             verify(f.gateway, never()).createIdentityChangeUrl(any(), any(), any());
             assertThat(f.identity.getLocalStatus()).isEqualTo("VERIFIED");
@@ -1260,7 +1260,7 @@ class FadadaCompanyVerificationTest {
         com.tradepass.framework.common.core.AuthContext.set(9L, 3L);
         try {
             assertThat(f.service.syncLegalRepresentative(3L).status()).isEqualTo("VERIFIED");
-            verify(f.certifications).completeLegalClaim(3L, 9L, "FDD-LEGAL-3-9");
+            verify(f.certifications).completeIndependentLegalClaim(eq(3L), eq(9L), matches("FDD-LEGAL-[a-f0-9]{32}"));
             assertThat(f.identity.getApplicantUserId()).isEqualTo(7L);
             assertThat(f.identity.getAuthorizationUserId()).isEqualTo(9L);
             assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
@@ -1269,16 +1269,57 @@ class FadadaCompanyVerificationTest {
     }
 
     @Test
-    void legalClaimDoesNotCallProviderForAnUnapprovedMemberOrOccupiedLegalRole() {
+    void legalClaimDoesNotCallProviderWhenAnotherLegalRepresentativeAlreadyExists() {
         var f = new Fixture();
-        doThrow(new com.tradepass.framework.common.exception.BusinessException("请先通过企业成员邀请加入本企业"))
+        doThrow(new com.tradepass.framework.common.exception.BusinessException("本企业已有法人，请办理法人变更"))
                 .when(f.certifications).requireLegalClaim(3L, 9L);
         com.tradepass.framework.common.core.AuthContext.set(9L, 3L);
         try {
-            assertThatThrownBy(() -> f.service.createLegalRepresentativeUrl(3L)).hasMessageContaining("成员邀请");
-            assertThatThrownBy(() -> f.service.syncLegalRepresentative(3L)).hasMessageContaining("成员邀请");
+            assertThatThrownBy(() -> f.service.createLegalRepresentativeUrl(3L)).hasMessageContaining("已有法人");
+            assertThatThrownBy(() -> f.service.syncLegalRepresentative(3L)).hasMessageContaining("已有法人");
             verifyNoInteractions(f.gateway);
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
+    }
+
+    @Test
+    void aVerifiedLegalPersonWithoutMembershipCanClaimUsingTheirOwnToken() {
+        var f = new Fixture(false);
+        f.company.setCertificationStatus("VERIFIED");
+        f.identity.setLocalStatus("VERIFIED"); f.identity.setOpenCorpId("corp-3");
+        f.documentedOperator("legal_rep", "open-user-9");
+        when(f.personal.verifiedOpenUserId(9L)).thenReturn("open-user-9");
+        when(f.personal.verifiedPerson(9L)).thenReturn(new FadadaPersonalIdentityService.VerifiedPerson(
+                "open-user-9", "person-9", "张三"));
+        AuthContext.set(9L, null);
+        try {
+            var result = f.service.syncLegalRepresentative(3L);
+            assertThat(result.status()).isEqualTo("VERIFIED");
+            var order = inOrder(f.personal, f.gateway, f.certifications);
+            order.verify(f.certifications).requireLegalClaim(3L, 9L);
+            order.verify(f.personal).requireCurrentVerified();
+            order.verify(f.gateway).getCompany("local-3", "corp-3");
+            order.verify(f.gateway).getIdentity("corp-3");
+            order.verify(f.personal).verifiedOpenUserId(9L);
+            order.verify(f.personal).verifiedPerson(9L);
+            order.verify(f.certifications).completeIndependentLegalClaim(eq(3L), eq(9L), matches("FDD-LEGAL-[a-f0-9]{32}"));
+            assertThat(f.identity.getAuthorizationUserId()).isEqualTo(9L);
+            assertThat(f.identity.getApplicantUserId()).isEqualTo(7L);
+            verifyNoInteractions(f.accessControl);
+            verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void anUnverifiedNonMemberCannotReachEnterpriseProviderQueriesOrObtainMembership() {
+        var f = new Fixture();
+        doThrow(new BusinessException("请先完成个人实名认证")).when(f.personal).requireCurrentVerified();
+        AuthContext.set(9L, null);
+        try {
+            assertThatThrownBy(() -> f.service.syncLegalRepresentative(3L)).hasMessageContaining("个人实名");
+            verifyNoInteractions(f.gateway);
+            verify(f.certifications, never()).completeIndependentLegalClaim(anyLong(), anyLong(), anyString());
+            assertThat(f.identity.getAuthorizationUserId()).isNull();
+        } finally { AuthContext.clear(); }
     }
 
     @Test
@@ -1294,7 +1335,7 @@ class FadadaCompanyVerificationTest {
         try {
             assertThatThrownBy(() -> f.service.createLegalRepresentativeUrl(3L)).hasMessageContaining("尚未返回经办人身份");
             verify(f.gateway, never()).createIdentityChangeUrl(any(), any(), any());
-            verify(f.certifications, never()).completeLegalClaim(anyLong(), anyLong(), anyString());
+            verify(f.certifications, never()).completeIndependentLegalClaim(anyLong(), anyLong(), anyString());
         } finally { com.tradepass.framework.common.core.AuthContext.clear(); }
     }
 

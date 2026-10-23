@@ -428,10 +428,180 @@ class CompanyCertificationServiceTest {
     }
 
     @Test
-    void onlyApprovedMembersCanClaimVacantLegalPosition() {
-        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+    void verifiedEnterpriseAllowsIndependentEligibilityWithoutInvitationOrMembershipWrites() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(verifiedCompany());
         when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
-        assertThatThrownBy(() -> service(false, "").requireLegalClaim(3L, 7L)).hasMessageContaining("成员邀请");
+
+        service(false, "").requireLegalClaim(3L, 7L);
+
+        var order = inOrder(companyMapper, memberMapper);
+        order.verify(companyMapper).selectByIdForUpdate(3L);
+        order.verify(memberMapper).selectCount(argThat((Wrapper<CompanyMemberDO> query) -> {
+            assertThat(query.getSqlSegment()).contains("user_id <>", "FOR UPDATE", "JSON_CONTAINS");
+            var lambda = (LambdaQueryWrapper<CompanyMemberDO>) query;
+            assertThat(lambda.getParamNameValuePairs().values()).contains(3L, 7L, "ACTIVE", "LEGAL", true);
+            return true;
+        }));
+        verify(memberMapper, never()).insert(any(CompanyMemberDO.class));
+        verify(memberMapper, never()).update(any(Wrapper.class));
+        verifyNoInteractions(applicationMapper, tenantBootstrapService, accessControlService, auditLogService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PENDING", "PENDING_REVIEW", "CANCELLED", "REJECTED"})
+    void independentClaimRequiresFormalVerifiedStatusEvenIfOldMembersExist(String status) {
+        var company = company();
+        company.setCertificationStatus(status);
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+        when(onboardingAttempts.isEstablished(company)).thenReturn(true);
+
+        assertThatThrownBy(() -> managedService(false, "").completeIndependentLegalClaim(3L, 7L, "fresh-claim"))
+                .hasMessageContaining("请先完成企业认证");
+
+        verifyNoInteractions(memberMapper, applicationMapper, tenantBootstrapService, auditLogService);
+        verify(companyMapper, never()).update(any(Wrapper.class));
+    }
+
+    @Test
+    void independentlyProvenNonmemberCanCreateOnlyTheirOwnActiveLegalMembership() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(verifiedCompany());
+        when(memberMapper.insert(any(CompanyMemberDO.class))).thenReturn(1);
+
+        service(false, "").completeIndependentLegalClaim(3L, 7L, "fresh-claim");
+
+        var order = inOrder(companyMapper, memberMapper, applicationMapper);
+        order.verify(companyMapper).selectByIdForUpdate(3L);
+        order.verify(memberMapper).selectCount(argThat((Wrapper<CompanyMemberDO> query) ->
+                query.getSqlSegment().contains("FOR UPDATE")));
+        order.verify(memberMapper).selectOne(argThat((Wrapper<CompanyMemberDO> query) -> {
+            assertThat(query.getSqlSegment()).contains("LIMIT 1 FOR UPDATE");
+            var lambda = (LambdaQueryWrapper<CompanyMemberDO>) query;
+            assertThat(lambda.getParamNameValuePairs().values()).contains(3L, 7L);
+            return true;
+        }));
+        order.verify(applicationMapper).selectOne(argThat((Wrapper<CompanyCertificationApplicationDO> query) ->
+                query.getSqlSegment().contains("FOR UPDATE")));
+        verify(memberMapper).insert(argThat((CompanyMemberDO member) ->
+                member.getCompanyId() == 3L && member.getUserId() == 7L
+                        && "LEGAL".equals(member.getRoleCode()) && "[\"LEGAL\"]".equals(member.getRoleCodes())
+                        && "ACTIVE".equals(member.getStatus()) && Boolean.TRUE.equals(member.getIsLegalPerson())
+                        && Boolean.FALSE.equals(member.getIsAdministrator())));
+        verify(applicationMapper).insert(argThat((CompanyCertificationApplicationDO application) ->
+                application.getCompanyId() == 3L && application.getApplicantUserId() == 7L
+                        && "fresh-claim".equals(application.getProviderRequestId())
+                        && "APPROVED".equals(application.getStatus())));
+        verify(memberMapper, never()).update(any(Wrapper.class));
+        verifyNoInteractions(tenantBootstrapService, accessControlService);
+        verify(auditLogService).logAs(3L, 7L, "COMPANY_CERTIFICATION", 18L, "LEGAL_CLAIM",
+                "认证服务已独立核实法人本人；创建或激活本人成员，保留既有成员和权限");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PENDING", "INACTIVE", "REMOVED", "REJECTED"})
+    void freshIndependentClaimActivatesOnlyThisMemberAndPreservesExistingBusinessPermissions(String status) {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(verifiedCompany());
+        CompanyMemberDO member = activeAdministrator();
+        member.setStatus(status);
+        member.setRoleCode("LEGAL_CANDIDATE");
+        member.setRoleCodes("[\"LEGAL_CANDIDATE\",\"GUEST\",\"FINANCE\",\"CUSTOM_AUDIT\"]");
+        member.setCustomPermissions("[\"order_view\"]");
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(member);
+
+        service(false, "").completeIndependentLegalClaim(3L, 7L, "fresh-claim");
+
+        verify(memberMapper).update(argThat((Wrapper<CompanyMemberDO> wrapper) -> {
+            var update = (com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<CompanyMemberDO>) wrapper;
+            update.getSqlSegment();
+            assertThat(update.getSqlSet()).contains("role_code", "role_codes", "status", "is_legal_person")
+                    .doesNotContain("custom_permissions", "is_administrator");
+            assertThat(update.getParamNameValuePairs().values()).contains(12L, 3L, 7L, status,
+                    "LEGAL_CANDIDATE", "ACTIVE", "LEGAL", member.getRoleCodes(),
+                    "[\"FINANCE\",\"CUSTOM_AUDIT\",\"LEGAL\"]");
+            return true;
+        }));
+        assertThat(member.getCustomPermissions()).isEqualTo("[\"order_view\"]");
+        assertThat(member.getIsAdministrator()).isTrue();
+        verify(memberMapper, never()).insert(any(CompanyMemberDO.class));
+        verifyNoInteractions(tenantBootstrapService, accessControlService);
+    }
+
+    @Test
+    void alreadyActiveLegalClaimIsIdempotentWithoutAnotherApplicationOrAuditRecord() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(verifiedCompany());
+        CompanyMemberDO member = activeAdministrator();
+        member.setRoleCode("LEGAL"); member.setRoleCodes("[\"ADMIN\",\"LEGAL\"]");
+        member.setIsLegalPerson(true); member.setCustomPermissions("[\"order_view\"]");
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(member);
+
+        service(false, "").completeIndependentLegalClaim(3L, 7L, "fresh-claim");
+
+        verify(companyMapper).update(any(Wrapper.class));
+        verify(memberMapper, never()).insert(any(CompanyMemberDO.class));
+        verify(memberMapper, never()).update(any(Wrapper.class));
+        verifyNoInteractions(applicationMapper, auditLogService, tenantBootstrapService, accessControlService);
+        assertThat(member.getRoleCodes()).isEqualTo("[\"ADMIN\",\"LEGAL\"]");
+        assertThat(member.getCustomPermissions()).isEqualTo("[\"order_view\"]");
+        assertThat(member.getIsAdministrator()).isTrue();
+    }
+
+    @Test
+    void independentClaimCannotReplaceAnotherActiveLegalMember() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(verifiedCompany());
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+
+        assertThatThrownBy(() -> service(false, "").completeIndependentLegalClaim(3L, 7L, "fresh-claim"))
+                .hasMessageContaining("本企业已有法人");
+
+        verify(memberMapper, never()).selectOne(any(Wrapper.class));
+        verify(memberMapper, never()).insert(any(CompanyMemberDO.class));
+        verify(memberMapper, never()).update(any(Wrapper.class));
+        verify(companyMapper, never()).update(any(Wrapper.class));
+        verifyNoInteractions(applicationMapper, auditLogService, tenantBootstrapService);
+    }
+
+    @Test
+    void anApprovedHistoricalIndependentClaimCannotRestoreRemovedMembership() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(verifiedCompany());
+        var member = activeAdministrator(); member.setStatus("REMOVED");
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(member);
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(application("APPROVED"));
+
+        assertThatThrownBy(() -> service(false, "").completeIndependentLegalClaim(3L, 7L, "corp-3"))
+                .hasMessageContaining("请重新办理独立核验");
+
+        verify(memberMapper, never()).insert(any(CompanyMemberDO.class));
+        verify(memberMapper, never()).update(any(Wrapper.class));
+        verify(applicationMapper, never()).update(any(Wrapper.class));
+        verify(companyMapper, never()).update(any(Wrapper.class));
+        verifyNoInteractions(auditLogService, tenantBootstrapService);
+    }
+
+    @Test
+    void independentClaimDoesNotCompleteIfConcurrentInsertConflicts() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(verifiedCompany());
+        when(memberMapper.insert(any(CompanyMemberDO.class)))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("member collision"));
+
+        assertThatThrownBy(() -> service(false, "").completeIndependentLegalClaim(3L, 7L, "fresh-claim"))
+                .hasMessageContaining("成员状态已变化");
+
+        verify(applicationMapper, never()).update(any(Wrapper.class));
+        verify(companyMapper, never()).update(any(Wrapper.class));
+        verifyNoInteractions(auditLogService, tenantBootstrapService);
+    }
+
+    @Test
+    void independentClaimDoesNotCompleteIfTargetMembershipCompareAndSetLoses() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(verifiedCompany());
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(activeAdministrator());
+        when(memberMapper.update(any(Wrapper.class))).thenReturn(0);
+
+        assertThatThrownBy(() -> service(false, "").completeIndependentLegalClaim(3L, 7L, "fresh-claim"))
+                .hasMessageContaining("成员状态已变化");
+
+        verify(applicationMapper, never()).update(any(Wrapper.class));
+        verify(companyMapper, never()).update(any(Wrapper.class));
+        verifyNoInteractions(auditLogService, tenantBootstrapService);
     }
 
     @Test
@@ -734,6 +904,12 @@ class CompanyCertificationServiceTest {
         attempt.setStartedAt(LocalDateTime.now().minusMinutes(1));
         attempt.setExpiresAt(LocalDateTime.now().plusMinutes(29));
         return attempt;
+    }
+
+    private CompanyDO verifiedCompany() {
+        CompanyDO company = company();
+        company.setCertificationStatus("VERIFIED");
+        return company;
     }
 
     private CompanyDO company() {

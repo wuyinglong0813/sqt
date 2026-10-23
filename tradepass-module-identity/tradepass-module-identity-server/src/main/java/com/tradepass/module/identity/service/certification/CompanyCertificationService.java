@@ -33,5 +33,7 @@ public interface CompanyCertificationService {
     void completeProviderCertification(long companyId, long applicantUserId, String providerRequestId, String reason, CertifiedApplicantRole role);
     void requireLegalClaim(long companyId, long userId);
     void completeLegalClaim(long companyId, long userId, String providerRequestId);
+    /** Explicit fresh provider-proven LEGAL claim; may create or reactivate this person's membership. */
+    void completeIndependentLegalClaim(long companyId, long userId, String providerRequestId);
     CertificationApplicationRespDTO review(String suppliedToken, CertificationReviewReqVO request);
 }

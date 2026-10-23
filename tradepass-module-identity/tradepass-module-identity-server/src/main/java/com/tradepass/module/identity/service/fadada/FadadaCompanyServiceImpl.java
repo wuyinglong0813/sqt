@@ -285,7 +285,6 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         adoptQueriedBinding(identity, account, detail);
         verifyAccount(identity, account, detail);
         ApplicantRole resolved = null;
-        String requestId = "FDD-LEGAL-" + companyId + "-" + userId;
         String operatorIssue = null;
         try {
             resolved = resolveApplicantRole(identity, account, detail, userId, OperatorEvidence.NONE);
@@ -298,7 +297,11 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                     operatorIssue != null ? operatorIssue
                             : "企业管理身份已确认，但尚无可确认的本人法人身份记录。请联系平台支持补充核验；本页仅同步已有记录，重复刷新不会发起法人刷脸。");
         }
-        certificationService.completeLegalClaim(companyId, userId, requestId);
+        // This is an explicit, freshly verified legal claim. Unlike historical
+        // certification reconciliation it may establish a membership without an
+        // invitation; no local membership is created before the live LEGAL proof.
+        String requestId = "FDD-LEGAL-" + java.util.UUID.randomUUID().toString().replace("-", "");
+        certificationService.completeIndependentLegalClaim(companyId, userId, requestId);
         // Adopt the proven current operator only after legal membership was granted in this transaction.
         // The original application remains in the audit history; future callbacks follow this operator.
         identity.setAuthorizationUserId(userId);

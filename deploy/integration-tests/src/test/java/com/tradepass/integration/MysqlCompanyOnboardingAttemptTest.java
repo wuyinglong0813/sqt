@@ -13,6 +13,10 @@ import com.tradepass.module.identity.dal.mysql.company.CompanyOnboardingAttemptM
 import com.tradepass.module.identity.dal.mysql.certification.CompanyCertificationApplicationMapper;
 import com.tradepass.module.identity.dal.mysql.fadada.FadadaCorpIdentityMapper;
 import com.tradepass.module.identity.service.company.CompanyOnboardingAttemptService;
+import com.tradepass.module.identity.service.company.TenantBootstrapService;
+import com.tradepass.module.identity.service.certification.CompanyCertificationServiceImpl;
+import com.tradepass.module.identity.service.permission.AccessControlService;
+import com.tradepass.framework.audit.core.AuditLogService;
 import com.tradepass.module.identity.service.fadada.FadadaPersonalIdentityService;
 import com.tradepass.support.RepoRoot;
 import org.flywaydb.core.Flyway;
@@ -51,6 +55,7 @@ class MysqlCompanyOnboardingAttemptTest {
     private static TransactionTemplate tx;
     private static CompanyOnboardingAttemptService service;
     private static FadadaCorpIdentityMapper identities;
+    private static CompanyCertificationServiceImpl certifications;
 
     @BeforeAll static void database() throws Exception {
         schema = new Schema("identity");
@@ -75,6 +80,9 @@ class MysqlCompanyOnboardingAttemptTest {
                 sessions.getMapper(CompanyOnboardingAttemptMapper.class), sessions.getMapper(CompanyMemberMapper.class),
                 identities,
                 sessions.getMapper(CompanyCertificationApplicationMapper.class), people);
+        certifications = new CompanyCertificationServiceImpl(sessions.getMapper(CompanyMapper.class),
+                sessions.getMapper(CompanyMemberMapper.class), sessions.getMapper(CompanyCertificationApplicationMapper.class),
+                mock(AccessControlService.class), mock(TenantBootstrapService.class), mock(AuditLogService.class), false, "");
     }
 
     @AfterAll static void closeDatabase() {
@@ -429,6 +437,76 @@ class MysqlCompanyOnboardingAttemptTest {
                     .as("Historical establishment evidence: %s", evidence).isInstanceOf(BusinessException.class);
             assertThat(schema.jdbc.queryForObject("SELECT created_by FROM company WHERE id=?", Long.class, company)).isEqualTo(7);
         }
+    }
+
+    @Test void independentLegalClaimCreatesANonMemberAndPreservesTheExistingAdministrator() {
+        long company = company("VERIFIED", 7);
+        schema.jdbc.update("""
+                INSERT INTO company_member(id,company_id,user_id,role_code,role_codes,status,is_administrator,custom_permissions)
+                VALUES (?,?,7,'ADMIN','["ADMIN"]','ACTIVE',1,'["company_manage"]')
+                """, IDS.incrementAndGet(), company);
+        var admin = schema.jdbc.queryForMap("SELECT * FROM company_member WHERE company_id=? AND user_id=7", company);
+
+        as(9, () -> { certifications.requireLegalClaim(company, 9); return null; });
+        assertThat(schema.jdbc.queryForObject("SELECT COUNT(*) FROM company_member WHERE company_id=? AND user_id=9",
+                Long.class, company)).isZero();
+        as(9, () -> { certifications.completeIndependentLegalClaim(company, 9, "legal-new-" + company); return null; });
+        as(9, () -> { certifications.completeIndependentLegalClaim(company, 9, "legal-repeat-" + company); return null; });
+
+        assertThat(schema.jdbc.queryForMap("""
+                SELECT role_code,status,is_legal_person,is_administrator FROM company_member WHERE company_id=? AND user_id=9
+                """, company)).containsEntry("role_code", "LEGAL").containsEntry("status", "ACTIVE")
+                .containsEntry("is_legal_person", true).containsEntry("is_administrator", false);
+        assertThat(schema.jdbc.queryForMap("SELECT * FROM company_member WHERE company_id=? AND user_id=7", company)).isEqualTo(admin);
+        assertThat(schema.jdbc.queryForObject("SELECT COUNT(*) FROM company_certification_application WHERE company_id=?",
+                Long.class, company)).isOne();
+    }
+
+    @Test void explicitLegalProofActivatesAnExistingCandidateAndKeepsTheirBusinessPermissions() {
+        long company = company("VERIFIED", 7);
+        schema.jdbc.update("""
+                INSERT INTO company_member(id,company_id,user_id,role_code,role_codes,status,is_administrator,custom_permissions)
+                VALUES (?,?,9,'LEGAL_CANDIDATE','["LEGAL_CANDIDATE","FINANCE"]','PENDING',0,'["invoice_view"]')
+                """, IDS.incrementAndGet(), company);
+
+        as(9, () -> { certifications.completeIndependentLegalClaim(company, 9, "legal-pending-" + company); return null; });
+
+        assertThat(schema.jdbc.queryForMap("""
+                SELECT role_code,status,is_legal_person,custom_permissions,
+                    JSON_CONTAINS(role_codes,JSON_QUOTE('FINANCE')) AS keeps_finance,
+                    JSON_CONTAINS(role_codes,JSON_QUOTE('LEGAL_CANDIDATE')) AS keeps_candidate
+                FROM company_member WHERE company_id=? AND user_id=9
+                """, company)).containsEntry("role_code", "LEGAL").containsEntry("status", "ACTIVE")
+                .containsEntry("is_legal_person", true).containsEntry("custom_permissions", "[\"invoice_view\"]")
+                .containsEntry("keeps_finance", 1L).containsEntry("keeps_candidate", 0L);
+    }
+
+    @Test void simultaneousIndependentClaimsCannotCreateTwoActiveLegalRepresentatives() throws Exception {
+        long company = company("VERIFIED", 7);
+        var ready = new CountDownLatch(2);
+        var start = new CountDownLatch(1);
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var first = pool.submit(() -> contendForLegalClaim(ready, start, company, 8));
+            var second = pool.submit(() -> contendForLegalClaim(ready, start, company, 9));
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            assertThat(List.of(first.get(20, TimeUnit.SECONDS), second.get(20, TimeUnit.SECONDS)))
+                    .filteredOn(user -> user > 0).hasSize(1);
+            assertThat(schema.jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM company_member WHERE company_id=? AND status='ACTIVE'
+                        AND (role_code='LEGAL' OR is_legal_person=1 OR JSON_CONTAINS(role_codes,JSON_QUOTE('LEGAL')))
+                    """, Long.class, company)).isOne();
+            assertThat(schema.jdbc.queryForObject("SELECT COUNT(*) FROM company_certification_application WHERE company_id=?",
+                    Long.class, company)).isOne();
+        } finally { start.countDown(); pool.shutdownNow(); }
+    }
+
+    private static long contendForLegalClaim(CountDownLatch ready, CountDownLatch start, long company, long user)
+            throws InterruptedException {
+        ready.countDown(); start.await();
+        try { return as(user, () -> { certifications.completeIndependentLegalClaim(company, user, "legal-race-" + company + "-" + user); return user; }); }
+        catch (BusinessException occupied) { return 0; }
     }
 
     private static long contend(CountDownLatch start, long company, long user) throws InterruptedException {
