@@ -26,6 +26,7 @@ import com.tradepass.framework.common.pojo.TradePassDtos.SealRecord;
 import com.tradepass.module.identity.controller.app.company.vo.ApproveReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.CompanySubmitReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.InviteReqVO;
+import com.tradepass.module.identity.controller.app.company.vo.InvitePreviewRespVO;
 import com.tradepass.module.identity.controller.app.company.vo.JoinReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.RoleReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.SealReqVO;
@@ -379,20 +380,33 @@ public class CompanyServiceImpl implements CompanyService {
         return new InviteResult(code, req.companyId());
     }
 
+    public InvitePreviewRespVO previewInvite(String code) {
+        AuthContext.userId();
+        CompanyInviteDO invite = companyInviteMapper.selectOne(new LambdaQueryWrapper<CompanyInviteDO>()
+                .eq(CompanyInviteDO::getCode, code).last("LIMIT 1"));
+        validateInvite(invite);
+        CompanyDO company = companyMapper.selectById(invite.getCompanyId());
+        if (company == null || company.getName() == null || company.getName().isBlank()) {
+            throw new BusinessException("邀请企业不存在，请联系邀请人重新发送邀请");
+        }
+        return new InvitePreviewRespVO(
+                String.valueOf(company.getId()), company.getName(), invite.getType());
+    }
+
+    private void validateInvite(CompanyInviteDO invite) {
+        if (invite == null) throw new BusinessException("邀请码无效");
+        if (Boolean.TRUE.equals(invite.getUsed())) throw new BusinessException("邀请码已被使用");
+        if (invite.getExpiresAt() == null || !invite.getExpiresAt().isAfter(LocalDateTime.now())) {
+            throw new BusinessException("邀请码已过期");
+        }
+    }
+
     @Transactional
     public JoinResult joinCompany(JoinReqVO req) {
         CompanyInviteDO invite = companyInviteMapper.selectOne(new LambdaQueryWrapper<CompanyInviteDO>()
                 .eq(CompanyInviteDO::getCode, req.code())
                 .last("LIMIT 1 FOR UPDATE"));
-        if (invite == null) {
-            throw new BusinessException("邀请码无效");
-        }
-        if (Boolean.TRUE.equals(invite.getUsed())) {
-            throw new BusinessException("邀请码已被使用");
-        }
-        if (invite.getExpiresAt().isBefore(LocalDateTime.now())) {
-            throw new BusinessException("邀请码已过期");
-        }
+        validateInvite(invite);
 
         long userId = AuthContext.userId();
         if ("counterparty".equals(invite.getType())) {

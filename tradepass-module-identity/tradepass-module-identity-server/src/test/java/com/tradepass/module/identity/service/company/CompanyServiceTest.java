@@ -480,6 +480,28 @@ class CompanyServiceTest {
     }
 
     @Test
+    void invitePreviewShowsOnlyInvitingCompanyWithoutJoiningOrRequiringMembership() {
+        AuthContext.set(7L, null);
+        CompanyInviteDO invitation = invite(false);
+        when(inviteMapper.selectOne(any(Wrapper.class))).thenReturn(invitation);
+        when(companyMapper.selectById(3L)).thenReturn(company(3L, "邀请方完整企业名称"));
+        var preview = service.previewInvite("JOIN1234");
+        assertThat(preview.companyId()).isEqualTo("3");
+        assertThat(preview.companyName()).isEqualTo("邀请方完整企业名称");
+        assertThat(preview.type()).isEqualTo("member");
+        verify(inviteMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        verify(memberMapper, org.mockito.Mockito.never()).insert(any(CompanyMemberDO.class));
+        verify(accessControl, org.mockito.Mockito.never()).requireManager(anyLong());
+        invitation.setUsed(true);
+        assertThatThrownBy(() -> service.previewInvite("JOIN1234")).hasMessage("邀请码已被使用");
+        invitation.setUsed(false);
+        invitation.setExpiresAt(LocalDateTime.now().minusSeconds(1));
+        assertThatThrownBy(() -> service.previewInvite("JOIN1234")).hasMessage("邀请码已过期");
+        when(inviteMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        assertThatThrownBy(() -> service.previewInvite("bad")).hasMessage("邀请码无效");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void submitsMemberJoinForApprovalAndConsumesInvite() {
         CompanyInviteDO invite = invite(false);

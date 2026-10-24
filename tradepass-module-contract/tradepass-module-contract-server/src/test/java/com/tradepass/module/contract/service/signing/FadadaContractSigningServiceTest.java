@@ -64,6 +64,21 @@ class FadadaContractSigningServiceTest {
     }
 
     @Test
+    void platformTaskPreviewUsesItsFrozenBillingOwnerWhileOnlyContractPartiesCanRead() {
+        var f = new Fixture();
+        f.task.setProviderInitiatorOpenCorpId("frozen-cloud-owner");
+        when(f.gateway.downloadSignedPreviewPages("sign-task-12", "frozen-cloud-owner")).thenReturn(f.pages);
+        assertThat(f.service.signedPreviewManifest(12L).pageCount()).isEqualTo(10);
+        AuthContext.set(8L, 4L);
+        assertThat(f.service.signedPreviewPage(12L, 1, "sign-task-12").data()).containsExactly(f.pages.get(0));
+        AuthContext.set(9L, 5L);
+        assertThatThrownBy(() -> f.service.signedPreviewManifest(12L)).hasMessage("合同不存在");
+        verify(f.gateway, times(1)).downloadSignedPreviewPages("sign-task-12", "frozen-cloud-owner");
+        verify(f.companyService, never()).requireVerified(3L);
+        verify(f.gateway, never()).downloadSignedPreviewPages("sign-task-12", "corp-3");
+    }
+
+    @Test
     void rejectsPageNumbersOutsideTheArchivedDocument() {
         var f = new Fixture();
         assertThatThrownBy(() -> f.service.signedPreviewPage(12L, 0, "sign-task-12"))

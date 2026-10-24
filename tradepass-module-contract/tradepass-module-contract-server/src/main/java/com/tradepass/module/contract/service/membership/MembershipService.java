@@ -21,7 +21,12 @@ public class MembershipService {
                          long paidRemaining, boolean canInitiate, String reason, boolean purchaseEnabled,
                          long policyRevision, String policyUpdatedAt, String paidVipUntil, List<String> purchasePlatforms) { }
     public record Reservation(long id, String status, boolean createAllowed, String signTaskId, String sourceFileId,
-                              String docId, String snapshot, String sha256) { }
+                              String docId, String snapshot, String sha256, String providerInitiatorOpenCorpId) {
+        public Reservation(long id, String status, boolean createAllowed, String signTaskId, String sourceFileId,
+                           String docId, String snapshot, String sha256) {
+            this(id, status, createAllowed, signTaskId, sourceFileId, docId, snapshot, sha256, null);
+        }
+    }
     private record Pool(String scope, long total, long used, long reserved, LocalDateTime expires) {
         long remaining() { return Math.max(0, total - used - reserved); }
     }
@@ -96,13 +101,19 @@ public class MembershipService {
 
     /** Durable intent commits before the external side effect, even if the caller later rolls back. */
     public Reservation reserve(CompanyRespDTO company, long contractId, int version, String contractSnapshot, String sha256) {
+        return reserve(company, contractId, version, contractSnapshot, sha256, null);
+    }
+
+    /** Freeze the provider billing initiator alongside each durable creation intent. */
+    public Reservation reserve(CompanyRespDTO company, long contractId, int version, String contractSnapshot, String sha256,
+                               String providerInitiatorOpenCorpId) {
         return tx.execute(t -> {
             var policy = policies.current(true);
             Reservation existing = existing(contractId, version);
             if (existing != null) {
                 if ("CONSUMED".equals(existing.status())) return existing;
                 if (!"RELEASED".equals(existing.status()))
-                    throw new BusinessException("上次签署创建结果待核实，已预留额度，请联系平台核对后再试");
+                    throw new BusinessException(pendingMessage(contractId, version));
             }
             String subject = subject(company);
             Selection choice = select(company, subject, policy, true);
@@ -119,20 +130,23 @@ public class MembershipService {
             if (existing == null) {
                 jdbc.update("""
                         INSERT INTO membership_signing_usage(contract_id,version_no,company_id,subject_key,scope_key,
-                          source,status,policy_revision,operator_id,contract_snapshot,source_sha256,created_at)
-                        VALUES (?,?,?,?,?,?,'RESERVED',?,?,?,?,?)
+                          source,status,policy_revision,operator_id,contract_snapshot,source_sha256,created_at,
+                          provider_initiator_open_corp_id)
+                        VALUES (?,?,?,?,?,?,'RESERVED',?,?,?,?,?,?)
                         """, contractId, version, company.getId(), subject, choice.scope(), choice.source(),
-                        policy.revision(), AuthContext.userId(), contractSnapshot, sha256, now);
+                        policy.revision(), AuthContext.userId(), contractSnapshot, sha256, now, providerInitiatorOpenCorpId);
             } else {
                 jdbc.update("""
                         UPDATE membership_signing_usage SET scope_key=?,source=?,status='RESERVED',policy_revision=?,
-                          operator_id=?,contract_snapshot=?,source_sha256=?,created_at=?,last_error=NULL
+                          operator_id=?,contract_snapshot=?,source_sha256=?,created_at=?,last_error=NULL,
+                          provider_initiator_open_corp_id=?
                         WHERE contract_id=? AND version_no=? AND status='RELEASED'
                         """, choice.scope(), choice.source(), policy.revision(), AuthContext.userId(), contractSnapshot, sha256,
-                        now, contractId, version);
+                        now, providerInitiatorOpenCorpId, contractId, version);
             }
             Reservation result = existing(contractId, version);
-            return new Reservation(result.id(), result.status(), true, null, null, null, result.snapshot(), result.sha256());
+            return new Reservation(result.id(), result.status(), true, null, null, null, result.snapshot(), result.sha256(),
+                    result.providerInitiatorOpenCorpId());
         });
     }
 
@@ -159,13 +173,31 @@ public class MembershipService {
     }
 
     public void uncertain(long id) {
+        uncertain(id, null);
+    }
+
+    /** Persist only a controlled reason independently of the surrounding signing transaction. */
+    public void uncertain(long id, String reason) {
+        String safeReason = com.tradepass.framework.fadada.core.FadadaProviderQuotaException.MESSAGE.equals(reason)
+                ? reason : "第三方创建结果待核实";
         tx.executeWithoutResult(t -> {
             policies.current(true);
             jdbc.update("""
-                    UPDATE membership_signing_usage SET status='UNCERTAIN',last_error='第三方创建结果待核实'
+                    UPDATE membership_signing_usage SET status='UNCERTAIN',last_error=?
                     WHERE id=? AND status='RESERVED'
-                    """, id);
+                    """, safeReason, id);
         });
+    }
+
+    /** Never echo arbitrary historical/provider messages from the database. */
+    public String pendingMessage(long contractId, int version) {
+        var reasons = jdbc.query("""
+                SELECT last_error FROM membership_signing_usage
+                WHERE contract_id=? AND version_no=? AND status IN ('RESERVED','UNCERTAIN')
+                """, (rs, row) -> rs.getString(1), contractId, version);
+        return reasons.stream().anyMatch(com.tradepass.framework.fadada.core.FadadaProviderQuotaException.MESSAGE::equals)
+                ? com.tradepass.framework.fadada.core.FadadaProviderQuotaException.MESSAGE
+                : "上次签署创建结果待核实，请稍后刷新；系统不会重复创建或扣费";
     }
 
     /** Used only when no create-sign-task request was issued by the gateway. */
@@ -194,11 +226,11 @@ public class MembershipService {
 
     public Reservation existing(long contractId, int version) {
         return jdbc.query("""
-                SELECT id,status,sign_task_id,source_file_id,doc_id,contract_snapshot,source_sha256
+                SELECT id,status,sign_task_id,source_file_id,doc_id,contract_snapshot,source_sha256,provider_initiator_open_corp_id
                 FROM membership_signing_usage WHERE contract_id=? AND version_no=?
                 """, (rs, row) -> new Reservation(rs.getLong("id"), rs.getString("status"), false,
                 rs.getString("sign_task_id"), rs.getString("source_file_id"), rs.getString("doc_id"),
-                rs.getString("contract_snapshot"), rs.getString("source_sha256")), contractId, version)
+                rs.getString("contract_snapshot"), rs.getString("source_sha256"), rs.getString("provider_initiator_open_corp_id")), contractId, version)
                 .stream().findFirst().orElse(null);
     }
 

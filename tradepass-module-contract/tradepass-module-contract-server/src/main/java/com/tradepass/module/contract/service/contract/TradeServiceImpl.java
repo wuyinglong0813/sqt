@@ -16,6 +16,7 @@ import com.tradepass.module.trade.api.ranking.RankingCacheOperations.*;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -647,16 +648,28 @@ public class TradeServiceImpl implements TradeService {
     public String deleteContract(Long id) {
         long companyId = AuthContext.requireCompanyId();
         accessControlService.requirePermission(companyId, "contract_sign");
-        TradeContractDO contract = ensureOutgoingContract(id, companyId, List.of("REJECTED", "CANCELLED"));
+        TradeContractDO contract = tradeContractMapper.selectOne(new LambdaQueryWrapper<TradeContractDO>()
+                .eq(TradeContractDO::getId, id)
+                .and(q -> q.eq(TradeContractDO::getCompanyId, companyId)
+                        .or().eq(TradeContractDO::getCounterpartyCompanyId, companyId))
+                .last("LIMIT 1 FOR UPDATE"));
+        boolean outgoing = contract != null && Long.valueOf(companyId).equals(contract.getCompanyId());
+        if (contract == null || !isContractParty(contract, companyId) || !isContractVisibleTo(contract, companyId)
+                || !("VOIDED".equals(contract.getStatus())
+                    || (outgoing && List.of("REJECTED", "CANCELLED").contains(contract.getStatus())))) {
+            throw new BusinessException("合同不存在或当前状态不能执行该操作");
+        }
+        SFunction<TradeContractDO, Boolean> hiddenColumn = outgoing ? TradeContractDO::getInitiatorHidden
+                : TradeContractDO::getCounterpartyHidden;
         int updated = tradeContractMapper.update(new LambdaUpdateWrapper<TradeContractDO>()
                 .eq(TradeContractDO::getId, id)
-                .eq(TradeContractDO::getCompanyId, companyId)
-                .in(TradeContractDO::getStatus, List.of("REJECTED", "CANCELLED"))
-                .eq(TradeContractDO::getInitiatorHidden, false)
-                .set(TradeContractDO::getInitiatorHidden, true));
+                .eq(outgoing ? TradeContractDO::getCompanyId : TradeContractDO::getCounterpartyCompanyId, companyId)
+                .eq(TradeContractDO::getStatus, contract.getStatus())
+                .and(q -> q.eq(hiddenColumn, false).or().isNull(hiddenColumn))
+                .set(hiddenColumn, true));
         if (updated != 1) throw new BusinessException("合同状态已变化，请刷新后重试");
         auditLogService.log(companyId, "CONTRACT", id, "DELETE",
-                "从发起方合同列表删除合同 " + contract.getContractNo());
+                (outgoing ? "从发起方合同列表删除合同 " : "从接收方合同列表删除合同 ") + contract.getContractNo());
         return "合同已从我方列表删除";
     }
 
@@ -883,7 +896,8 @@ public class TradeServiceImpl implements TradeService {
             return !Boolean.TRUE.equals(contract.getInitiatorHidden())
                     && !"DELETED".equals(contract.getStatus());
         }
-        if (List.of("REJECTED", "CANCELLED", "DELETED").contains(contract.getStatus())) {
+        if (Boolean.TRUE.equals(contract.getCounterpartyHidden())
+                || List.of("REJECTED", "CANCELLED", "DELETED").contains(contract.getStatus())) {
             return false;
         }
         if (!"PENDING".equals(contract.getStatus())) {

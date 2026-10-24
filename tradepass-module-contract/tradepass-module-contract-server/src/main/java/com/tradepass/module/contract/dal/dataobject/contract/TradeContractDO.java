@@ -27,6 +27,7 @@ public class TradeContractDO {
     private Integer versionNo;
     private String status;
     private Boolean initiatorHidden;
+    private Boolean counterpartyHidden;
     private Long initiatedBy;
     private Long approvedBy;
     private LocalDateTime approvedAt;
@@ -65,6 +66,8 @@ public class TradeContractDO {
     public void setStatus(String status) { this.status = status; }
     public Boolean getInitiatorHidden() { return initiatorHidden; }
     public void setInitiatorHidden(Boolean initiatorHidden) { this.initiatorHidden = initiatorHidden; }
+    public Boolean getCounterpartyHidden() { return counterpartyHidden; }
+    public void setCounterpartyHidden(Boolean counterpartyHidden) { this.counterpartyHidden = counterpartyHidden; }
     public Long getInitiatedBy() { return initiatedBy; }
     public void setInitiatedBy(Long initiatedBy) { this.initiatedBy = initiatedBy; }
     public Long getApprovedBy() { return approvedBy; }

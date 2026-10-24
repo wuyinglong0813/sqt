@@ -36,6 +36,7 @@ COMMON = [
     ("FADADA_OWNER_ENTERPRISE_OPEN_CORP_ID", "tradepass.fadada.owner-enterprise-open-corp-id", ""),
     ("FADADA_OWNER_ENTERPRISE_CREDIT_CODE", "tradepass.fadada.owner-enterprise-credit-code", ""),
     ("FADADA_OWNER_ENTERPRISE_CLIENT_CORP_ID", "tradepass.fadada.owner-enterprise-client-corp-id", ""),
+    ("FADADA_PLATFORM_INITIATED_SIGNING_ENABLED", "tradepass.fadada.platform-initiated-signing-enabled", "false"),
 ]
 BUSINESS = [
     ("ROCKETMQ_CALLBACK_TOPIC", "tradepass.messaging.rocketmq.callback-topic", "tradepass-callback-events"),
@@ -129,7 +130,7 @@ def document_for(entries, values):
     result = {}
     for key, path, default in entries:
         value = values.get(key, default)
-        if path.endswith((".enabled", ".required")):
+        if path.endswith((".enabled", ".required", "-enabled")):
             if value not in ("true", "false"):
                 raise ValueError(key + " 必须为 true 或 false")
             value = value == "true"

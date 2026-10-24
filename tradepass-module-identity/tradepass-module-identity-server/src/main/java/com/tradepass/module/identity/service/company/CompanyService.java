@@ -20,6 +20,7 @@ import com.tradepass.framework.common.pojo.TradePassDtos.SealRecord;
 import com.tradepass.module.identity.controller.app.company.vo.ApproveReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.CompanySubmitReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.InviteReqVO;
+import com.tradepass.module.identity.controller.app.company.vo.InvitePreviewRespVO;
 import com.tradepass.module.identity.controller.app.company.vo.JoinReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.RoleReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.SealReqVO;
@@ -65,6 +66,7 @@ public interface CompanyService {
     boolean caMockEnabled();
     InviteResult createInvite(InviteReqVO req);
     InviteResult createCounterpartyInvite(InviteReqVO req);
+    InvitePreviewRespVO previewInvite(String code);
     JoinResult joinCompany(JoinReqVO req);
     List<AuthorizationRecord> listMembers(String companyId);
     PagePayload<AuthorizationRecord> pageMembers(String companyId, String status, int page, int size);

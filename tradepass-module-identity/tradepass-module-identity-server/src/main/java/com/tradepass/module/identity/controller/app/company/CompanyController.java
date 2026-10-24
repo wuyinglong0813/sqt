@@ -10,6 +10,7 @@ import com.tradepass.framework.common.pojo.TradePassDtos.SealRecord;
 import com.tradepass.module.identity.controller.app.company.vo.ApproveReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.CompanySubmitReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.InviteReqVO;
+import com.tradepass.module.identity.controller.app.company.vo.InvitePreviewRespVO;
 import com.tradepass.module.identity.controller.app.company.vo.JoinReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.RoleReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.SealReqVO;
@@ -119,6 +120,11 @@ public class CompanyController {
     @PostMapping("/companies/join")
     public ApiResponse<JoinResult> joinCompany(@Valid @RequestBody JoinReqVO request) {
         return ApiResponse.ok(companyService.joinCompany(request));
+    }
+
+    @GetMapping("/companies/invitations/{code}")
+    public ApiResponse<InvitePreviewRespVO> previewInvite(@PathVariable String code) {
+        return ApiResponse.ok(companyService.previewInvite(code));
     }
 
     @GetMapping("/authorizations")

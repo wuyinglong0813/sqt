@@ -187,13 +187,17 @@ public class ContractPdfServiceImpl implements ContractPdfService {
             }
         }
 
-        int quantityIndex = findColumn(columns, "数量", 3);
-        int amountIndex = findColumn(columns, "金额", Math.max(0, columns.size() - 2));
+        int quantityIndex = findColumn(columns, "数量");
+        int amountIndex = findColumn(columns, "金额");
         BigDecimal quantity = sumColumn(source.rows(), quantityIndex);
         BigDecimal amount = parseDecimal(source.totalAmount(), contract.amount());
         int labelSpan = Math.min(3, columns.size());
+        if (quantityIndex >= 0) labelSpan = Math.min(labelSpan, Math.max(1, quantityIndex));
+        if (amountIndex >= 0) labelSpan = Math.min(labelSpan, Math.max(1, amountIndex));
+        String totalLabelText = amountIndex <= 0 ? "合计：¥" + formatDecimal(amount) : "合计";
+        if (quantityIndex == 0) totalLabelText += "\n数量：" + formatDecimal(quantity);
 
-        PdfPCell totalLabel = tableCell("合计", tableFont, Element.ALIGN_CENTER, Color.WHITE, 22);
+        PdfPCell totalLabel = tableCell(totalLabelText, tableFont, Element.ALIGN_CENTER, Color.WHITE, 22);
         totalLabel.setColspan(labelSpan);
         table.addCell(totalLabel);
         for (int index = labelSpan; index < columns.size(); index++) {
@@ -208,12 +212,15 @@ public class ContractPdfServiceImpl implements ContractPdfService {
         }
         String uppercase = safe(source.totalAmountCn(), toChineseCurrency(amount));
         PdfPCell uppercaseLabel = tableCell(
-                "合计大写：", bodyFont, Element.ALIGN_LEFT, Color.WHITE, 22);
+                columns.size() == 1 ? "合计大写：" + uppercase : "合计大写：",
+                bodyFont, Element.ALIGN_LEFT, Color.WHITE, 22);
         table.addCell(uppercaseLabel);
-        PdfPCell uppercaseValue = tableCell(
-                uppercase, bodyFont, Element.ALIGN_LEFT, Color.WHITE, 22);
-        uppercaseValue.setColspan(columns.size() - 1);
-        table.addCell(uppercaseValue);
+        if (columns.size() > 1) {
+            PdfPCell uppercaseValue = tableCell(
+                    uppercase, bodyFont, Element.ALIGN_LEFT, Color.WHITE, 22);
+            uppercaseValue.setColspan(columns.size() - 1);
+            table.addCell(uppercaseValue);
+        }
         document.add(table);
     }
 
@@ -436,13 +443,11 @@ public class ContractPdfServiceImpl implements ContractPdfService {
     }
 
     private List<String> normalizedColumns(List<String> source) {
-        List<String> columns = source == null || source.isEmpty()
+        // Preserve the exact agreed columns; a six-column custom layout may have
+        // intentionally removed remarks or any other default column.
+        return source == null || source.isEmpty()
                 ? new ArrayList<>(DEFAULT_COLUMNS)
                 : new ArrayList<>(source);
-        if (columns.size() == 6 && columns.stream().noneMatch(value -> value.contains("备注"))) {
-            columns.add("备注");
-        }
-        return columns;
     }
 
     private List<List<String>> normalizedRows(List<List<String>> source, int columnCount) {
@@ -493,13 +498,13 @@ public class ContractPdfServiceImpl implements ContractPdfService {
         return cell;
     }
 
-    private int findColumn(List<String> columns, String keyword, int fallback) {
+    private int findColumn(List<String> columns, String keyword) {
         for (int index = 0; index < columns.size(); index++) {
             if (columns.get(index).contains(keyword)) {
                 return index;
             }
         }
-        return Math.min(Math.max(fallback, 0), columns.size() - 1);
+        return -1;
     }
 
     private BigDecimal sumColumn(List<List<String>> rows, int index) {

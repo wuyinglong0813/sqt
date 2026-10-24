@@ -15,6 +15,31 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class MembershipPreparationReleaseTest {
+    @Test void quotaReasonIsPersistedInAnIndependentTransactionWithoutChangingTheQuotaPool() {
+        var f = new Fixture("RESERVED", null);
+        f.service.uncertain(12L, com.tradepass.framework.fadada.core.FadadaProviderQuotaException.MESSAGE);
+        verify(f.jdbc).update(contains("status='UNCERTAIN'"),
+                eq(com.tradepass.framework.fadada.core.FadadaProviderQuotaException.MESSAGE), eq(12L));
+        verify(f.transactions).getTransaction(argThat(def -> def.getPropagationBehavior() == TransactionDefinition.PROPAGATION_REQUIRES_NEW));
+        verify(f.jdbc, never()).update(contains("membership_quota_pool"), any(Object[].class));
+    }
+
+    @Test void arbitraryProviderTextCannotBeSavedAsThePendingReason() {
+        var f = new Fixture("RESERVED", null);
+        f.service.uncertain(12L, "private account https://secret.test token");
+        verify(f.jdbc).update(contains("status='UNCERTAIN'"), eq("第三方创建结果待核实"), eq(12L));
+    }
+
+    @Test void pendingMessageOnlyReturnsTheKnownQuotaReasonAndRedactsAllOtherDatabaseText() {
+        var f = new Fixture("UNCERTAIN", null);
+        when(f.jdbc.query(anyString(), any(org.springframework.jdbc.core.RowMapper.class), eq(8L), eq(2)))
+                .thenReturn(List.of(com.tradepass.framework.fadada.core.FadadaProviderQuotaException.MESSAGE));
+        assertThat(f.service.pendingMessage(8L, 2)).isEqualTo(com.tradepass.framework.fadada.core.FadadaProviderQuotaException.MESSAGE);
+        when(f.jdbc.query(anyString(), any(org.springframework.jdbc.core.RowMapper.class), eq(8L), eq(2)))
+                .thenReturn(List.of("https://private.test credential"));
+        assertThat(f.service.pendingMessage(8L, 2)).contains("待核实").doesNotContain("private", "credential");
+    }
+
     @Test void provenPreCreateFailureReleasesExactlyOneReservedQuotaAndAllowsRetry() {
         var f = new Fixture("RESERVED", null);
         f.service.releaseBeforeTaskCreation(12L);

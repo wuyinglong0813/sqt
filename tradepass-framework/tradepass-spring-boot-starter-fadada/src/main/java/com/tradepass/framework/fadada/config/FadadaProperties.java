@@ -16,6 +16,8 @@ public class FadadaProperties {
     private String ownerEnterpriseOpenCorpId = "";
     private String ownerEnterpriseCreditCode = "";
     private String ownerEnterpriseClientCorpId = "";
+    // The verified application owner pays provider usage while the contract parties sign.
+    private boolean platformInitiatedSigningEnabled;
     // The public 5.1 document does not define the SDK extension's operatorId namespace.
     // Enable only after provider confirmation for this integration, never from user input.
     private boolean operatorOpenUserIdConfirmed;
@@ -38,6 +40,8 @@ public class FadadaProperties {
     public void setOwnerEnterpriseCreditCode(String value) { this.ownerEnterpriseCreditCode = safe(value); }
     public String getOwnerEnterpriseClientCorpId() { return ownerEnterpriseClientCorpId; }
     public void setOwnerEnterpriseClientCorpId(String value) { this.ownerEnterpriseClientCorpId = safe(value); }
+    public boolean isPlatformInitiatedSigningEnabled() { return platformInitiatedSigningEnabled; }
+    public void setPlatformInitiatedSigningEnabled(boolean value) { this.platformInitiatedSigningEnabled = value; }
     public boolean isOperatorOpenUserIdConfirmed() { return operatorOpenUserIdConfirmed; }
     public void setOperatorOpenUserIdConfirmed(boolean value) { this.operatorOpenUserIdConfirmed = value; }
 
@@ -47,6 +51,17 @@ public class FadadaProperties {
                 && !ownerEnterpriseOpenCorpId.isBlank() && ownerEnterpriseOpenCorpId.equals(openCorpId)
                 && !ownerEnterpriseClientCorpId.isBlank() && ownerEnterpriseClientCorpId.equals(clientCorpId)
                 && !ownerEnterpriseCreditCode.isBlank() && ownerEnterpriseCreditCode.equals(creditCode);
+    }
+
+    /** Resolve once before creating a task; persist this identity for recovery and downloads. */
+    public String signingInitiatorOpenCorpId(String businessInitiatorOpenCorpId) {
+        if (!platformInitiatedSigningEnabled) return businessInitiatorOpenCorpId;
+        if (ownerEnterpriseAppId.isBlank() || !ownerEnterpriseAppId.equals(appId)
+                || ownerEnterpriseOpenCorpId.isBlank() || ownerEnterpriseCreditCode.isBlank()
+                || ownerEnterpriseClientCorpId.isBlank()) {
+            throw new com.tradepass.framework.common.exception.BusinessException("平台签署配置未就绪，请联系平台管理员");
+        }
+        return ownerEnterpriseOpenCorpId;
     }
 
     private String safe(String value) {

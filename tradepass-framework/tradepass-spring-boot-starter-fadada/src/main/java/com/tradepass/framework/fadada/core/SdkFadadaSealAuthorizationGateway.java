@@ -36,9 +36,12 @@ public class SdkFadadaSealAuthorizationGateway implements FadadaSealAuthorizatio
         request.setAccessToken(tokens.get());
         request.setOpenCorpId(openCorpId);
         request.setMemberId(memberId);
-        var response = invoke(request, () -> sealClient.getUserSealList(request), "查询成员用印权限");
-        var seals = response.getSealInfos();
-        if (seals == null) throw new BusinessException("成员用印权限查询结果不完整，请稍后重试");
+        var response = invoke(request, () -> sealClient.getUserSealList(request), "查询成员用印权限", true);
+        // The list endpoint documents data as optional. A new member can have no
+        // grants at all (null data / omitted sealInfos), which is never evidence
+        // of permission, but must allow the manager to open the official grant UI.
+        var seals = response == null ? null : response.getSealInfos();
+        if (seals == null) return List.of();
         var seen = new HashSet<Long>();
         return seals.stream().map(seal -> {
             if (seal == null || seal.getSealId() == null || seal.getSealId() <= 0 || !seen.add(seal.getSealId())
@@ -85,9 +88,13 @@ public class SdkFadadaSealAuthorizationGateway implements FadadaSealAuthorizatio
     }
 
     private <T> T invoke(BaseReq request, FadadaApiSupport.ApiCall<T> call, String action) {
+        return invoke(request, call, action, false);
+    }
+
+    private <T> T invoke(BaseReq request, FadadaApiSupport.ApiCall<T> call, String action, boolean optionalData) {
         try {
             BaseRes<T> response = FadadaApiSupport.execute(request, tokens, call);
-            if (response == null || !response.isSuccess() || response.getData() == null) {
+            if (response == null || !response.isSuccess() || (!optionalData && response.getData() == null)) {
                 log.warn("Electronic signature {} failed: code={}, requestId={}", action,
                         response == null ? "null" : response.getCode(),
                         response == null ? "" : response.getRequestId());

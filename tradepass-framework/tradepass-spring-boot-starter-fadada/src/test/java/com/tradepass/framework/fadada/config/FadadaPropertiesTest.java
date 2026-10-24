@@ -5,8 +5,40 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class FadadaPropertiesTest {
+    @Test
+    void platformInitiationIsOptInAndReturnsTheBusinessInitiatorWhenDisabled() {
+        var properties = new FadadaProperties();
+        assertThat(properties.isPlatformInitiatedSigningEnabled()).isFalse();
+        assertThat(properties.signingInitiatorOpenCorpId("corp-business")).isEqualTo("corp-business");
+        assertThat(configured().signingInitiatorOpenCorpId("corp-business")).isEqualTo("corp-business");
+    }
+
+    @Test
+    void platformInitiationUsesOnlyTheOperatorVerifiedApplicationOwner() {
+        var properties = configured(); properties.setPlatformInitiatedSigningEnabled(true);
+        assertThat(properties.signingInitiatorOpenCorpId("corp-business")).isEqualTo("corp-owner");
+        assertThat(properties.signingInitiatorOpenCorpId(null)).isEqualTo("corp-owner");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"app", "wrong-app", "openCorp", "clientCorp", "credit", "current-app"})
+    void platformInitiationFailsClosedForMissingOrMismatchedOwnerConfiguration(String condition) {
+        var properties = configured(); properties.setPlatformInitiatedSigningEnabled(true);
+        switch (condition) {
+            case "app" -> properties.setOwnerEnterpriseAppId(null);
+            case "wrong-app" -> properties.setOwnerEnterpriseAppId("another-app");
+            case "openCorp" -> properties.setOwnerEnterpriseOpenCorpId(" ");
+            case "clientCorp" -> properties.setOwnerEnterpriseClientCorpId(null);
+            case "credit" -> properties.setOwnerEnterpriseCreditCode("");
+            case "current-app" -> properties.setAppId("");
+        }
+        assertThatThrownBy(() -> properties.signingInitiatorOpenCorpId("corp-business"))
+                .hasMessageContaining("平台签署配置未就绪");
+    }
+
     @Test
     void defaultConfigurationDoesNotTrustAnyEnterpriseIncludingEmptyInput() {
         var properties = new FadadaProperties();

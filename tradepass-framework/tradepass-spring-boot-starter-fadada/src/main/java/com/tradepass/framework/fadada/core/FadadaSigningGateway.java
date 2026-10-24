@@ -4,6 +4,10 @@ import java.util.List;
 
 public interface FadadaSigningGateway {
     CreatedTask createTask(CreateTaskCommand command);
+    /** Read-only recovery. A missing result never authorizes another create request. */
+    default CreatedTask findCreatedTask(TaskRecoveryCommand command) {
+        throw new UnsupportedOperationException("签署任务恢复查询尚未实现");
+    }
     String actorUrl(String signTaskId, String actorId, String clientUserId, String redirectMiniAppUrl);
     TaskStatus status(String signTaskId);
     byte[] downloadSignedPdf(String signTaskId, String ownerOpenCorpId, String fileName);
@@ -23,7 +27,17 @@ public interface FadadaSigningGateway {
                              String counterpartyOpenCorpId, String counterpartyActorId,
                              String counterpartyName, String counterpartySealId,
                              String supplierActorId, String buyerActorId, String callbackUrl,
-                             SealPosition supplierSealPosition, SealPosition buyerSealPosition) {
+                             SealPosition supplierSealPosition, SealPosition buyerSealPosition,
+                             String providerInitiatorOpenCorpId) {
+        public CreateTaskCommand(byte[] pdf, String fileName, String subject, String contractReference,
+                                 String initiatorOpenCorpId, String initiatorActorId, String initiatorName, String initiatorSealId,
+                                 String counterpartyOpenCorpId, String counterpartyActorId, String counterpartyName, String counterpartySealId,
+                                 String supplierActorId, String buyerActorId, String callbackUrl,
+                                 SealPosition supplierSealPosition, SealPosition buyerSealPosition) {
+            this(pdf, fileName, subject, contractReference, initiatorOpenCorpId, initiatorActorId, initiatorName, initiatorSealId,
+                    counterpartyOpenCorpId, counterpartyActorId, counterpartyName, counterpartySealId,
+                    supplierActorId, buyerActorId, callbackUrl, supplierSealPosition, buyerSealPosition, initiatorOpenCorpId);
+        }
         public CreateTaskCommand(byte[] pdf, String fileName, String subject, String contractReference,
                                  String initiatorOpenCorpId, String initiatorActorId, String initiatorName, String initiatorSealId,
                                  String counterpartyOpenCorpId, String counterpartyActorId, String counterpartyName, String counterpartySealId,
@@ -44,6 +58,7 @@ public interface FadadaSigningGateway {
             required(subject, 200, "合同主题"); required(contractReference, 128, "合同业务编号");
             required(initiatorName, 128, "发起企业名称"); required(counterpartyName, 128, "相对企业名称");
             required(initiatorOpenCorpId, 64, "发起企业标识"); required(counterpartyOpenCorpId, 64, "相对企业标识");
+            required(providerInitiatorOpenCorpId, 64, "服务商签署发起企业标识");
             required(initiatorActorId, 32, "发起参与方标识"); required(counterpartyActorId, 32, "相对参与方标识");
             required(supplierActorId, 32, "供方标识"); required(buyerActorId, 32, "需方标识");
             if (supplierActorId.equals(buyerActorId) || initiatorActorId.equals(counterpartyActorId)
@@ -81,6 +96,15 @@ public interface FadadaSigningGateway {
         }
     }
     record CreatedTask(String signTaskId, String fileId, String docId) {}
+    record TaskRecoveryCommand(String contractReference, String initiatorOpenCorpId, String initiatorActorId,
+                               String counterpartyOpenCorpId, String counterpartyActorId, String fileName,
+                               String providerInitiatorOpenCorpId) {
+        public TaskRecoveryCommand(String contractReference, String initiatorOpenCorpId, String initiatorActorId,
+                                   String counterpartyOpenCorpId, String counterpartyActorId, String fileName) {
+            this(contractReference, initiatorOpenCorpId, initiatorActorId, counterpartyOpenCorpId,
+                    counterpartyActorId, fileName, initiatorOpenCorpId);
+        }
+    }
     record ActorStatus(String actorId, String signStatus) {}
     record TaskStatus(String signTaskId, String status, List<ActorStatus> actors,
                       String originalSignTaskId, String abolishedSignTaskId) {

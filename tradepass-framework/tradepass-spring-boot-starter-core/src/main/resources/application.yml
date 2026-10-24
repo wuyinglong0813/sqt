@@ -42,6 +42,7 @@ tradepass:
     owner-enterprise-open-corp-id: ${FADADA_OWNER_ENTERPRISE_OPEN_CORP_ID:}
     owner-enterprise-credit-code: ${FADADA_OWNER_ENTERPRISE_CREDIT_CODE:}
     owner-enterprise-client-corp-id: ${FADADA_OWNER_ENTERPRISE_CLIENT_CORP_ID:}
+    platform-initiated-signing-enabled: ${FADADA_PLATFORM_INITIATED_SIGNING_ENABLED:false}
   redis:
     enabled: ${TRADEPASS_REDIS_ENABLED:false}
     key-prefix: ${TRADEPASS_REDIS_KEY_PREFIX:tradepass}

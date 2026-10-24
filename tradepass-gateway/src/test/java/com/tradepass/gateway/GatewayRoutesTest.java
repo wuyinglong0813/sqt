@@ -48,9 +48,9 @@ class GatewayRoutesTest {
                     count++;
                 }
             }
-            // Includes signing prerequisites, member preparation, contract-specific seal grants and signed preview manifests.
+            // Includes signing prerequisites, member preparation, seal grants, preview manifests and invitation previews.
             // Every mapping above must retain its assigned service owner.
-            assertEquals(186, count, "Update the original HTTP contract deliberately when adding APIs");
+            assertEquals(187, count, "Update the original HTTP contract deliberately when adding APIs");
             assertNull(owner(routes, "/internal/identity/resolve"));
             assertNull(owner(routes, "/internal/storage/put"));
             assertNull(owner(routes, "/actuator/prometheus"));

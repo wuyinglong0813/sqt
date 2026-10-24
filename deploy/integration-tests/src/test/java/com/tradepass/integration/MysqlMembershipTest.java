@@ -168,6 +168,52 @@ class MysqlMembershipTest {
         assertThat(service.status(company(3)).reserved()).isEqualTo(1);
         assertThat(service.status(company(3)).used()).isEqualTo(1);
     }
+
+    @Test void platformBillingInitiatorIsPersistedAndCannotChangeAfterTheCreateIntent() {
+        quota(2);
+        var first = service.reserve(company(3), 1, 1, "{}", "a".repeat(64), "platform-original");
+        assertThat(first.providerInitiatorOpenCorpId()).isEqualTo("platform-original");
+        assertThat(jdbc.queryForObject("SELECT provider_initiator_open_corp_id FROM membership_signing_usage WHERE id=?",
+                String.class, first.id())).isEqualTo("platform-original");
+        assertThatThrownBy(() -> service.reserve(company(3), 1, 1, "{}", "a".repeat(64), "platform-new"))
+                .hasMessageContaining("待核实");
+        service.uncertain(first.id());
+        assertThatThrownBy(() -> service.reserve(company(3), 1, 1, "{}", "a".repeat(64), "platform-new"))
+                .hasMessageContaining("待核实");
+        assertThat(service.existing(1, 1).providerInitiatorOpenCorpId()).isEqualTo("platform-original");
+        service.confirm(first.id(), new FadadaSigningGateway.CreatedTask("platform-task", "file", "doc"));
+        var recovered = service.reserve(company(3), 1, 1, "{}", "a".repeat(64), "platform-new");
+        assertThat(recovered.createAllowed()).isFalse();
+        assertThat(recovered.providerInitiatorOpenCorpId()).isEqualTo("platform-original");
+        assertThat(service.status(company(3)).used()).isEqualTo(1);
+        assertThat(service.status(company(3)).reserved()).isZero();
+    }
+
+    @Test void releasedPreparationCanUseTheNewPlatformInitiatorForANewCreateIntent() {
+        quota(1);
+        var first = service.reserve(company(3), 1, 1, "{}", "a".repeat(64), "platform-original");
+        service.releaseBeforeTaskCreation(first.id());
+        assertThat(service.existing(1, 1).providerInitiatorOpenCorpId()).isEqualTo("platform-original");
+        var retry = service.reserve(company(3), 1, 1, "{\"new\":true}", "b".repeat(64), "platform-new");
+        assertThat(retry.id()).isEqualTo(first.id());
+        assertThat(retry.createAllowed()).isTrue();
+        assertThat(retry.providerInitiatorOpenCorpId()).isEqualTo("platform-new");
+        assertThat(service.existing(1, 1).providerInitiatorOpenCorpId()).isEqualTo("platform-new");
+        assertThat(service.status(company(3)).reserved()).isEqualTo(1);
+    }
+
+    @Test void legacyNullBillingInitiatorSurvivesConfirmationAndRecovery() {
+        quota(1);
+        var legacy = reserve(1);
+        assertThat(legacy.providerInitiatorOpenCorpId()).isNull();
+        assertThat(service.existing(1, 1).providerInitiatorOpenCorpId()).isNull();
+        service.confirm(legacy.id(), new FadadaSigningGateway.CreatedTask("legacy-task", "file", "doc"));
+        var recovered = service.reserve(company(3), 1, 1, "{}", "a".repeat(64), "platform-new");
+        assertThat(recovered.providerInitiatorOpenCorpId()).isNull();
+        assertThat(recovered.signTaskId()).isEqualTo("legacy-task");
+        assertThat(recovered.createAllowed()).isFalse();
+    }
+
     @Test void independentWhitelistExpiryAndInvalidConfigAreHandledWithoutErasingPolicy() {
         configure("    trial: {enabled: false}\n    whitelist: [{company-id: '3', mode: UNLIMITED, valid-until: '2026-11-30 23:59:59'}]\n");
         assertThat(service.status(company(3)).unlimited()).isTrue();

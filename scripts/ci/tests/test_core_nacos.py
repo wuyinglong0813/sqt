@@ -27,6 +27,16 @@ def settings():
 
 
 class CoreNacosTest(unittest.TestCase):
+    def test_platform_signing_flag_is_boolean_and_opt_in(self):
+        values = settings()
+        path = "tradepass.fadada.platform-initiated-signing-enabled"
+        self.assertIs(False, mod.get_path(mod.documents(values)["common"], path))
+        values["FADADA_PLATFORM_INITIATED_SIGNING_ENABLED"] = "true"
+        self.assertIs(True, mod.get_path(mod.documents(values)["common"], path))
+        values["FADADA_PLATFORM_INITIATED_SIGNING_ENABLED"] = "yes"
+        with self.assertRaises(ValueError):
+            mod.documents(values)
+
     def test_compose_dollar_formats_are_normalized_and_shell_values_ignored(self):
         for dollar, password in (("$$", "test$$literal"), ("$", "test$literal")):
             result = {"services": {"tradepass-config-dollar-probe": {"environment": {"DOLLAR": dollar}},

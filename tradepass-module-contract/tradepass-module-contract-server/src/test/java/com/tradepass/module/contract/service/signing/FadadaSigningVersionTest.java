@@ -68,6 +68,17 @@ class FadadaSigningVersionTest {
     }
     @AfterEach void clear() { AuthContext.clear(); }
 
+    @Test void platformTaskArchivesUsingFrozenOwnerAndKeepsRealPartiesInTheDocument() throws Exception {
+        ContractRespDTO frozen = snapshot(2);
+        task.setContractSnapshot(new ObjectMapper().writeValueAsString(frozen));
+        task.setProviderInitiatorOpenCorpId("original-cloud-owner");
+        service.syncBySignTaskId("v2");
+        verify(gateway).downloadSignedPdf("v2", "original-cloud-owner", "signed.pdf");
+        verify(companies, never()).requireVerified(anyLong());
+        verify(archive).archiveSignedPdf(eq(frozen), any(byte[].class), eq("v2"), eq(7L));
+        verify(trade).activateAfterElectronicSignature(12L, 2, 7L);
+    }
+
     @Test void endedTaskWithMissingCurrentActorEvidenceCannotArchiveOrActivate() {
         task.setInitiatorSignStatus("signed"); task.setCounterpartySignStatus("signed");
         when(gateway.status("v2")).thenReturn(new FadadaSigningGateway.TaskStatus("v2", "task_finished", List.of(

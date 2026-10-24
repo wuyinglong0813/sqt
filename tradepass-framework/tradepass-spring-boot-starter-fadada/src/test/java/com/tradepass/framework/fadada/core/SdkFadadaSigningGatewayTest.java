@@ -13,6 +13,54 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SdkFadadaSigningGatewayTest {
 
+    @Test void platformPaysForTheTaskWhileOnlyTheTwoRealCompaniesSign() throws Exception {
+        var f = new GatewayFixture(); f.prepareFile(200);
+        // Current configuration must never replace the identity frozen in the command.
+        f.properties.setPlatformInitiatedSigningEnabled(true);
+        f.properties.setOwnerEnterpriseOpenCorpId("another-platform");
+        var response = new com.fasc.open.api.v5_1.res.signtask.CreateSignTaskRes(); response.setSignTaskId("platform-task");
+        org.mockito.Mockito.when(f.client.create(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+            var request = (com.fasc.open.api.v5_1.req.signtask.CreateSignTaskReq) call.getArgument(0);
+            assertThat(request.getInitiator().getIdType()).isEqualTo("corp");
+            assertThat(request.getInitiator().getOpenId()).isEqualTo("platform-owner");
+            assertThat(request.getActors()).hasSize(2);
+            assertThat(request.getActors()).extracting(actor -> actor.getActor().getActorOpenId())
+                    .containsExactly("corp-1", "corp-2");
+            assertThat(request.getActors()).extracting(actor -> actor.getActor().getActorId())
+                    .containsExactly("supplier", "buyer");
+            return f.successful(response);
+        });
+        assertThat(f.gateway.createTask(command("supplier", "platform-owner")).signTaskId()).isEqualTo("platform-task");
+    }
+
+    @Test void theExistingConstructorsPreserveTheBusinessInitiator() {
+        assertThat(command("supplier").providerInitiatorOpenCorpId()).isEqualTo("corp-1");
+        var legacy = new FadadaSigningGateway.CreateTaskCommand(new byte[]{1}, "合同.pdf", "合同", "ref",
+                "corp-1", "supplier", "本方", "1", "corp-2", "buyer", "对方", "2", "supplier", "buyer", null);
+        assertThat(legacy.providerInitiatorOpenCorpId()).isEqualTo("corp-1");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {" ", "12345678901234567890123456789012345678901234567890123456789012345"})
+    void invalidProviderInitiatorNeverUploadsOrCreatesATask(String providerInitiator) {
+        var f = new GatewayFixture();
+        assertThatThrownBy(() -> f.gateway.createTask(command("supplier", providerInitiator)))
+                .isInstanceOf(FadadaTaskPreparationException.class).hasMessageContaining("服务商签署发起企业标识");
+        org.mockito.Mockito.verifyNoInteractions(f.client, f.docs, f.http);
+    }
+
+    @Test void providerQuotaRejectionUsesAFixedMessageAndIsNeverASafePreparationFailure() throws Exception {
+        var f = new GatewayFixture(); f.prepareFile(200);
+        var rejected = new com.fasc.open.api.bean.base.BaseRes<com.fasc.open.api.v5_1.res.signtask.CreateSignTaskRes>();
+        rejected.setCode("212010"); rejected.setMsg("private provider account and arbitrary text");
+        org.mockito.Mockito.when(f.client.create(org.mockito.ArgumentMatchers.any())).thenReturn(rejected);
+        assertThatThrownBy(() -> f.gateway.createTask(command("supplier")))
+                .isInstanceOf(FadadaProviderQuotaException.class).isNotInstanceOf(FadadaTaskPreparationException.class)
+                .hasMessage(FadadaProviderQuotaException.MESSAGE);
+        org.mockito.Mockito.verify(f.client, org.mockito.Mockito.times(1)).create(org.mockito.ArgumentMatchers.any());
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings = {"supplier", "buyer"})
     void usesActualPdfCoordinatesAndKeepsSupplierBuyerFieldsWhenTheBuyerInitiates(String initiator) throws Exception {
@@ -71,12 +119,60 @@ class SdkFadadaSigningGatewayTest {
         org.mockito.Mockito.verify(f.client).create(org.mockito.ArgumentMatchers.any());
     }
 
+    @Test
+    void providerSubscriptionExhaustionExplainsThePlatformQuotaWithoutAllowingRecreation() throws Exception {
+        var f = new GatewayFixture(); f.prepareFile(200);
+        var rejected = new com.fasc.open.api.bean.base.BaseRes<com.fasc.open.api.v5_1.res.signtask.CreateSignTaskRes>();
+        rejected.setCode("212010");
+        org.mockito.Mockito.when(f.client.create(org.mockito.ArgumentMatchers.any())).thenReturn(rejected);
+
+        assertThatThrownBy(() -> f.gateway.createTask(command("supplier")))
+                .isInstanceOf(BusinessException.class).isNotInstanceOf(FadadaTaskPreparationException.class)
+                .hasMessage(FadadaProviderQuotaException.MESSAGE);
+        org.mockito.Mockito.verify(f.client, org.mockito.Mockito.times(1)).create(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void unknownProviderFailureKeepsTheGenericMessageAndDoesNotReplayCreation() throws Exception {
+        var f = new GatewayFixture(); f.prepareFile(200);
+        var rejected = new com.fasc.open.api.bean.base.BaseRes<com.fasc.open.api.v5_1.res.signtask.CreateSignTaskRes>();
+        rejected.setCode("100001");
+        org.mockito.Mockito.when(f.client.create(org.mockito.ArgumentMatchers.any())).thenReturn(rejected);
+
+        assertThatThrownBy(() -> f.gateway.createTask(command("supplier")))
+                .isInstanceOf(BusinessException.class).isNotInstanceOf(FadadaTaskPreparationException.class)
+                .hasMessage("创建合同签署任务失败，请稍后重试");
+        org.mockito.Mockito.verify(f.client, org.mockito.Mockito.times(1)).create(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void providerTransportTimeoutKeepsTheGenericMessageAndDoesNotReplayCreation() throws Exception {
+        var f = new GatewayFixture(); f.prepareFile(200);
+        org.mockito.Mockito.when(f.client.create(org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new com.fasc.open.api.exception.ApiException("request timed out"));
+
+        assertThatThrownBy(() -> f.gateway.createTask(command("supplier")))
+                .isInstanceOf(BusinessException.class).isNotInstanceOf(FadadaTaskPreparationException.class)
+                .hasMessage("创建合同签署任务失败，请稍后重试");
+        org.mockito.Mockito.verify(f.client, org.mockito.Mockito.times(1)).create(org.mockito.ArgumentMatchers.any());
+    }
+
     private FadadaSigningGateway.CreateTaskCommand command(String initiator) {
         String other = "supplier".equals(initiator) ? "buyer" : "supplier";
         return new FadadaSigningGateway.CreateTaskCommand(new byte[]{1}, "合同.pdf", "合同", "ref",
                 "corp-1", initiator, "本方", "1", "corp-2", other, "对方", "2", "supplier", "buyer", null,
                 new FadadaSigningGateway.SealPosition(3, "220", "600"),
                 new FadadaSigningGateway.SealPosition(3, "580", "600"));
+    }
+
+    private FadadaSigningGateway.CreateTaskCommand command(String initiator, String providerInitiator) {
+        var original = command(initiator);
+        return new FadadaSigningGateway.CreateTaskCommand(original.pdf(), original.fileName(), original.subject(),
+                original.contractReference(), original.initiatorOpenCorpId(), original.initiatorActorId(),
+                original.initiatorName(), original.initiatorSealId(), original.counterpartyOpenCorpId(),
+                original.counterpartyActorId(), original.counterpartyName(), original.counterpartySealId(),
+                original.supplierActorId(), original.buyerActorId(), original.callbackUrl(),
+                original.supplierSealPosition(), original.buyerSealPosition(), providerInitiator);
     }
 
     @Test
@@ -146,11 +242,12 @@ class SdkFadadaSigningGatewayTest {
 
     private static class GatewayFixture {
         final SdkFadadaSigningGateway gateway;
+        final com.tradepass.framework.fadada.config.FadadaProperties properties = new com.tradepass.framework.fadada.config.FadadaProperties();
         final com.fasc.open.api.v5_1.client.SignTaskClient client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.SignTaskClient.class);
         final com.fasc.open.api.v5_1.client.DocClient docs = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.DocClient.class);
         final java.net.http.HttpClient http = org.mockito.Mockito.mock(java.net.http.HttpClient.class);
         GatewayFixture() {
-            var properties = new com.tradepass.framework.fadada.config.FadadaProperties(); properties.setAppId("test");
+            properties.setAppId("test");
             properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
             gateway = new SdkFadadaSigningGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
             org.springframework.test.util.ReflectionTestUtils.setField(gateway, "signTaskClient", client);

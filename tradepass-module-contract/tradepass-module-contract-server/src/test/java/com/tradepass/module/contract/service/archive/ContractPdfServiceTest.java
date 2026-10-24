@@ -142,6 +142,38 @@ class ContractPdfServiceTest {
         assertThat(text).doesNotContain("二、", "质量要求", "合同生效与变更");
     }
 
+    @Test
+    void preservesSixCustomColumnsWithoutReintroducingDeletedRemarks() throws Exception {
+        String text = pdfText("""
+                {"sections":[{"type":"table","columns":["品牌","品名","材质","交货地","批次","说明"],
+                  "rows":[["定制品牌","电线","铜","邢台","202610","自定义内容"]],
+                  "summary":{"totalAmount":"0","totalAmountCn":"零元整"}}]}
+                """);
+        assertThat(text).contains("品牌", "材质", "交货地", "批次", "说明", "定制品牌", "自定义内容");
+        assertThat(text).doesNotContain("备注", "规格型号", "单价");
+    }
+
+    @Test
+    void rendersSingleColumnAndItsTotalWithoutInvalidColspan() throws Exception {
+        String text = pdfText("""
+                {"sections":[{"type":"table","columns":["金额"],"rows":[["100"]],
+                  "summary":{"totalAmount":"100","totalAmountCn":"壹佰元整"}}]}
+                """);
+        assertThat(text).contains("金额", "100", "合计：¥100", "合计大写：壹佰元整");
+        assertThat(text).doesNotContain("备注", "数量", "单价");
+    }
+
+    @Test
+    void displaysTotalsWhenAmountAndQuantityAreAmongTheFirstThreeColumns() throws Exception {
+        String text = pdfText("""
+                {"sections":[{"type":"table","columns":["品名","金额","数量","品牌"],
+                  "rows":[["电线","12","2","示例品牌"],["水管","18","3","示例品牌"]],
+                  "summary":{"totalAmount":"30","totalAmountCn":"叁拾元整"}}]}
+                """);
+        assertThat(text).contains("合计", "30", "5", "叁拾元整", "示例品牌");
+        assertThat(text).doesNotContain("备注", "规格型号", "单价");
+    }
+
     private String pdfText(String terms) throws Exception {
         ContractPdfService service = new ContractPdfServiceImpl(
                 new ObjectMapper(), id -> null);

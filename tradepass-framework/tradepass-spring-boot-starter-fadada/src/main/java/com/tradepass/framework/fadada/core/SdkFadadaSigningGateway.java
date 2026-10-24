@@ -83,7 +83,7 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
             command.validate();
             fileId = uploadAndProcess(command.pdf(), command.fileName());
             request.setAccessToken(tokenProvider.get());
-            request.setInitiator(OpenId.getInstance("corp", command.initiatorOpenCorpId()));
+            request.setInitiator(OpenId.getInstance("corp", command.providerInitiatorOpenCorpId()));
             request.setSignTaskSubject(command.subject());
             request.setSignDocType("contract");
             request.setAutoStart(true);
@@ -117,6 +117,87 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         CreateSignTaskRes response = invoke(request, () -> signTaskClient.create(request), "创建合同签署任务");
         if (!hasText(response.getSignTaskId())) throw new BusinessException("合同签署任务创建失败，请稍后重试");
         return new CreatedTask(response.getSignTaskId(), fileId, docId);
+    }
+
+    @Override
+    public CreatedTask findCreatedTask(TaskRecoveryCommand command) {
+        if (command == null || !hasText(command.contractReference()) || !hasText(command.initiatorOpenCorpId())
+                || !hasText(command.counterpartyOpenCorpId()) || !hasText(command.initiatorActorId())
+                || !hasText(command.counterpartyActorId()) || !hasText(command.fileName())
+                || !hasText(command.providerInitiatorOpenCorpId()) || command.providerInitiatorOpenCorpId().length() > 64) {
+            throw new BusinessException("签署任务恢复参数不完整");
+        }
+        // The provider ignores the SDK's obsolete transReferenceId list filter.
+        // Enumerate the frozen provider initiator's bounded list and prove uniqueness locally.
+        String taskId = null;
+        Integer total = null;
+        Integer pages = null;
+        var taskIds = new java.util.HashSet<String>();
+        for (int page = 1; page <= 20; page++) {
+            var request = new com.fasc.open.api.v5_1.req.signtask.GetOwnerSignTaskListReq();
+            request.setAccessToken(tokenProvider.get());
+            request.setOwnerId(OpenId.getInstance("corp", command.providerInitiatorOpenCorpId()));
+            request.setOwnerRole("initiator");
+            request.setListPageNo(page);
+            request.setListPageSize(100);
+            var result = invoke(request, () -> signTaskClient.getOwnerList(request), "核对已有合同签署任务");
+            var values = result.getSignTasks();
+            if (result.getTotalCount() == null || result.getTotalCount() < 0 || result.getTotalCount() > 2000
+                    || result.getListPageNo() == null || result.getListPageNo() != page
+                    || result.getListPageCount() == null || result.getListPageCount() < 0 || result.getListPageCount() > 20
+                    || result.getCountInPage() == null || values == null || result.getCountInPage() != values.size()
+                    || values.size() > 100 || (page < result.getListPageCount() && values.isEmpty())
+                    || (total != null && !total.equals(result.getTotalCount()))
+                    || (pages != null && !pages.equals(result.getListPageCount()))) throw recoveryMismatch();
+            total = result.getTotalCount();
+            pages = result.getListPageCount();
+            for (var value : values) {
+                if (value == null || !hasText(value.getSignTaskId()) || !taskIds.add(value.getSignTaskId())) {
+                    throw recoveryMismatch();
+                }
+                if (command.contractReference().equals(value.getTransReferenceId())) {
+                    if (taskId != null) throw recoveryMismatch();
+                    taskId = value.getSignTaskId();
+                }
+            }
+            if (page >= pages) {
+                if (taskIds.size() != total) throw recoveryMismatch();
+                break;
+            }
+        }
+        if (taskId == null) return null; // Absence never authorizes another create.
+        // The current detail endpoint deliberately omits actor identities. The
+        // documented app-detail compatibility endpoint returns both actors'
+        // exact corporate open IDs, which are needed to verify the association.
+        // Recovery needs those facts; normal status polling uses current detail.
+        var detailRequest = new com.fasc.open.api.v5_1.req.signtask.SignTaskBaseReq();
+        detailRequest.setAccessToken(tokenProvider.get());
+        detailRequest.setSignTaskId(taskId);
+        var detail = invoke(detailRequest, () -> signTaskClient.getDetail(detailRequest), "核对已有合同签署内容");
+        if (!taskId.equals(detail.getSignTaskId()) || !command.contractReference().equals(detail.getTransReferenceId())
+                || detail.getInitiator() == null || !"corp".equals(detail.getInitiator().getIdType())
+                || !command.providerInitiatorOpenCorpId().equals(detail.getInitiator().getOpenId())
+                || !"contract".equals(detail.getSignDocType()) || hasText(detail.getOriginalSignTaskId())
+                || detail.getActors() == null || detail.getActors().size() != 2
+                || detail.getDocs() == null || detail.getDocs().size() != 1) throw recoveryMismatch();
+        var expected = java.util.Map.of(command.initiatorActorId(), command.initiatorOpenCorpId(),
+                command.counterpartyActorId(), command.counterpartyOpenCorpId());
+        var seen = new java.util.HashSet<String>();
+        for (var actor : detail.getActors()) {
+            var info = actor == null ? null : actor.getActorInfo();
+            if (info == null || !seen.add(info.getActorId()) || !"corp".equals(info.getActorType())
+                    || !expected.containsKey(info.getActorId())
+                    || !expected.get(info.getActorId()).equals(info.getActorOpenId())
+                    || info.getPermissions() == null || !info.getPermissions().contains("sign")) throw recoveryMismatch();
+        }
+        var doc = detail.getDocs().get(0);
+        if (doc == null || !"contract-doc".equals(doc.getDocId()) || !hasText(doc.getDocFileId())
+                || !command.fileName().equals(doc.getDocName())) throw recoveryMismatch();
+        return new CreatedTask(taskId, doc.getDocFileId(), doc.getDocId());
+    }
+
+    private BusinessException recoveryMismatch() {
+        return new BusinessException("原签署任务查询结果不唯一或与合同不一致，请联系平台核实；不会重复创建签署");
     }
 
     @Override
@@ -458,6 +539,7 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
             if (response == null || !response.isSuccess() || response.getData() == null) {
                 log.warn("Electronic signature {} failed: code={}, requestId={}", action,
                         response == null ? "null" : response.getCode(), response == null ? "" : response.getRequestId());
+                if (response != null && "212010".equals(response.getCode())) throw new FadadaProviderQuotaException();
                 throw new BusinessException(action + "失败，请稍后重试");
             }
             return response.getData();

@@ -60,7 +60,7 @@ class SdkFadadaSealAuthorizationGatewayTest {
     void incompleteOrDuplicateGrantResponsesAreNotUsedAsAnAuthorizationDecision() throws Exception {
         var f = new Fixture(); var response = new GetUserSealListRes();
         when(f.client.getUserSealList(any())).thenAnswer(call -> successful(response));
-        assertThatThrownBy(() -> f.gateway.memberSealGrants("corp-3", 88L)).hasMessageContaining("不完整");
+        assertThat(f.gateway.memberSealGrants("corp-3", 88L)).isEmpty();
         var seal = new GetUserListSealInfo(); seal.setSealId(912L);
         response.setSealInfos(List.of(seal));
         assertThatThrownBy(() -> f.gateway.memberSealGrants("corp-3", 88L)).hasMessageContaining("不完整");
@@ -74,6 +74,18 @@ class SdkFadadaSealAuthorizationGatewayTest {
         var f = new Fixture(); var response = new GetUserSealListRes(); response.setSealInfos(List.of());
         when(f.client.getUserSealList(any())).thenAnswer(call -> successful(response));
         assertThat(f.gateway.memberSealGrants("corp-3", 88L)).isEmpty();
+    }
+
+    @Test
+    void successfulOptionalDataWithoutAnyGrantsIsEmptyButAProviderFailureIsNeverSuccess() throws Exception {
+        var f = new Fixture();
+        when(f.client.getUserSealList(any())).thenAnswer(call -> successful(null));
+        assertThat(f.gateway.memberSealGrants("corp-3", 88L)).isEmpty();
+        var rejected = new BaseRes<GetUserSealListRes>(); rejected.setCode("210002");
+        when(f.client.getUserSealList(any())).thenReturn(rejected);
+        assertThatThrownBy(() -> f.gateway.memberSealGrants("corp-3", 88L)).hasMessageContaining("失败");
+        when(f.client.getUserSealList(any())).thenReturn(null);
+        assertThatThrownBy(() -> f.gateway.memberSealGrants("corp-3", 88L)).hasMessageContaining("失败");
     }
 
     @Test

@@ -69,7 +69,7 @@ public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
                COALESCE(SUM(amount), 0) AS amount
         FROM trade_contract
         WHERE ((company_id = #{companyId} AND COALESCE(initiator_hidden, 0) = 0)
-               OR (counterparty_company_id = #{companyId}
+               OR (counterparty_company_id = #{companyId} AND COALESCE(counterparty_hidden, 0) = 0
                    AND status NOT IN ('REJECTED', 'CANCELLED', 'DELETED')
                    AND """ + ContractSigningTodoSql.COUNTERPARTY_RELEASED + """
                ))
@@ -81,7 +81,7 @@ public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
         FROM trade_contract t
         JOIN company initiator ON initiator.id = t.company_id
         WHERE ((t.company_id = #{companyId} AND COALESCE(t.initiator_hidden, 0) = 0)
-               OR (t.counterparty_company_id = #{companyId}
+               OR (t.counterparty_company_id = #{companyId} AND COALESCE(t.counterparty_hidden, 0) = 0
                    AND t.status NOT IN ('REJECTED', 'CANCELLED', 'DELETED')
                    AND """ + ContractSigningTodoSql.COUNTERPARTY_RELEASED_T + """
                ))
@@ -105,7 +105,7 @@ public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
         FROM trade_contract t
         JOIN company initiator ON initiator.id = t.company_id
         WHERE ((t.company_id = #{companyId} AND COALESCE(t.initiator_hidden, 0) = 0)
-               OR (t.counterparty_company_id = #{companyId}
+               OR (t.counterparty_company_id = #{companyId} AND COALESCE(t.counterparty_hidden, 0) = 0
                    AND t.status NOT IN ('REJECTED', 'CANCELLED', 'DELETED')
                    AND """ + ContractSigningTodoSql.COUNTERPARTY_RELEASED_T + """
                ))

@@ -9,6 +9,7 @@
 {GET [/api/authorizations]}
 {GET [/api/bilateral-actions/active]}
 {GET [/api/ca/config]}
+{GET [/api/companies/invitations/{code}]}
 {GET [/api/companies/search]}
 {GET [/api/companies/{id}]}
 {GET [/api/contract-attachments/{id}/content-chunk-data]}

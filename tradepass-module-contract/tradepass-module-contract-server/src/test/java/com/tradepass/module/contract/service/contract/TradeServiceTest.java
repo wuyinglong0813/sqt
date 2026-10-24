@@ -462,6 +462,43 @@ class TradeServiceTest {
     }
 
     @Test
+    void eitherPartyCanHideAVoidedContractWithoutDeletingTheOtherPartysRecord() {
+        for (boolean outgoing : List.of(true, false)) {
+            TradeContractDO contract = new TradeContractDO();
+            contract.setId(42L);
+            contract.setCompanyId(outgoing ? 3L : 9L);
+            contract.setCounterpartyCompanyId(outgoing ? 9L : 3L);
+            contract.setStatus("VOIDED");
+            contract.setContractNo("HT-42");
+            when(contractMapper.selectOne(any(Wrapper.class))).thenReturn(contract);
+            org.mockito.Mockito.clearInvocations(contractMapper);
+            assertThat(service.deleteContract(42L)).isEqualTo("合同已从我方列表删除");
+            var update = org.mockito.ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class);
+            verify(contractMapper).update(update.capture());
+            assertThat(update.getValue().getSqlSet()).contains(outgoing ? "initiator_hidden=" : "counterparty_hidden=");
+            assertThat(update.getValue().getSqlSet()).doesNotContain(outgoing ? "counterparty_hidden=" : "initiator_hidden=");
+            assertThat(contract.getStatus()).isEqualTo("VOIDED");
+        }
+        org.mockito.Mockito.verifyNoInteractions(signingCancellation, contractArchiveService);
+    }
+
+    @Test
+    void activeCompletedForeignAndAlreadyHiddenContractsCannotBeDeleted() {
+        TradeContractDO contract = new TradeContractDO();
+        contract.setId(42L); contract.setCompanyId(9L); contract.setCounterpartyCompanyId(3L);
+        when(contractMapper.selectOne(any(Wrapper.class))).thenReturn(contract);
+        for (String status : List.of("ACTIVE", "PENDING", "COMPLETED", "REJECTED", "CANCELLED")) {
+            contract.setStatus(status);
+            assertThatThrownBy(() -> service.deleteContract(42L)).isInstanceOf(BusinessException.class);
+        }
+        contract.setStatus("VOIDED"); contract.setCounterpartyHidden(true);
+        assertThatThrownBy(() -> service.deleteContract(42L)).isInstanceOf(BusinessException.class);
+        contract.setCounterpartyHidden(false); contract.setCounterpartyCompanyId(8L);
+        assertThatThrownBy(() -> service.deleteContract(42L)).isInstanceOf(BusinessException.class);
+        verify(contractMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+    }
+
+    @Test
     void rejectedContractStaysOnlyInInitiatorListUntilLocallyDeleted() {
         TradeContractDO outgoing = new TradeContractDO();
         outgoing.setId(51L);

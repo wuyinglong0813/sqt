@@ -113,6 +113,7 @@ public class ContractDirectoryServiceImpl implements ContractDirectoryService {
         query.and(q -> q.and(a -> a.eq(TradeContractDO::getCompanyId, companyId)
                         .and(h -> h.eq(TradeContractDO::getInitiatorHidden, false).or().isNull(TradeContractDO::getInitiatorHidden)))
                 .or(a -> a.eq(TradeContractDO::getCounterpartyCompanyId, companyId)
+                        .and(h -> h.eq(TradeContractDO::getCounterpartyHidden, false).or().isNull(TradeContractDO::getCounterpartyHidden))
                         .notIn(TradeContractDO::getStatus, "REJECTED", "CANCELLED", "DELETED")
                         .apply(ContractSigningTodoSql.COUNTERPARTY_RELEASED)));
         if (name != null && !name.isEmpty()) {

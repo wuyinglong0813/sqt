@@ -110,6 +110,7 @@ class FadadaSigningPrerequisitesTest {
             contract.setId(12L); contract.setCompanyId(3L); contract.setCounterpartyCompanyId(4L);
             contract.setStatus("PENDING"); contract.setVersionNo(1);
             when(contracts.selectById(12L)).thenReturn(contract);
+            when(contracts.selectByIdForUpdate(12L)).thenReturn(contract);
         }
         FadadaContractSignTaskDO existingTask() {
             var task = new FadadaContractSignTaskDO();
@@ -119,7 +120,9 @@ class FadadaSigningPrerequisitesTest {
             return task;
         }
         void assertNoBillableWork() {
-            verifyNoInteractions(pdf, gateway, membership);
+            verifyNoInteractions(pdf, gateway);
+            verify(membership, never()).reserve(any(), anyLong(), anyInt(), anyString(), anyString());
+            verify(membership, never()).confirm(anyLong(), any());
             verify(tasks, never()).insert(any(FadadaContractSignTaskDO.class));
         }
     }

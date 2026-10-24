@@ -1,6 +1,8 @@
 package com.tradepass.module.contract.dal.dataobject.signing;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 
@@ -18,6 +20,8 @@ public class FadadaContractSignTaskDO {
     private String docId;
     private String sourceSha256;
     private String contractSnapshot;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String providerInitiatorOpenCorpId;
     private String providerStatus;
     private Long initiatorCompanyId;
     private Long counterpartyCompanyId;
@@ -50,6 +54,8 @@ public class FadadaContractSignTaskDO {
     public void setSourceSha256(String sourceSha256) { this.sourceSha256 = sourceSha256; }
     public String getContractSnapshot() { return contractSnapshot; }
     public void setContractSnapshot(String value) { this.contractSnapshot = value; }
+    public String getProviderInitiatorOpenCorpId() { return providerInitiatorOpenCorpId; }
+    public void setProviderInitiatorOpenCorpId(String value) { this.providerInitiatorOpenCorpId = value; }
     public String getProviderStatus() { return providerStatus; }
     public void setProviderStatus(String providerStatus) { this.providerStatus = providerStatus; }
     public Long getInitiatorCompanyId() { return initiatorCompanyId; }
