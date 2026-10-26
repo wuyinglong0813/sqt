@@ -209,8 +209,8 @@ class SalesOrderInventoryServiceTest {
     @Test
     void snapshotsSeparateModelAndSpecificationColumnsWithoutReusingOneForBoth() {
         document.setContent("""
-                {"columns":["品名","型号","规格","单位","数量","单价","金额"],
-                 "rows":[["电缆"," YJV ","3×25","米","2","3.5","7"]]}
+                {"columns":["产品型号","产品名称","规格","单位","数量","单价","金额"],
+                 "rows":[[" YJV ","电缆","3×25","米","2","3.5","7"]]}
                 """);
         service.saveDocumentItems(document);
         verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO business_document_item")),

@@ -759,7 +759,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             JsonNode root = objectMapper.readTree(content);
             List<String> columns = new ArrayList<>();
             root.path("columns").forEach(node -> columns.add(node.asText("")));
-            int productIndex = findColumn(columns, List.of("品名", "产品", "名称"));
+            int productIndex = findProductColumn(columns);
             int specIndex = findColumn(columns, List.of("规格"));
             // Historical combined 规格型号 columns remain specifications. A separate
             // 型号 column establishes the independent product-model identity.
@@ -809,6 +809,15 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         } catch (Exception exception) {
             throw new BusinessException("销售单商品明细格式不正确");
         }
+    }
+
+    private int findProductColumn(List<String> columns) {
+        for (int i = 0; i < columns.size(); i++) {
+            String column = columns.get(i);
+            if (!column.contains("型号") && !column.contains("规格")
+                    && (column.contains("品名") || column.contains("产品") || column.contains("名称"))) return i;
+        }
+        return -1;
     }
 
     private int findColumn(List<String> columns, List<String> aliases) {

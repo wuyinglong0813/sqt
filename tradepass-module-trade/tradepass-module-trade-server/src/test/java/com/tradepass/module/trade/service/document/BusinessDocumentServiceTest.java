@@ -146,7 +146,7 @@ class BusinessDocumentServiceTest {
         template.setCompanyId(3L);
         template.setDocumentType(BusinessDocumentService.SALES_ORDER);
         template.setName("标准销售单");
-        template.setContent("{\"columns\":[\"序号\",\"品名\",\"规格\",\"数量\",\"金额\"],\"blankRows\":8}");
+        template.setContent("{\"columns\":[\"序号\",\"产品规格\",\"产品名称\",\"数量\",\"金额\"],\"blankRows\":8}");
         when(templateMapper.selectOne(any())).thenReturn(template);
 
         TradeContractRespDTO contract = new TradeContractRespDTO();
@@ -157,7 +157,7 @@ class BusinessDocumentServiceTest {
         contract.setDirection("SALE");
         contract.setStatus("PENDING");
         contract.setAmount(new BigDecimal("20.00"));
-        contract.setTerms("{\"sections\":[{\"type\":\"table\",\"columns\":[\"品名\",\"型号\",\"规格\",\"数量\",\"金额\"],\"rows\":[[\"商品A\",\"YJV\",\"3×25\",\"2\",\"20\"]]}]}");
+        contract.setTerms("{\"sections\":[{\"type\":\"table\",\"columns\":[\"产品型号\",\"产品名称\",\"规格\",\"数量\",\"金额\"],\"rows\":[[\"YJV\",\"商品A\",\"3×25\",\"2\",\"20\"]]}]}");
         when(contractMapper.selectById(22L)).thenReturn(contract);
         when(contractMapper.selectByIdForUpdate(22L)).thenReturn(contract);
 
@@ -185,9 +185,10 @@ class BusinessDocumentServiceTest {
                 .containsEntry("canEditDraft", true)
                 .containsEntry("canPublish", false);
         var content = objectMapper.readTree(inserted.get().getContent());
-        assertThat(content.path("columns").get(2).asText()).isEqualTo("型号");
-        assertThat(content.path("rows").get(0).get(2).asText()).isEqualTo("YJV");
-        assertThat(content.path("rows").get(0).get(3).asText()).isEqualTo("3×25");
+        assertThat(content.path("columns").get(3).asText()).isEqualTo("型号");
+        assertThat(content.path("rows").get(0).get(3).asText()).isEqualTo("YJV");
+        assertThat(content.path("rows").get(0).get(2).asText()).isEqualTo("商品A");
+        assertThat(content.path("rows").get(0).get(1).asText()).isEqualTo("3×25");
     }
 
     @Test

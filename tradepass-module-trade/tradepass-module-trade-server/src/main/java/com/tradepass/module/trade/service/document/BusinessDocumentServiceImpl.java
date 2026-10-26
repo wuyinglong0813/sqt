@@ -406,7 +406,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
                 int productIndex = -1;
                 for (int i = 0; i < targetColumns.size(); i++) {
                     String column = targetColumns.get(i);
-                    if (column.contains("品名") || column.equals("名称") || column.contains("产品")) { productIndex = i; break; }
+                    if (isProductColumn(column)) { productIndex = i; break; }
                 }
                 targetColumns.add(productIndex + 1, "型号");
             }
@@ -618,7 +618,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         String normalized = target == null ? "" : target.trim();
         if (normalized.contains("序号")) return String.valueOf(rowIndex + 1);
         if (normalized.contains("型号") || normalized.contains("规格")) return "";
-        if (normalized.contains("品名") || normalized.equals("名称") || normalized.contains("产品")) {
+        if (isProductColumn(normalized)) {
             return fee.feeType();
         }
         if (normalized.contains("单位")) return "项";
@@ -636,11 +636,12 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         }
         List<String> aliases;
         boolean modelColumn = normalized.contains("型号") && !normalized.contains("规格");
+        boolean productColumn = isProductColumn(normalized);
         if (modelColumn) {
             aliases = List.of("型号");
         } else if (normalized.contains("规格")) {
             aliases = List.of("规格");
-        } else if (normalized.contains("品名") || normalized.equals("名称") || normalized.contains("产品")) {
+        } else if (productColumn) {
             aliases = List.of("品名", "名称", "产品");
         } else if (normalized.contains("单位")) {
             aliases = List.of("单位");
@@ -659,11 +660,17 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
             String sourceColumn = sourceColumns.get(index);
             boolean matched = aliases.stream().anyMatch(sourceColumn::contains);
             if (modelColumn && sourceColumn.contains("规格")) matched = false;
+            if (productColumn && !isProductColumn(sourceColumn)) matched = false;
             if (matched && index < sourceRow.size()) {
                 return safe(sourceRow.get(index));
             }
         }
         return "";
+    }
+
+    private boolean isProductColumn(String column) {
+        return !column.contains("型号") && !column.contains("规格")
+                && (column.contains("品名") || column.contains("名称") || column.contains("产品"));
     }
 
     private TradeContractRespDTO requireContractParty(Long contractId, long companyId) {
