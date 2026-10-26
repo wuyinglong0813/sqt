@@ -60,6 +60,12 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
     private final FadadaProperties properties;
     private final ObjectMapper objectMapper;
     private CompanyOnboardingAttemptService onboardingAttempts;
+    private com.tradepass.module.identity.dal.mysql.fadada.FadadaSigningMemberSyncMapper signingPreparation;
+
+    @Autowired
+    public void setSigningPreparation(com.tradepass.module.identity.dal.mysql.fadada.FadadaSigningMemberSyncMapper signingPreparation) {
+        this.signingPreparation = signingPreparation;
+    }
 
     @Autowired
     public void setOnboardingAttemptService(CompanyOnboardingAttemptService onboardingAttempts) {
@@ -651,6 +657,9 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
     }
 
     private void syncSeals(FadadaCorpIdentityDO identity, List<FadadaCompanyGateway.SealInfo> remote) {
+        // Invalidate in the same transaction as the refreshed seals. A concurrent
+        // leased check for the old default seal must leave this newer work pending.
+        if (signingPreparation != null) signingPreparation.invalidateCompanySealProof(identity.getCompanyId());
         LocalDateTime now = LocalDateTime.now();
         sealMapper.update(null, new LambdaUpdateWrapper<FadadaCorpSealDO>()
                 .eq(FadadaCorpSealDO::getCompanyId, identity.getCompanyId())

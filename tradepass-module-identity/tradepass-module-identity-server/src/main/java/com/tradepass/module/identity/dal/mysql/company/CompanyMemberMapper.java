@@ -45,10 +45,12 @@ public interface CompanyMemberMapper extends BaseMapper<CompanyMemberDO> {
     @Select("""
         SELECT m.id, m.user_id AS userId, m.role_code AS roleCode,
                m.custom_permissions AS customPermissions, m.status, u.nickname, u.phone,
-               i.verified_name AS verifiedName, i.local_status AS identityStatus
+               i.verified_name AS verifiedName, i.local_status AS identityStatus,
+               q.status AS signingStatus
         FROM company_member m
         JOIN sys_user u ON m.user_id = u.id
         LEFT JOIN fadada_user_identity i ON i.user_id = u.id AND i.local_status = 'VERIFIED'
+        LEFT JOIN fadada_signing_member_sync q ON q.company_id = m.company_id AND q.user_id = m.user_id
         WHERE m.company_id = #{companyId}
         ORDER BY m.status, m.id
         """)
@@ -57,10 +59,12 @@ public interface CompanyMemberMapper extends BaseMapper<CompanyMemberDO> {
     @Select("""
         SELECT m.id, m.user_id AS userId, m.role_code AS roleCode,
                m.custom_permissions AS customPermissions, m.status, u.nickname, u.phone,
-               i.verified_name AS verifiedName, i.local_status AS identityStatus
+               i.verified_name AS verifiedName, i.local_status AS identityStatus,
+               q.status AS signingStatus
         FROM company_member m
         JOIN sys_user u ON m.user_id = u.id
         LEFT JOIN fadada_user_identity i ON i.user_id = u.id AND i.local_status = 'VERIFIED'
+        LEFT JOIN fadada_signing_member_sync q ON q.company_id = m.company_id AND q.user_id = m.user_id
         WHERE m.company_id = #{companyId}
           AND (#{status} IS NULL OR #{status} = '' OR m.status = #{status})
         ORDER BY m.status, m.id

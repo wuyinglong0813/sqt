@@ -44,6 +44,14 @@ public class FadadaSigningMemberService {
         return result.member();
     }
 
+    /** Status polling may resolve an existing verified member, but never create an invitation. */
+    FadadaCompanyGateway.CompanyMember existingSigningMember(long companyId, long userId) {
+        if (AuthContext.userId() != userId) accessControl.requireManager(companyId);
+        var result = synchronize(companyId, userId, false);
+        requireActivated(result.member());
+        return result.member();
+    }
+
     /** Server-only desired-state reconciliation; never an API or an impersonated request. */
     FadadaCompanyGateway.CompanyMember reconcileLocalSigningMember(long companyId, long targetUserId) {
         // synchronize rechecks ACTIVE membership, effective signing permission and
@@ -66,6 +74,10 @@ public class FadadaSigningMemberService {
     }
 
     private MemberResolution synchronize(long companyId, long userId) {
+        return synchronize(companyId, userId, true);
+    }
+
+    private MemberResolution synchronize(long companyId, long userId, boolean allowCreation) {
         if (userId <= 0 || !accessControl.isActiveMember(companyId, userId)) throw new BusinessException(ADMIN_REVIEW_REQUIRED, "该账号不是企业的有效成员");
         var role = accessControl.effectiveRole(companyId, userId);
         if (role == null || role.permissions() == null
@@ -94,6 +106,7 @@ public class FadadaSigningMemberService {
         if (existing == null) existing = findPersonMember(identity.getOpenCorpId(), person, checked,
                 gateway.listMemberIds(identity.getOpenCorpId(), null));
         if (existing != null) return new MemberResolution(identity, existing);
+        if (!allowCreation) throw new BusinessException(MEMBER_ACTIVATION_REQUIRED, "电子签成员待后台同步，请稍后重新检查");
         if (!hasText(person.name()) || !usableProviderAccount(person)) {
             throw new BusinessException(ADMIN_REVIEW_REQUIRED, "电子签实名账号尚未返回可关联的手机号或邮箱，请本人先在电子签平台绑定账号后重新同步；系统不会使用其他联系手机号代替");
         }

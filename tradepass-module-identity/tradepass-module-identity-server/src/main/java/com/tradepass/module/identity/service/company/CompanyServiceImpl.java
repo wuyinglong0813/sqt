@@ -783,9 +783,38 @@ public class CompanyServiceImpl implements CompanyService {
         AccessControlOperations.EffectiveRole effective = "ACTIVE".equals(status)
                 ? accessControlService.effectiveRole(parseId(companyId), parseId(string(row.get("userId"))))
                 : new AccessControlOperations.EffectiveRole(roleCode, rolePermissionService.roleText(roleCode), List.of());
+        boolean signer = "ACTIVE".equals(status) && effective.permissions().stream()
+                .anyMatch(permission -> "all".equals(permission) || "contract_sign".equals(permission));
+        String signingStatus = signer ? signingDeliveryStatus(string(row.get("signingStatus"))) : "NOT_REQUIRED";
         return new AuthorizationRecord(String.valueOf(row.get("id")), companyId, String.valueOf(row.get("userId")),
                 displayName, effective.code(), effective.name(), effective.permissions(), status,
-                phone != null ? phone : "", "VERIFIED".equals(string(row.get("identityStatus"))), effective.roles());
+                phone != null ? phone : "", "VERIFIED".equals(string(row.get("identityStatus"))), effective.roles(),
+                signingStatus, signingDeliveryMessage(signingStatus));
+    }
+
+    private String signingDeliveryStatus(String status) {
+        if (status == null || "READY".equals(status)) return "PENDING";
+        return switch (status) {
+            case "SIGNING_READY" -> "READY";
+            case "PENDING", "SYNCING", "WAITING_COMPANY_AUTHORIZATION", "ACTIVATION_REQUIRED",
+                    "WAITING_PERSONAL_IDENTITY", "WAITING_SEAL_AUTHORIZATION", "WAITING_SEAL_CONFIGURATION",
+                    "ADMIN_REVIEW_REQUIRED" -> status;
+            default -> "PENDING";
+        };
+    }
+
+    private String signingDeliveryMessage(String status) {
+        return switch (status) {
+            case "READY" -> "签署权限已就绪";
+            case "WAITING_SEAL_AUTHORIZATION" -> "用印授权待确认，请授权人在商签通内完成办理";
+            case "WAITING_SEAL_CONFIGURATION" -> "待设置企业签署印章";
+            case "WAITING_COMPANY_AUTHORIZATION" -> "待补齐企业电子签授权";
+            case "WAITING_PERSONAL_IDENTITY" -> "待成员完成本人认证";
+            case "ACTIVATION_REQUIRED" -> "待成员确认加入电子签企业";
+            case "ADMIN_REVIEW_REQUIRED" -> "待管理员核对签署条件";
+            case "NOT_REQUIRED" -> "";
+            default -> "签署权限同步中";
+        };
     }
 
     private List<MemberRole> memberRoles(List<RoleDefDO> roles) {

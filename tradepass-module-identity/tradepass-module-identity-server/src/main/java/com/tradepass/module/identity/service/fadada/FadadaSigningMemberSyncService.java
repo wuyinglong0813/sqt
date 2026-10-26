@@ -23,13 +23,13 @@ import static com.tradepass.framework.common.exception.SigningErrorCodes.*;
 public class FadadaSigningMemberSyncService {
     private static final Logger log = LoggerFactory.getLogger(FadadaSigningMemberSyncService.class);
     private final FadadaSigningMemberSyncMapper queue;
-    private final FadadaSigningMemberService members;
+    private final FadadaSigningAuthorizationService authorization;
     private final FadadaProperties properties;
     private final TransactionTemplate enqueueTransaction;
 
-    public FadadaSigningMemberSyncService(FadadaSigningMemberSyncMapper queue, FadadaSigningMemberService members,
+    public FadadaSigningMemberSyncService(FadadaSigningMemberSyncMapper queue, FadadaSigningAuthorizationService authorization,
             FadadaProperties properties, PlatformTransactionManager transactions) {
-        this.queue = queue; this.members = members; this.properties = properties;
+        this.queue = queue; this.authorization = authorization; this.properties = properties;
         this.enqueueTransaction = new TransactionTemplate(transactions);
         this.enqueueTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -62,20 +62,24 @@ public class FadadaSigningMemberSyncService {
     public void reconcile() {
         if (!properties.isEnabled()) return;
         queue.backfill();
+        queue.recheckLegacyReady();
         for (var candidate : queue.due()) {
             String token = UUID.randomUUID().toString();
             if (queue.claim(candidate.companyId(), candidate.targetUserId(), token) != 1) continue;
             try {
                 // No AuthContext is synthesized. The server-only entry point rechecks
                 // the target's current local authority and exact remote personal identity.
-                members.reconcileLocalSigningMember(candidate.companyId(), candidate.targetUserId());
-                finish(candidate, token, "READY", 0, "", 86400);
+                authorization.reconcileLocalSigningAuthorization(candidate.companyId(), candidate.targetUserId());
+                // Legacy READY meant membership only. Do not expose it as a delivered seal grant.
+                finish(candidate, token, "SIGNING_READY", 0, "", 86400);
             } catch (BusinessException failure) {
                 int code = failure.getCode();
                 String status = switch (code) {
                     case COMPANY_AUTHORIZATION_REQUIRED, COMPANY_IDENTITY_REQUIRED -> "WAITING_COMPANY_AUTHORIZATION";
                     case MEMBER_ACTIVATION_REQUIRED -> "ACTIVATION_REQUIRED";
                     case PERSONAL_IDENTITY_REQUIRED -> "WAITING_PERSONAL_IDENTITY";
+                    case SEAL_AUTHORIZATION_REQUIRED -> "WAITING_SEAL_AUTHORIZATION";
+                    case SEAL_CONFIGURATION_REQUIRED -> "WAITING_SEAL_CONFIGURATION";
                     case ADMIN_REVIEW_REQUIRED -> "ADMIN_REVIEW_REQUIRED";
                     default -> "PENDING";
                 };

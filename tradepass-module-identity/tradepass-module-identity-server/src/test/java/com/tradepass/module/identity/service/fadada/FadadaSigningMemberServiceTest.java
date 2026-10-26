@@ -89,6 +89,16 @@ class FadadaSigningMemberServiceTest {
     }
 
     @Test
+    void statusPollingCannotCreateAnInvitationWhenTheTargetHasNotBeenSynchronized() {
+        var f = new Fixture();
+        when(f.gateway.listMemberIds(anyString(), nullable(String.class))).thenReturn(List.of());
+        assertThatThrownBy(() -> f.service.existingSigningMember(3L, 7L))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46102));
+        verify(f.gateway, never()).createMember(any());
+        verify(f.gateway, never()).createMemberActivationUrl(anyString(), anyLong());
+    }
+
+    @Test
     void aCorporateNicknameStillMatchesByPersonalFddIdWithoutRegisteringTheMemberAgain() {
         var f = new Fixture();
         when(f.gateway.listMemberIds("corp-3", "武英龙")).thenReturn(List.of(88L));

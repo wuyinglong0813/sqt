@@ -111,16 +111,20 @@ class FadadaSigningAuthorizationServiceTest {
         verify(f.seals, never()).memberSealGrantUrl(anyString(), anyLong(), anyLong(), anyString());
     }
 
-    @Test
-    void missingUsePermissionExplainsTheOneTimeGrantWithoutOpeningItForTheSigner() {
+    @ParameterizedTest @ValueSource(strings = {"", "super_admin"})
+    void administratorRolesCannotSubstituteForTheCurrentMembersEffectiveSealGrant(String providerRole) {
         var f = new Fixture(); AuthContext.set(7L, 3L);
+        when(f.members.ensureSigningMember(3L, 7L)).thenReturn(new CompanyMember(
+                88L, "activated", providerRole.isEmpty() ? List.of() : List.of(providerRole), "person-7"));
 
         assertThatThrownBy(() -> f.service.requireCurrentSigningAuthorization(3L))
                 .isInstanceOfSatisfying(com.tradepass.framework.common.exception.BusinessException.class,
                         error -> assertThat(error.getCode()).isEqualTo(46104))
-                .hasMessageContaining("印章管理员", "授权有效期间无需重复办理");
+                .hasMessageContaining("商签通组织成员中完成用印确认", "授权有效期间无需重复办理",
+                        "实际授权生效后即可继续签署");
 
         verify(f.seals, never()).memberSealGrantUrl(anyString(), anyLong(), anyLong(), anyString());
+        verify(f.access, never()).requireManager(anyLong());
     }
 
     @Test
@@ -131,6 +135,48 @@ class FadadaSigningAuthorizationServiceTest {
         assertThatThrownBy(() -> f.service.memberSealGrantUrl(3L, 7L)).hasMessageContaining("签署权限");
 
         verifyNoInteractions(f.companies, f.seals);
+    }
+
+    @Test
+    void backgroundDeliveryChecksTheTargetSealWithoutCreatingAnActorSessionOrOpeningAUrl() {
+        var f = new Fixture(); AuthContext.clear();
+        when(f.members.reconcileLocalSigningMember(3L, 7L))
+                .thenReturn(new CompanyMember(88L, "activated", List.of(), "person-7"));
+        assertThatThrownBy(() -> f.service.reconcileLocalSigningAuthorization(3L, 7L))
+                .isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.getCode()).isEqualTo(46104));
+        when(f.seals.memberSealGrants("corp-3", 88L))
+                .thenReturn(List.of(new MemberSealGrant("912", "enable", "effective")));
+        assertThatCode(() -> f.service.reconcileLocalSigningAuthorization(3L, 7L)).doesNotThrowAnyException();
+        assertThat(AuthContext.get()).isNull();
+        verifyNoInteractions(f.access);
+        verify(f.seals, never()).memberSealGrantUrl(anyString(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    void onlyFreshlyConfirmedGrantEnqueuesDeliveryVerificationForItsExactTarget() {
+        var f = new Fixture();
+        var events = mock(org.springframework.context.ApplicationEventPublisher.class);
+        f.service.setEvents(events);
+        f.service.memberSealGrantUrl(3L, 7L);
+        verifyNoInteractions(events);
+        when(f.seals.memberSealGrants("corp-3", 88L))
+                .thenReturn(List.of(new MemberSealGrant("912", "enable", "effective")));
+        assertThat(f.service.memberSealGrantUrl(3L, 7L).status()).isEqualTo("READY");
+        verify(events).publishEvent(new SigningMemberSyncRequested(3L, 7L, 99L, "SEAL_GRANT_CONFIRMED"));
+    }
+
+    @Test
+    void pollingTheExactTargetsDeliveryNeverIssuesAnotherGrantLink() {
+        var f = new Fixture();
+        assertThat(f.service.memberSealGrantStatus(3L, 7L).status()).isEqualTo("AUTHORIZATION_REQUIRED");
+        when(f.seals.memberSealGrants("corp-3", 88L))
+                .thenReturn(List.of(new MemberSealGrant("912", "enable", "effective")));
+        assertThat(f.service.memberSealGrantStatus(3L, 7L).status()).isEqualTo("READY");
+        verify(f.members, times(2)).existingSigningMember(3L, 7L);
+        verify(f.members, never()).ensureSigningMember(anyLong(), anyLong());
+        verify(f.access, times(2)).requireManager(3L);
+        verify(f.access, times(2)).requirePermission(3L, "seal_manage");
+        verify(f.seals, never()).memberSealGrantUrl(anyString(), anyLong(), anyLong(), anyString());
     }
 
     private static class Fixture {
@@ -145,6 +191,7 @@ class FadadaSigningAuthorizationServiceTest {
             when(companies.requireVerified(3L)).thenReturn(identity);
             when(companies.enabledSealId(3L)).thenReturn("912");
             when(members.ensureSigningMember(3L, 7L)).thenReturn(new CompanyMember(88L, "activated", List.of(), "person-7"));
+            when(members.existingSigningMember(3L, 7L)).thenReturn(new CompanyMember(88L, "activated", List.of(), "person-7"));
             when(seals.memberSealGrants("corp-3", 88L)).thenReturn(List.of());
             when(seals.memberSealGrantUrl("corp-3", 912L, 88L, "tradepass-user-99"))
                     .thenReturn("https://example.test/grant");

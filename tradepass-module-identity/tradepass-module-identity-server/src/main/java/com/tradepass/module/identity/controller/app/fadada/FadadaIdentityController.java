@@ -83,6 +83,11 @@ public class FadadaIdentityController {
         return ApiResponse.ok(signingAuthorizationService.memberSealGrantUrl(companyId, userId));
     }
 
+    @PostMapping("/companies/{companyId}/members/{userId}/seal-grant-status")
+    public ApiResponse<ServiceUrlPayload> memberSealGrantStatus(@PathVariable long companyId, @PathVariable long userId) {
+        return ApiResponse.ok(signingAuthorizationService.memberSealGrantStatus(companyId, userId));
+    }
+
     @PostMapping("/companies/{companyId}/legal-representative/auth-url")
     public ApiResponse<ServiceUrlPayload> legalRepresentativeUrl(@PathVariable long companyId) {
         return ApiResponse.ok(companyService.createLegalRepresentativeUrl(companyId));

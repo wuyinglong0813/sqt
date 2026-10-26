@@ -647,6 +647,22 @@ class CompanyServiceTest {
     }
 
     @Test
+    void memberActivationAloneCannotAppearAsDeliveredSigningPermission() {
+        when(accessControl.effectiveRole(anyLong(), anyLong()))
+                .thenReturn(new AccessControlOperations.EffectiveRole("ADMIN", "管理员", List.of("contract_sign")));
+        when(memberMapper.selectAuthorizationRecords(3L)).thenReturn(List.of(
+                Map.of("id", 12L, "userId", 7L, "nickname", "甲", "roleCode", "ADMIN", "status", "ACTIVE", "signingStatus", "READY"),
+                Map.of("id", 13L, "userId", 8L, "nickname", "乙", "roleCode", "ADMIN", "status", "ACTIVE", "signingStatus", "SIGNING_READY"),
+                Map.of("id", 14L, "userId", 9L, "nickname", "丙", "roleCode", "ADMIN", "status", "ACTIVE", "signingStatus", "WAITING_SEAL_AUTHORIZATION")
+        ));
+        var rows = service.listMembers("3");
+        assertThat(rows).extracting(AuthorizationRecord::signingStatus)
+                .containsExactly("PENDING", "READY", "WAITING_SEAL_AUTHORIZATION");
+        assertThat(rows).extracting(AuthorizationRecord::signingMessage)
+                .containsExactly("签署权限同步中", "签署权限已就绪", "用印授权待确认，请授权人在商签通内完成办理");
+    }
+
+    @Test
     void listsUpdatesAndDeletesRolesWithinOwningCompany() {
         when(accessControl.resolveCompanyId("3")).thenReturn(3L);
         RoleDefDO existing = new RoleDefDO();

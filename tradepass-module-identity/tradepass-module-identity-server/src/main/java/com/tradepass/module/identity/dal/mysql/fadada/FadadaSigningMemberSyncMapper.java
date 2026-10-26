@@ -42,6 +42,22 @@ public interface FadadaSigningMemberSyncMapper extends BaseMapper<FadadaSigningM
         """)
     int backfill();
 
+    /** Older READY rows attest membership only, not an effective signing-seal grant. */
+    @Update("""
+        UPDATE fadada_signing_member_sync
+        SET status = 'PENDING', next_attempt_at = LEAST(next_attempt_at, CURRENT_TIMESTAMP)
+        WHERE status = 'READY' AND (lease_until IS NULL OR lease_until < CURRENT_TIMESTAMP)
+        """)
+    int recheckLegacyReady();
+
+    /** Runs with the local seal refresh transaction; a leased old check cannot consume this new work. */
+    @Update("""
+        UPDATE fadada_signing_member_sync
+        SET status = 'PENDING', next_attempt_at = LEAST(next_attempt_at, CURRENT_TIMESTAMP)
+        WHERE company_id = #{companyId}
+        """)
+    int invalidateCompanySealProof(@Param("companyId") long companyId);
+
     @Select("""
         SELECT company_id AS companyId, user_id AS targetUserId, requested_by AS actorUserId
         FROM fadada_signing_member_sync

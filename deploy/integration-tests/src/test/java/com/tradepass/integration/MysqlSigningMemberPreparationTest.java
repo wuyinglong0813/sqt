@@ -3,6 +3,7 @@ package com.tradepass.integration;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.tradepass.module.identity.dal.mysql.fadada.FadadaSigningMemberSyncMapper;
+import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import com.tradepass.support.RepoRoot;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
@@ -33,6 +34,7 @@ class MysqlSigningMemberPreparationTest {
                 "tradepass-module-identity/tradepass-module-identity-server/src/main/resources/db/owned/identity").toAbsolutePath();
         Flyway.configure().dataSource(source).locations(location).target("3").load().migrate();
         jdbc.update("INSERT INTO company_member(id,company_id,user_id,role_code,status) VALUES (101,3,7,'SALES','ACTIVE'),(102,3,8,'SALES','PENDING')");
+        jdbc.update("INSERT INTO sys_user(id,openid,nickname) VALUES (7,'signing-target-7','测试成员'),(8,'signing-target-8','待审批成员')");
         jdbc.update("INSERT INTO fadada_user_identity(id,user_id,client_user_id,local_status) VALUES (1,7,'user-7','VERIFIED'),(2,8,'user-8','VERIFIED')");
         jdbc.update("INSERT INTO fadada_corp_identity(id,company_id,applicant_user_id,client_corp_id,auth_scopes,local_status) VALUES (1,3,7,'corp-3','[]','VERIFIED')");
         var flyway = Flyway.configure().dataSource(source).locations(location).load();
@@ -40,6 +42,7 @@ class MysqlSigningMemberPreparationTest {
 
         var configuration = new MybatisConfiguration();
         configuration.setMapUnderscoreToCamelCase(true); configuration.addMapper(FadadaSigningMemberSyncMapper.class);
+        configuration.addMapper(CompanyMemberMapper.class);
         var factory = new MybatisSqlSessionFactoryBean(); factory.setDataSource(source); factory.setConfiguration(configuration);
         var session = new SqlSessionTemplate(factory.getObject());
         var queue = session.getMapper(FadadaSigningMemberSyncMapper.class);
@@ -81,6 +84,27 @@ class MysqlSigningMemberPreparationTest {
         assertThat(queue.finish(3L, 7L, "lease-4", "ACTIVATION_REQUIRED", 46102, "本人待确认加入", 600)).isOne();
         assertThat(queue.enqueue(3L, 8L, 99L, "MEMBER_APPROVED")).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fadada_signing_member_sync", Long.class)).isEqualTo(1L);
+
+        // A historical membership-only READY must be rechecked even after its daily backoff.
+        jdbc.update("UPDATE fadada_signing_member_sync SET status='READY',next_attempt_at=DATE_ADD(CURRENT_TIMESTAMP,INTERVAL 1 DAY)");
+        assertThat(queue.recheckLegacyReady()).isOne();
+        assertThat(queue.due()).containsExactly(new FadadaSigningMemberSyncMapper.Candidate(3L, 7L, 99L));
+        assertThat(queue.claim(3L, 7L, "grant-check")).isOne();
+        assertThat(queue.finish(3L, 7L, "grant-check", "SIGNING_READY", 0, "", 86400)).isOne();
+        assertThat(queue.recheckLegacyReady()).isZero();
+        var members = session.getMapper(CompanyMemberMapper.class);
+        assertThat(members.selectAuthorizationRecords(3L).stream()
+                .filter(row -> ((Number) row.get("userId")).longValue() == 7L).findFirst().orElseThrow())
+                .containsEntry("signingStatus", "SIGNING_READY");
+        assertThat(members.selectAuthorizationPageRecords(3L, "ACTIVE", 10, 0L)).hasSize(1);
+        assertThat(members.selectAuthorizationRecords(4L)).isEmpty();
+        jdbc.update("INSERT INTO fadada_signing_member_sync(id,company_id,user_id,trigger_source,status) VALUES ('4:7',4,7,'OTHER_COMPANY','SIGNING_READY')");
+        assertThat(queue.invalidateCompanySealProof(3L)).isOne();
+        assertThat(jdbc.queryForObject("SELECT status FROM fadada_signing_member_sync WHERE company_id=4", String.class)).isEqualTo("SIGNING_READY");
+        assertThat(queue.claim(3L, 7L, "old-default-seal")).isOne();
+        assertThat(queue.invalidateCompanySealProof(3L)).isOne();
+        assertThat(queue.finish(3L, 7L, "old-default-seal", "SIGNING_READY", 0, "", 86400)).isOne();
+        assertThat(jdbc.queryForObject("SELECT status FROM fadada_signing_member_sync WHERE company_id=3", String.class)).isEqualTo("PENDING");
         assertThat(flyway.migrate().migrationsExecuted).isZero();
     }
 }

@@ -186,6 +186,8 @@ class FadadaCompanyVerificationTest {
     @Test
     void resourceRefreshDoesNotDependOnTheFormerOperatorsMembershipAndRetriesSealFailures() {
         var f = new Fixture(false);
+        var signingPreparation = mock(com.tradepass.module.identity.dal.mysql.fadada.FadadaSigningMemberSyncMapper.class);
+        ((FadadaCompanyServiceImpl) f.service).setSigningPreparation(signingPreparation);
         f.company.setCertificationStatus("VERIFIED"); f.identity.setLocalStatus("VERIFIED");
         f.identity.setVerifiedAt(java.time.LocalDateTime.now().minusYears(1));
         f.identity.setApplicantUserId(99L); f.documentedOperator("legal_rep", "open-user-99");
@@ -193,10 +195,15 @@ class FadadaCompanyVerificationTest {
                 .thenReturn(List.of(new FadadaCompanyGateway.SealInfo("912", "合同章", "corp", "enable")));
         assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
         assertThat(f.identity.getSealSyncWarning()).contains("暂未同步");
+        verifyNoInteractions(signingPreparation);
         assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
         assertThat(f.identity.getSealSyncWarning()).isEmpty();
+        verify(signingPreparation).invalidateCompanySealProof(3L);
+        when(f.gateway.listSeals("corp-3")).thenReturn(List.of(new FadadaCompanyGateway.SealInfo("913", "新合同章", "corp", "enable")));
+        assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
+        verify(signingPreparation, times(2)).invalidateCompanySealProof(3L);
         verifyNoInteractions(f.personal, f.certifications);
-        verify(f.gateway, times(2)).listSeals("corp-3");
+        verify(f.gateway, times(3)).listSeals("corp-3");
     }
 
     @Test
