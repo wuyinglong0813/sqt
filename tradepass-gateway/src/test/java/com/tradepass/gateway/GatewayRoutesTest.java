@@ -12,11 +12,13 @@ import org.springframework.mock.env.MockEnvironment;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.context.support.StaticWebApplicationContext;
 import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
 class GatewayRoutesTest {
@@ -33,6 +35,7 @@ class GatewayRoutesTest {
                     .getRoutes().collectList().block();
             assertNotNull(routes);
             int count = 0;
+            boolean sealGrantStatusMapped = false;
             var scanner = new ClassPathScanningCandidateComponentProvider(true);
             for (var candidate : scanner.findCandidateComponents("com.tradepass")) {
                 Class<?> type = Class.forName(candidate.getBeanClassName());
@@ -43,14 +46,20 @@ class GatewayRoutesTest {
                     for (String path : mapping.getPatternValues()) {
                         String concrete = path.replaceAll("\\{[^}]+}", "123");
                         String expected = RouteOwnership.owner(type, method);
+                        if (path.equals("/api/fadada/companies/{companyId}/members/{userId}/seal-grant-status")) {
+                            assertEquals(Set.of(RequestMethod.POST), mapping.getMethodsCondition().getMethods());
+                            assertEquals("identity", expected);
+                            sealGrantStatusMapped = true;
+                        }
                         assertEquals(expected.equals("all") ? "identity" : expected, owner(routes, concrete), mapping.toString());
                     }
                     count++;
                 }
             }
-            // Includes signing prerequisites, member preparation, seal grants, preview manifests and invitation previews.
+            // Includes signing prerequisites, member preparation, seal grants/status, preview manifests and invitation previews.
             // Every mapping above must retain its assigned service owner.
-            assertEquals(187, count, "Update the original HTTP contract deliberately when adding APIs");
+            assertEquals(188, count, "Update the original HTTP contract deliberately when adding APIs");
+            assertTrue(sealGrantStatusMapped, "The member seal-grant status API must remain available via POST in identity");
             assertNull(owner(routes, "/internal/identity/resolve"));
             assertNull(owner(routes, "/internal/storage/put"));
             assertNull(owner(routes, "/actuator/prometheus"));

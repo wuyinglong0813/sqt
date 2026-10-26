@@ -140,6 +140,7 @@
 {POST [/api/fadada/companies/{companyId}/identity/sync]}
 {POST [/api/fadada/companies/{companyId}/legal-representative/auth-url]}
 {POST [/api/fadada/companies/{companyId}/legal-representative/sync]}
+{POST [/api/fadada/companies/{companyId}/members/{userId}/seal-grant-status]}
 {POST [/api/fadada/companies/{companyId}/members/{userId}/seal-grant-url]}
 {POST [/api/fadada/companies/{companyId}/organization-manage-url]}
 {POST [/api/fadada/companies/{companyId}/seal-manage-url]}
