@@ -268,7 +268,7 @@ public class RetailService {
         var customer = (Map<?, ?>) detail.get("customer");
         List<List<String>> rows = new ArrayList<>(); int index = 1;
         for (var item : items(id)) rows.add(List.of(String.valueOf(index++), String.valueOf(item.get("productName")),
-                String.valueOf(item.get("specification")), String.valueOf(item.get("baseUnit")),
+                text((String) item.get("model"), 128, "型号"), String.valueOf(item.get("specification")), String.valueOf(item.get("baseUnit")),
                 String.valueOf(item.get("quantity")), String.valueOf(item.get("unitPrice")),
                 String.valueOf(item.get("amount")), String.valueOf(item.get("remark"))
                     + (decimal(item.get("amount")).compareTo(decimal(item.get("quantity")).multiply(decimal(item.get("unitPrice")))
@@ -280,7 +280,7 @@ public class RetailService {
         content.put("contractNo", detail.getOrDefault("originalDocumentNo", "零售业务"));
         content.put("date", detail.get("orderDate")); content.put("totalAmount", detail.get("amount"));
         content.put("preparedByName", detail.get("preparedByName")); content.put("remark", detail.get("remark"));
-        content.put("columns", List.of("序号", "品名", "规格", "单位", "数量", "单价", "金额", "备注"));
+        content.put("columns", List.of("序号", "品名", "型号", "规格", "单位", "数量", "单价", "金额", "备注"));
         content.put("rows", rows); content.put("blankRows", Math.max(8, rows.size()));
         BusinessDocumentDO document = new BusinessDocumentDO();
         document.setId(id); document.setCompanyId(AuthContext.requireCompanyId());
@@ -301,15 +301,16 @@ public class RetailService {
         if (products.isEmpty()) throw new BusinessException("该单据没有需要处理库存的商品");
         for (var item : products) {
             String name = String.valueOf(item.get("productName")), spec = String.valueOf(item.get("specification")), unit = String.valueOf(item.get("baseUnit"));
-            var ids = jdbc.queryForList("SELECT id FROM inventory_product WHERE company_id = ? AND product_name = ? AND specification = ? AND base_unit = ?", Long.class, cid, name, spec, unit);
+            String model = text((String) item.get("model"), 128, "型号");
+            var ids = jdbc.queryForList("SELECT id FROM inventory_product WHERE company_id = ? AND product_name = ? AND specification = ? AND base_unit = ? AND model = ?", Long.class, cid, name, spec, unit, model);
             long productId;
             if (ids.isEmpty()) {
                 if (!returning) throw new BusinessException(name + "没有库存，请先入库或选择暂不出库");
                 jdbc.update("""
-                        INSERT INTO inventory_product (id, company_id, product_name, specification, base_unit) VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO inventory_product (id, company_id, product_name, model, specification, base_unit) VALUES (?, ?, ?, ?, ?, ?)
                         ON DUPLICATE KEY UPDATE id = id
-                        """, ApplicationIds.next(), cid, name, spec, unit);
-                productId = Objects.requireNonNull(jdbc.queryForObject("SELECT id FROM inventory_product WHERE company_id = ? AND product_name = ? AND specification = ? AND base_unit = ?", Long.class, cid, name, spec, unit));
+                        """, ApplicationIds.next(), cid, name, model, spec, unit);
+                productId = Objects.requireNonNull(jdbc.queryForObject("SELECT id FROM inventory_product WHERE company_id = ? AND product_name = ? AND specification = ? AND base_unit = ? AND model = ?", Long.class, cid, name, spec, unit, model));
             } else productId = ids.get(0);
             jdbc.update("""
                     INSERT INTO inventory_balance (id, company_id, warehouse_id, product_id, quantity, unit_price, inventory_amount)
@@ -350,7 +351,7 @@ public class RetailService {
         for (var item : request.items()) {
             if (item == null) throw new BusinessException("商品明细不能为空");
             BigDecimal quantity = validDecimal(item.quantity(), 4, true, "数量");
-            String name, spec, unit, lineType; BigDecimal price; Long originalId = null;
+            String name, model, spec, unit, lineType; BigDecimal price; Long originalId = null;
             Map<String, Object> returnSource = null;
             if (returning) {
                 originalId = item.originalItemId();
@@ -361,9 +362,11 @@ public class RetailService {
                 ensureReturnQuantity(source, quantity, selfId);
                 returnSource = source;
                 name = String.valueOf(source.get("productName")); spec = String.valueOf(source.get("specification"));
+                model = text((String) source.get("model"), 128, "型号");
                 unit = String.valueOf(source.get("baseUnit")); price = decimal(source.get("unitPrice")); lineType = String.valueOf(source.get("lineType"));
             } else {
                 name = required(item.productName(), 128, "商品名称"); spec = text(item.specification(), 256, "规格");
+                model = text(item.model(), 128, "型号");
                 lineType = item.lineType() == null ? "PRODUCT" : item.lineType();
                 if (!List.of("PRODUCT", "FEE").contains(lineType)) throw new BusinessException("明细类型不正确");
                 unit = "FEE".equals(lineType) ? "项" : required(item.baseUnit(), 32, "单位");
@@ -373,7 +376,7 @@ public class RetailService {
             BigDecimal amount = returning ? refundAmount(returnSource, quantity, selfId)
                     : quantity.multiply(price).setScale(2, RoundingMode.HALF_UP);
             checkAmount(amount);
-            result.add(new NormalizedItem(originalId, lineType, name, spec, unit, quantity, price, amount, text(item.remark(), 500, "明细备注")));
+            result.add(new NormalizedItem(originalId, lineType, name, model, spec, unit, quantity, price, amount, text(item.remark(), 500, "明细备注")));
         }
         checkAmount(total(result)); return result;
     }
@@ -409,13 +412,13 @@ public class RetailService {
         int line = 1;
         for (var item : items) jdbc.update("""
                 INSERT INTO retail_document_item (id, document_id, line_no, line_type, original_item_id, product_name,
-                    specification, base_unit, quantity, unit_price, amount, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, ApplicationIds.next(), id, line++, item.lineType(), item.originalId(), item.name(), item.spec(), item.unit(), item.quantity(), item.price(), item.amount(), item.remark());
+                    model, specification, base_unit, quantity, unit_price, amount, remark) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, ApplicationIds.next(), id, line++, item.lineType(), item.originalId(), item.name(), item.model(), item.spec(), item.unit(), item.quantity(), item.price(), item.amount(), item.remark());
     }
     private List<Map<String, Object>> items(Long id) {
         var rows = jdbc.queryForList("""
                 SELECT id, line_type AS lineType, original_item_id AS originalItemId, product_name AS productName,
-                    specification, base_unit AS baseUnit, quantity, unit_price AS unitPrice, amount, remark
+                    model, specification, base_unit AS baseUnit, quantity, unit_price AS unitPrice, amount, remark
                 FROM retail_document_item WHERE document_id = ? ORDER BY line_no
                 """, id);
         for (var row : rows) {
@@ -489,6 +492,6 @@ public class RetailService {
     private static long number(Object value) { return Long.parseLong(String.valueOf(value)); }
     private static BigDecimal total(List<NormalizedItem> items) { return items.stream().map(NormalizedItem::amount).reduce(BigDecimal.ZERO, BigDecimal::add); }
     private static String label(String type) { return "RETURN_ORDER".equals(type) ? "退货单" : "销售单"; }
-    private record NormalizedItem(Long originalId, String lineType, String name, String spec, String unit,
+    private record NormalizedItem(Long originalId, String lineType, String name, String model, String spec, String unit,
                                   BigDecimal quantity, BigDecimal price, BigDecimal amount, String remark) {}
 }

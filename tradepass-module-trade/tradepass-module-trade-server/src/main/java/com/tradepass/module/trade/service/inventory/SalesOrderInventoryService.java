@@ -48,7 +48,10 @@ public interface SalesOrderInventoryService {
     List<Map<String, Object>> listWarehouses();
     Map<String, Object> createWarehouse(String name, String address);
     Map<String, Object> inventoryOverview();
-    Map<String, Object> manualInbound(Long warehouseId, String requestId, String name, String specification, String unit, BigDecimal quantity, BigDecimal price, String remark);
+    default Map<String, Object> manualInbound(Long warehouseId, String requestId, String name, String specification, String unit, BigDecimal quantity, BigDecimal price, String remark) {
+        return manualInbound(warehouseId, requestId, name, "", specification, unit, quantity, price, remark);
+    }
+    Map<String, Object> manualInbound(Long warehouseId, String requestId, String name, String model, String specification, String unit, BigDecimal quantity, BigDecimal price, String remark);
     List<Map<String, Object>> searchProducts(String keyword, Integer limit);
     Map<String, Object> receive(Long documentId, String decision, Long warehouseId);
     Map<String, Object> receive(Long documentId, String decision, Long warehouseId, String rejectedReason);

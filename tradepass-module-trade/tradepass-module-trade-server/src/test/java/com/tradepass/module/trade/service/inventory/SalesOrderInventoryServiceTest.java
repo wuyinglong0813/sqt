@@ -147,7 +147,7 @@ class SalesOrderInventoryServiceTest {
     void manualInboundWritesBalanceAndAuditMovement() {
         when(jdbc.queryForObject(anyString(), eq(Long.class), eq(9L), eq(4L))).thenReturn(1L);
         doReturn(List.of(77L)).when(jdbc).query(argThat(sql -> sql.contains("FROM inventory_product")),
-                any(RowMapper.class), eq(4L), eq("商品"), eq(""), eq("件"));
+                any(RowMapper.class), eq(4L), eq("商品"), eq(""), eq(""), eq("件"));
         when(jdbc.queryForObject(anyString(), eq(BigDecimal.class), eq(4L), eq(9L), eq(77L))).thenReturn(new BigDecimal("2"));
         service.manualInbound(9L, "manual-request-123", "商品", "", "件", new BigDecimal("2"), new BigDecimal("3.5"), "期初库存");
         verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_manual_entry")),
@@ -155,6 +155,21 @@ class SalesOrderInventoryServiceTest {
                 eq(new BigDecimal("3.5")), eq(new BigDecimal("7.00")), eq("期初库存"), eq(8L));
         verify(jdbc).update(argThat(sql -> sql.contains("MANUAL_INBOUND")), anyLong(), eq(4L), eq(9L), eq(77L),
                 anyLong(), eq(new BigDecimal("2")), eq(new BigDecimal("2")), eq(8L));
+    }
+
+    @Test
+    void manualInboundSeparatesModelFromSpecificationAndProductIdentity() {
+        when(jdbc.queryForObject(anyString(), eq(Long.class), eq(9L), eq(4L))).thenReturn(1L);
+        doReturn(List.of(77L)).when(jdbc).query(argThat(sql -> sql.contains("FROM inventory_product")
+                        && sql.contains("model = ?")), any(RowMapper.class),
+                eq(4L), eq("电缆"), eq("YJV"), eq("3×25"), eq("米"));
+        service.manualInbound(9L, "manual-model-12345", " 电缆 ", " YJV ", " 3×25 ", "米",
+                BigDecimal.ONE, BigDecimal.TEN, "");
+        verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_manual_entry")),
+                anyLong(), eq(4L), eq("manual-model-12345"), eq(9L), eq(77L), eq(BigDecimal.ONE),
+                eq(BigDecimal.TEN), eq(new BigDecimal("10.00")), eq(""), eq(8L));
+        assertThatThrownBy(() -> service.manualInbound(9L, "manual-model-12346", "电缆", "x".repeat(129),
+                "3×25", "米", BigDecimal.ONE, BigDecimal.TEN, "")).isInstanceOf(BusinessException.class);
     }
 
     @Test
@@ -192,6 +207,32 @@ class SalesOrderInventoryServiceTest {
     }
 
     @Test
+    void snapshotsSeparateModelAndSpecificationColumnsWithoutReusingOneForBoth() {
+        document.setContent("""
+                {"columns":["品名","型号","规格","单位","数量","单价","金额"],
+                 "rows":[["电缆"," YJV ","3×25","米","2","3.5","7"]]}
+                """);
+        service.saveDocumentItems(document);
+        verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO business_document_item")),
+                anyLong(), eq(31L), eq(3L), eq(4L), eq(1), eq("PRODUCT"), eq("电缆"), eq("YJV"),
+                eq("3×25"), eq("米"), eq(new BigDecimal("2.0000")), eq(new BigDecimal("3.500000")),
+                eq(new BigDecimal("7.00")), eq(""));
+    }
+
+    @Test
+    void keepsHistoricalCombinedSpecificationModelColumnsAsSpecifications() {
+        document.setContent("""
+                {"columns":["品名","规格型号","单位","数量","单价","金额"],
+                 "rows":[["电缆","YJV 3×25","米","2","3.5","7"]]}
+                """);
+        service.saveDocumentItems(document);
+        verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO business_document_item")),
+                anyLong(), eq(31L), eq(3L), eq(4L), eq(1), eq("PRODUCT"), eq("电缆"), eq(""),
+                eq("YJV 3×25"), eq("米"), eq(new BigDecimal("2.0000")), eq(new BigDecimal("3.500000")),
+                eq(new BigDecimal("7.00")), eq(""));
+    }
+
+    @Test
     void snapshotsFeeRowsWithoutTreatingThemAsZeroQuantityProducts() {
         document.setContent("""
                 {"columns":["序号","品名","规格","单位","数量","单价","金额","备注"],
@@ -205,7 +246,7 @@ class SalesOrderInventoryServiceTest {
         service.saveDocumentItems(document);
 
         verify(jdbc).update(argThat(sql -> sql.contains("business_document_item")),
-                anyLong(), eq(31L), eq(3L), eq(4L), eq(2), eq("FEE"), eq("运费"), eq(""), eq("项"),
+                anyLong(), eq(31L), eq(3L), eq(4L), eq(2), eq("FEE"), eq("运费"), eq(""), eq(""), eq("项"),
                 eq(new BigDecimal("1.0000")), eq(new BigDecimal("15.000000")),
                 eq(new BigDecimal("15.00")), eq("送货上门"));
     }
@@ -366,6 +407,8 @@ class SalesOrderInventoryServiceTest {
 
     @Test
     void returnInboundDecreasesBuyerAndIncreasesSupplierInventory() throws Exception {
+        item = new java.util.LinkedHashMap<>(item);
+        item.put("model", "YJV");
         document.setCompanyId(4L);
         document.setRecipientCompanyId(3L);
         document.setSupplierCompanyId(3L);
@@ -405,6 +448,10 @@ class SalesOrderInventoryServiceTest {
 
         assertThat(result).containsEntry("status", "INBOUNDED");
         assertThat(document.getInboundWarehouseId()).isEqualTo(55L);
+        verify(jdbc).query(argThat(sql -> sql.contains("JOIN inventory_balance balance") && sql.contains("product.model = ?")),
+                any(RowMapper.class), eq(4L), eq(44L), eq("商品A"), eq("A-1"), eq("件"), eq("YJV"));
+        verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_product")),
+                anyLong(), eq(3L), eq("商品A"), eq("YJV"), eq("A-1"), eq("件"));
         verify(jdbc).update(argThat(sql -> sql.contains("'RETURN_ORDER_OUTBOUND'")),
                 anyLong(), eq(4L), eq(44L), eq(501L), eq(70L),
                 eq(new BigDecimal("-2.0000")), eq(new BigDecimal("8.0000")), eq(18L));

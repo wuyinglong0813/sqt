@@ -103,10 +103,10 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             jdbc.update("""
                     INSERT INTO business_document_item
                     (id, document_id, issuer_company_id, recipient_company_id, line_no, line_type, product_name,
-                     specification, base_unit, quantity, unit_price, amount, remark)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     model, specification, base_unit, quantity, unit_price, amount, remark)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, ApplicationIds.next(), document.getId(), document.getCompanyId(), document.getRecipientCompanyId(),
-                    item.lineNo(), item.lineType(), item.productName(), item.specification(), item.baseUnit(),
+                    item.lineNo(), item.lineType(), item.productName(), item.model(), item.specification(), item.baseUnit(),
                     item.quantity(), item.unitPrice(), item.amount(), item.remark());
         }
     }
@@ -238,14 +238,14 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         accessControlService.requirePermission(companyId, "inventory_view");
         List<Map<String, Object>> balances = jdbc.query("""
                         SELECT balance.id, warehouse.id AS warehouse_id, warehouse.name AS warehouse_name,
-                               product.id AS product_id, product.product_name, product.specification,
+                               product.id AS product_id, product.product_name, product.model, product.specification,
                                product.base_unit, balance.quantity, balance.unit_price,
                                balance.inventory_amount, balance.updated_at
                         FROM inventory_balance balance
                         JOIN warehouse ON warehouse.id = balance.warehouse_id
                         JOIN inventory_product product ON product.id = balance.product_id
                         WHERE balance.company_id = ? AND balance.quantity <> 0
-                        ORDER BY warehouse.name, product.product_name, product.specification
+                        ORDER BY warehouse.name, product.product_name, product.model, product.specification
                         """, (rs, rowNum) -> {
                     Map<String, Object> view = new LinkedHashMap<>();
                     view.put("id", rs.getLong("id"));
@@ -253,6 +253,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                     view.put("warehouseName", rs.getString("warehouse_name"));
                     view.put("productId", rs.getLong("product_id"));
                     view.put("productName", rs.getString("product_name"));
+                    view.put("model", rs.getString("model"));
                     view.put("specification", rs.getString("specification"));
                     view.put("baseUnit", rs.getString("base_unit"));
                     view.put("quantity", rs.getBigDecimal("quantity"));
@@ -273,14 +274,20 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
     @Transactional
     public Map<String, Object> manualInbound(Long warehouseId, String requestId, String name,
             String specification, String unit, BigDecimal quantity, BigDecimal price, String remark) {
+        return manualInbound(warehouseId, requestId, name, "", specification, unit, quantity, price, remark);
+    }
+
+    @Transactional
+    public Map<String, Object> manualInbound(Long warehouseId, String requestId, String name,
+            String model, String specification, String unit, BigDecimal quantity, BigDecimal price, String remark) {
         long companyId = AuthContext.requireCompanyId();
         accessControlService.requirePermission(companyId, "inventory_receive");
-        name = safeSpec(name); specification = safeSpec(specification); unit = safeSpec(unit);
+        name = safeSpec(name); model = safeSpec(model); specification = safeSpec(specification); unit = safeSpec(unit);
         remark = safeSpec(remark);
         if (requestId == null || !requestId.matches("[a-zA-Z0-9-]{16,64}"))
             throw new BusinessException("入库请求标识无效，请重新打开入库表单");
         if (name.isBlank() || name.length() > 128 || unit.isBlank() || unit.length() > 32
-                || specification.length() > 256 || remark.length() > 500)
+                || model.length() > 128 || specification.length() > 256 || remark.length() > 500)
             throw new BusinessException("请填写商品名称、单位，并检查内容长度");
         if (quantity == null || quantity.signum() <= 0 || quantity.scale() > 4
                 || quantity.compareTo(new BigDecimal("99999999999999")) > 0
@@ -296,7 +303,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         List<Long> existing = jdbc.query("SELECT id FROM inventory_manual_entry WHERE company_id = ? AND request_id = ?",
                 (rs, row) -> rs.getLong(1), companyId, requestId);
         if (!existing.isEmpty()) return Map.of("id", existing.get(0));
-        Long productId = findOrCreateProduct(companyId, name, specification, unit);
+        Long productId = findOrCreateProduct(companyId, name, model, specification, unit);
         Long entryId = ApplicationIds.next();
         jdbc.update("""
                 INSERT INTO inventory_manual_entry
@@ -332,26 +339,28 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         String pattern = "%" + safeKeyword.replace("\\", "\\\\")
                 .replace("%", "\\%").replace("_", "\\_") + "%";
         return jdbc.query("""
-                        SELECT product.id, product.product_name, product.specification,
+                        SELECT product.id, product.product_name, product.model, product.specification,
                                product.base_unit, COALESCE(SUM(balance.quantity), 0) AS quantity
                         FROM inventory_product product
                         LEFT JOIN inventory_balance balance
                           ON balance.product_id = product.id AND balance.company_id = product.company_id
                         WHERE product.company_id = ?
                           AND (? = '' OR product.product_name LIKE ? ESCAPE '\\\\'
+                               OR product.model LIKE ? ESCAPE '\\\\'
                                OR product.specification LIKE ? ESCAPE '\\\\')
-                        GROUP BY product.id, product.product_name, product.specification, product.base_unit
-                        ORDER BY product.product_name, product.specification, product.id
+                        GROUP BY product.id, product.product_name, product.model, product.specification, product.base_unit
+                        ORDER BY product.product_name, product.model, product.specification, product.id
                         LIMIT ?
                         """, (rs, rowNum) -> {
                     Map<String, Object> item = new LinkedHashMap<>();
                     item.put("id", rs.getLong("id"));
                     item.put("productName", rs.getString("product_name"));
+                    item.put("model", rs.getString("model"));
                     item.put("specification", rs.getString("specification"));
                     item.put("baseUnit", rs.getString("base_unit"));
                     item.put("quantity", rs.getBigDecimal("quantity"));
                     return item;
-                }, companyId, safeKeyword, pattern, pattern, safeLimit);
+                }, companyId, safeKeyword, pattern, pattern, pattern, safeLimit);
     }
 
     @Transactional
@@ -524,7 +533,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             if (unitPrice == null || unitPrice.signum() < 0) throw new BusinessException("销售单商品单价不能小于 0");
             BigDecimal inboundAmount = quantity.multiply(unitPrice).setScale(2, RoundingMode.HALF_UP);
             Long productId = findOrCreateProduct(companyId,
-                    String.valueOf(item.get("productName")), String.valueOf(item.get("specification")),
+                    String.valueOf(item.get("productName")), safeSpec(item.get("model")), String.valueOf(item.get("specification")),
                     String.valueOf(item.get("baseUnit")));
             jdbc.update("""
                     INSERT INTO inventory_balance
@@ -725,7 +734,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
 
     private List<Map<String, Object>> documentItems(Long documentId) {
         return jdbc.query("""
-                        SELECT id, line_no, line_type, product_name, specification, base_unit,
+                        SELECT id, line_no, line_type, product_name, model, specification, base_unit,
                                quantity, unit_price, amount, remark
                         FROM business_document_item WHERE document_id = ? ORDER BY line_no
                         """, (rs, rowNum) -> {
@@ -734,6 +743,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                     view.put("lineNo", rs.getInt("line_no"));
                     view.put("lineType", rs.getString("line_type"));
                     view.put("productName", rs.getString("product_name"));
+                    view.put("model", rs.getString("model"));
                     view.put("specification", rs.getString("specification"));
                     view.put("baseUnit", rs.getString("base_unit"));
                     view.put("quantity", rs.getBigDecimal("quantity"));
@@ -750,7 +760,13 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             List<String> columns = new ArrayList<>();
             root.path("columns").forEach(node -> columns.add(node.asText("")));
             int productIndex = findColumn(columns, List.of("品名", "产品", "名称"));
-            int specIndex = findColumn(columns, List.of("规格", "型号"));
+            int specIndex = findColumn(columns, List.of("规格"));
+            // Historical combined 规格型号 columns remain specifications. A separate
+            // 型号 column establishes the independent product-model identity.
+            int modelIndex = -1;
+            for (int i = 0; i < columns.size(); i++) {
+                if (columns.get(i).contains("型号") && !columns.get(i).contains("规格")) { modelIndex = i; break; }
+            }
             int unitIndex = findColumn(columns, List.of("单位"));
             int quantityIndex = findColumn(columns, List.of("数量"));
             int priceIndex = findColumn(columns, List.of("单价"));
@@ -781,7 +797,9 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                 if (amount.signum() == 0 && price.signum() != 0) {
                     amount = quantity.multiply(price).setScale(2, RoundingMode.HALF_UP);
                 }
-                items.add(new SalesItem(lineNo++, lineType, product, cell(row, specIndex).trim(),
+                String model = cell(row, modelIndex).trim();
+                if (model.length() > 128) throw new BusinessException("销售单商品型号不能超过 128 字");
+                items.add(new SalesItem(lineNo++, lineType, product, model, cell(row, specIndex).trim(),
                         defaultText(cell(row, unitIndex), "FEE".equals(lineType) ? "项" : "件"), quantity, price, amount,
                         cell(row, remarkIndex).trim()));
             }
@@ -857,7 +875,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                               AND balance.company_id = product.company_id
                             WHERE product.company_id = ? AND balance.warehouse_id = ?
                               AND product.product_name = ? AND product.specification = ?
-                              AND product.base_unit = ?
+                              AND product.base_unit = ? AND product.model = ?
                             FOR UPDATE
                             """, (rs, rowNum) -> new OutboundStock(
                             rs.getLong("product_id"), quantity, rs.getBigDecimal("quantity"),
@@ -865,7 +883,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                             String.valueOf(item.get("productName"))),
                     buyerCompanyId, document.getOutboundWarehouseId(),
                     String.valueOf(item.get("productName")), safeSpec(item.get("specification")),
-                    String.valueOf(item.get("baseUnit")));
+                    String.valueOf(item.get("baseUnit")), safeSpec(item.get("model")));
             if (matches.isEmpty()) {
                 BigDecimal available = matches.isEmpty() ? BigDecimal.ZERO : matches.get(0).balanceQuantity();
                 throw new BusinessException("退货出库库存不足：" + item.get("productName")
@@ -926,24 +944,28 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
     }
 
     private Long findOrCreateProduct(long companyId, String name, String specification, String unit) {
+        return findOrCreateProduct(companyId, name, "", specification, unit);
+    }
+
+    private Long findOrCreateProduct(long companyId, String name, String model, String specification, String unit) {
         String safeSpec = specification == null || "null".equals(specification) ? "" : specification.trim();
         List<Long> existing = jdbc.query("""
                         SELECT id FROM inventory_product
-                        WHERE company_id = ? AND product_name = ? AND specification = ? AND base_unit = ? LIMIT 1
-                        """, (rs, rowNum) -> rs.getLong(1), companyId, name, safeSpec, unit);
+                        WHERE company_id = ? AND product_name = ? AND model = ? AND specification = ? AND base_unit = ? LIMIT 1
+                        """, (rs, rowNum) -> rs.getLong(1), companyId, name, model, safeSpec, unit);
         if (!existing.isEmpty()) return existing.get(0);
         Long productId = ApplicationIds.next();
         try {
             jdbc.update("""
-                    INSERT INTO inventory_product (id, company_id, product_name, specification, base_unit)
-                    VALUES (?, ?, ?, ?, ?)
-                    """, productId, companyId, name, safeSpec, unit);
+                    INSERT INTO inventory_product (id, company_id, product_name, model, specification, base_unit)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, productId, companyId, name, model, safeSpec, unit);
             return productId;
         } catch (DuplicateKeyException exception) {
             return jdbc.queryForObject("""
                     SELECT id FROM inventory_product
-                    WHERE company_id = ? AND product_name = ? AND specification = ? AND base_unit = ?
-                    """, Long.class, companyId, name, safeSpec, unit);
+                    WHERE company_id = ? AND product_name = ? AND model = ? AND specification = ? AND base_unit = ?
+                    """, Long.class, companyId, name, model, safeSpec, unit);
         }
     }
 
@@ -1021,7 +1043,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                 ? "退货单" : "销售单";
     }
 
-    private record SalesItem(int lineNo, String lineType, String productName, String specification,
+    private record SalesItem(int lineNo, String lineType, String productName, String model, String specification,
                              String baseUnit, BigDecimal quantity, BigDecimal unitPrice,
                              BigDecimal amount, String remark) {
     }

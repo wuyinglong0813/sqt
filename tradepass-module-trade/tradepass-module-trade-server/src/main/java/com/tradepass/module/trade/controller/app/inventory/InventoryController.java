@@ -97,13 +97,13 @@ public class InventoryController {
     }
 
     public record ManualInboundRequest(Long warehouseId, String requestId, String productName,
-            String specification, String baseUnit, java.math.BigDecimal quantity,
+            String model, String specification, String baseUnit, java.math.BigDecimal quantity,
             java.math.BigDecimal unitPrice, String remark) {}
 
     @PostMapping("/inventory/manual-inbound")
     public ApiResponse<Map<String, Object>> manualInbound(@RequestBody ManualInboundRequest body) {
         return ApiResponse.ok(inventoryService.manualInbound(body.warehouseId(), body.requestId(),
-                body.productName(), body.specification(), body.baseUnit(), body.quantity(), body.unitPrice(), body.remark()));
+                body.productName(), body.model(), body.specification(), body.baseUnit(), body.quantity(), body.unitPrice(), body.remark()));
     }
 
     @GetMapping("/warehouses")

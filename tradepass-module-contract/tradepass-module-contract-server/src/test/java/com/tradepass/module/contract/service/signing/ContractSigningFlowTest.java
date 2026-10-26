@@ -201,6 +201,47 @@ class ContractSigningFlowTest {
         assertThat(service.current(12L).canSign()).isFalse();
     }
 
+    @Test void successfulPartySignatureIsShownWithoutActivatingTheTwoPartyContract() {
+        when(gateway.status("original")).thenReturn(new FadadaSigningGateway.TaskStatus("original", "sign_progress", List.of(
+                new FadadaSigningGateway.ActorStatus("supplier", "signed"),
+                new FadadaSigningGateway.ActorStatus("buyer", "wait_sign"))));
+        var initiator = service.syncCurrent(12L);
+        assertThat(initiator.statusText()).isEqualTo("我方已签署，等待对方签署");
+        assertThat(initiator.canSign()).isFalse();
+        assertThat(initiator.signedFileArchived()).isFalse();
+        AuthContext.set(8L, 4L);
+        var recipient = service.current(12L);
+        assertThat(recipient.statusText()).isEqualTo("待我方签署");
+        assertThat(recipient.canSign()).isTrue();
+        assertThat(contract.getStatus()).isEqualTo("PENDING");
+        verifyNoInteractions(trade);
+        verify(gateway, never()).downloadSignedPdf(any(), any(), any());
+    }
+
+    @Test void bothPartySignaturesWaitForTheProviderToFinishBeforeActivation() {
+        when(gateway.status("original")).thenReturn(new FadadaSigningGateway.TaskStatus("original", "sign_progress", List.of(
+                new FadadaSigningGateway.ActorStatus("supplier", "signed"),
+                new FadadaSigningGateway.ActorStatus("buyer", "signed"))));
+        var result = service.syncCurrent(12L);
+        assertThat(result.statusText()).isEqualTo("双方已签署，正在归档");
+        assertThat(result.canSign()).isFalse();
+        assertThat(result.signedFileArchived()).isFalse();
+        assertThat(contract.getStatus()).isEqualTo("PENDING");
+        verifyNoInteractions(trade);
+        verify(gateway, never()).downloadSignedPdf(any(), any(), any());
+    }
+
+    @Test void unsignedProviderActorsNeverClaimASuccessfulSignature() {
+        when(gateway.status("original")).thenReturn(new FadadaSigningGateway.TaskStatus("original", "sign_progress", List.of(
+                new FadadaSigningGateway.ActorStatus("supplier", "wait_sign"),
+                new FadadaSigningGateway.ActorStatus("buyer", "wait_sign"))));
+        var result = service.syncCurrent(12L);
+        assertThat(result.statusText()).isEqualTo("签署中");
+        assertThat(result.canSign()).isTrue();
+        assertThat(result.signedFileArchived()).isFalse();
+        verifyNoInteractions(trade);
+    }
+
     @Test void recipientCannotOpenProviderSigningBeforeItsTurn() {
         AuthContext.set(8L, 4L);
         assertThatThrownBy(() -> service.signUrl(12L)).hasMessageContaining("发起方先完成");

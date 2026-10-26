@@ -16,15 +16,20 @@ public class ContractSigningPresentationService {
     public ContractSigningPresentationService(FadadaContractSignTaskMapper tasks) { this.tasks = tasks; }
     public record Progress(String status, String text) {}
 
-    public Map<Long, Progress> statuses(List<TradeContractDO> contracts) {
+    public Map<Long, Progress> statuses(List<TradeContractDO> contracts, long viewerCompanyId) {
         var versions = new HashMap<Long, Integer>();
+        var initiators = new HashMap<Long, Long>();
         contracts.stream().filter(c -> "PENDING".equals(c.getStatus()))
-                .forEach(c -> versions.put(c.getId(), c.getVersionNo() == null ? 1 : c.getVersionNo()));
+                .forEach(c -> {
+                    versions.put(c.getId(), c.getVersionNo() == null ? 1 : c.getVersionNo());
+                    initiators.put(c.getId(), c.getCompanyId());
+                });
         if (versions.isEmpty()) return Map.of();
         var result = new HashMap<Long, Progress>();
         for (var task : tasks.selectList(new LambdaQueryWrapper<FadadaContractSignTaskDO>()
                 .select(FadadaContractSignTaskDO::getContractId, FadadaContractSignTaskDO::getVersionNo,
-                        FadadaContractSignTaskDO::getProviderStatus, FadadaContractSignTaskDO::getArchivedAt)
+                        FadadaContractSignTaskDO::getProviderStatus, FadadaContractSignTaskDO::getArchivedAt,
+                        FadadaContractSignTaskDO::getInitiatorSignStatus, FadadaContractSignTaskDO::getCounterpartySignStatus)
                 .in(FadadaContractSignTaskDO::getContractId, versions.keySet()))) {
             if (!java.util.Objects.equals(versions.get(task.getContractId()),
                     task.getVersionNo() == null ? 1 : task.getVersionNo()) || task.getProviderStatus() == null) continue;
@@ -36,6 +41,11 @@ public class ContractSigningPresentationService {
                 case "task_finished" -> task.getArchivedAt() == null ? "签署结果确认中" : "签署结果待同步";
                 default -> null;
             };
+            boolean initiator = java.util.Objects.equals(initiators.get(task.getContractId()), viewerCompanyId);
+            String partyText = ContractSigningProgress.partyText(task.getProviderStatus(),
+                    initiator ? task.getInitiatorSignStatus() : task.getCounterpartySignStatus(),
+                    initiator ? task.getCounterpartySignStatus() : task.getInitiatorSignStatus());
+            if (partyText != null) text = partyText;
             result.put(task.getContractId(), new Progress(task.getProviderStatus(), text));
         }
         return result;

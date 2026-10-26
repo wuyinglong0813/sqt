@@ -444,7 +444,7 @@ public class TradeServiceImpl implements TradeService {
 
     private Map<Long, com.tradepass.module.contract.service.signing.ContractSigningPresentationService.Progress>
             signingProgress(List<TradeContractDO> contracts) {
-        return signingPresentation == null ? Map.of() : signingPresentation.statuses(contracts);
+        return signingPresentation == null ? Map.of() : signingPresentation.statuses(contracts, AuthContext.requireCompanyId());
     }
 
     private ContractRespDTO toReadContractPayload(TradeContractDO contract, long companyId,

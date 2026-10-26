@@ -370,7 +370,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         normalizeType(type);
         ObjectNode content = objectMapper.createObjectNode();
         ArrayNode columns = content.putArray("columns");
-        List<String> defaults = List.of("序号", "品名", "规格", "单位", "数量", "单价", "金额", "备注");
+        List<String> defaults = List.of("序号", "品名", "型号", "规格", "单位", "数量", "单价", "金额", "备注");
         defaults.forEach(columns::add);
         content.put("blankRows", 8);
         return content.toString();
@@ -401,6 +401,15 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
             List<String> targetColumns = new ArrayList<>();
             templateContent.path("columns").forEach(node -> targetColumns.add(node.asText("")));
             ProductSource source = extractProducts(contract.getTerms());
+            if (source.columns().stream().anyMatch(c -> c.contains("型号") && !c.contains("规格"))
+                    && targetColumns.stream().noneMatch(c -> c.contains("型号") && !c.contains("规格"))) {
+                int productIndex = -1;
+                for (int i = 0; i < targetColumns.size(); i++) {
+                    String column = targetColumns.get(i);
+                    if (column.contains("品名") || column.equals("名称") || column.contains("产品")) { productIndex = i; break; }
+                }
+                targetColumns.add(productIndex + 1, "型号");
+            }
             List<FeeItem> fees = extractFees(contract.getTerms());
 
             ObjectNode snapshot = objectMapper.createObjectNode();
@@ -608,6 +617,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
     private String valueForFeeTarget(String target, int rowIndex, FeeItem fee) {
         String normalized = target == null ? "" : target.trim();
         if (normalized.contains("序号")) return String.valueOf(rowIndex + 1);
+        if (normalized.contains("型号") || normalized.contains("规格")) return "";
         if (normalized.contains("品名") || normalized.equals("名称") || normalized.contains("产品")) {
             return fee.feeType();
         }
@@ -625,10 +635,13 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
             return String.valueOf(rowIndex + 1);
         }
         List<String> aliases;
-        if (normalized.contains("品名") || normalized.equals("名称") || normalized.contains("产品")) {
-            aliases = List.of("品名", "名称", "产品");
+        boolean modelColumn = normalized.contains("型号") && !normalized.contains("规格");
+        if (modelColumn) {
+            aliases = List.of("型号");
         } else if (normalized.contains("规格")) {
-            aliases = List.of("规格", "型号");
+            aliases = List.of("规格");
+        } else if (normalized.contains("品名") || normalized.equals("名称") || normalized.contains("产品")) {
+            aliases = List.of("品名", "名称", "产品");
         } else if (normalized.contains("单位")) {
             aliases = List.of("单位");
         } else if (normalized.contains("数量")) {
@@ -645,6 +658,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         for (int index = 0; index < sourceColumns.size(); index++) {
             String sourceColumn = sourceColumns.get(index);
             boolean matched = aliases.stream().anyMatch(sourceColumn::contains);
+            if (modelColumn && sourceColumn.contains("规格")) matched = false;
             if (matched && index < sourceRow.size()) {
                 return safe(sourceRow.get(index));
             }
