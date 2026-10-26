@@ -38,7 +38,7 @@ class ContractSigningPresentationServiceTest {
         var service = new ContractSigningPresentationService(tasks);
 
         assertThat(service.statuses(List.of(contract), 3L).get(12L))
-                .isEqualTo(new ContractSigningPresentationService.Progress("sign_progress", "我方已签署，等待对方签署"));
+                .isEqualTo(new ContractSigningPresentationService.Progress("sign_progress", "待对方签署"));
         assertThat(service.statuses(List.of(contract), 4L).get(12L).text()).isEqualTo("待我方签署");
         current.setCounterpartySignStatus("signed");
         assertThat(service.statuses(List.of(contract), 3L).get(12L).text()).isEqualTo("双方已签署，正在归档");
@@ -57,8 +57,43 @@ class ContractSigningPresentationServiceTest {
         var current = task(2, "sign_progress");
         current.setInitiatorSignStatus("wait_sign"); current.setCounterpartySignStatus("wait_sign");
         when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(old, current));
-        assertThat(new ContractSigningPresentationService(tasks).statuses(List.of(contract), 3L).get(12L).text())
-                .isEqualTo("签署中");
+        var service = new ContractSigningPresentationService(tasks);
+        assertThat(service.statuses(List.of(contract), 3L).get(12L).text()).isEqualTo("待我方签署");
+        assertThat(service.statuses(List.of(contract), 4L).get(12L).text()).isEqualTo("待对方签署");
+    }
+
+    @Test void unpreparedCurrentVersionStillShowsWhichPartySignsFirst() {
+        MybatisTestSupport.initialize(FadadaContractSignTaskDO.class);
+        var tasks = mock(FadadaContractSignTaskMapper.class);
+        var contract = new TradeContractDO(); contract.setId(12L); contract.setCompanyId(3L);
+        contract.setVersionNo(2); contract.setStatus("PENDING");
+        var old = task(1, "task_finished"); old.setInitiatorSignStatus("signed"); old.setCounterpartySignStatus("signed");
+        when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(old));
+        var service = new ContractSigningPresentationService(tasks);
+
+        assertThat(service.statuses(List.of(contract), 3L).get(12L))
+                .isEqualTo(new ContractSigningPresentationService.Progress("WAITING_AUTH", "待我方签署"));
+        assertThat(service.statuses(List.of(contract), 4L).get(12L).text()).isEqualTo("待对方签署");
+        assertThat(contract.getStatus()).isEqualTo("PENDING");
+    }
+
+    @Test void taskPreparationFailuresAndTerminalResultsKeepTheirMeaningForBothParties() {
+        MybatisTestSupport.initialize(FadadaContractSignTaskDO.class);
+        var tasks = mock(FadadaContractSignTaskMapper.class);
+        var contract = new TradeContractDO(); contract.setId(12L); contract.setCompanyId(3L);
+        contract.setVersionNo(2); contract.setStatus("PENDING");
+        var current = task(2, "CREATE_FAILED");
+        current.setInitiatorSignStatus("signed"); current.setCounterpartySignStatus("wait_sign");
+        when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(current));
+        var service = new ContractSigningPresentationService(tasks);
+        var texts = java.util.Map.of("CREATING", "正在准备签署文件", "CREATE_FAILED", "签署任务准备失败",
+                "task_terminated", "签署已终止", "expired", "签署已过期", "task_expired", "签署已过期",
+                "sign_completed", "双方已签署，正在归档", "task_finished", "签署结果确认中");
+        texts.forEach((status, text) -> {
+            current.setProviderStatus(status);
+            assertThat(service.statuses(List.of(contract), 3L).get(12L).text()).isEqualTo(text);
+            assertThat(service.statuses(List.of(contract), 4L).get(12L).text()).isEqualTo(text);
+        });
     }
 
     private FadadaContractSignTaskDO task(int version, String status) {

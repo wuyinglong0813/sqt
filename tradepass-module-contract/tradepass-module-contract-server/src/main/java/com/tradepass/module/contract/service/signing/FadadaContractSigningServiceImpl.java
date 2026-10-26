@@ -661,14 +661,14 @@ public class FadadaContractSigningServiceImpl implements FadadaContractSigningSe
         boolean canSign = pending && firstSignerReady && !isSigned(actorStatus)
                 && (task == null || (!terminal(status) && !hasText(task.getAbolishedSignTaskId())))
                 && !"ABOLISH_CREATION_UNCERTAIN".equals(status) && !"revoked".equalsIgnoreCase(status);
-        String partyText = task == null ? null : ContractSigningProgress.partyText(status, actorStatus,
-                companyId == task.getInitiatorCompanyId() ? task.getCounterpartySignStatus() : task.getInitiatorSignStatus());
+        boolean initiator = contract.getCompanyId().equals(companyId);
+        String partyText = ContractSigningProgress.partyText(status, actorStatus,
+                task == null ? null : initiator ? task.getCounterpartySignStatus() : task.getInitiatorSignStatus(), initiator);
         String displayStatus = voided ? "已作废"
                 : "COMPLETED".equals(contract.getStatus()) ? "已结束"
                 : pending && task != null && terminal(status)
                     ? "task_finished".equals(status) && task.getArchivedAt() == null ? "签署结果确认中" : statusText(status)
                 : pending && partyText != null ? partyText
-                : pending && !firstSignerReady ? "等待发起方签署"
                 : active ? "履约中" : statusText(status);
         return new ContractSigningRespDTO(String.valueOf(contract.getId()), status, displayStatus,
                 task == null ? null : task.getInitiatorSignStatus(),

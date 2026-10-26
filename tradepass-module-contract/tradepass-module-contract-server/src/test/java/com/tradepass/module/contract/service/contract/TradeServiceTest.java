@@ -7,6 +7,7 @@ import com.tradepass.module.identity.service.permission.AccessControlServiceImpl
 import com.tradepass.framework.common.pojo.TradePassDtos;
 import com.tradepass.module.contract.service.archive.ContractArchiveService;
 import com.tradepass.module.contract.service.signing.ContractSigningCancellationService;
+import com.tradepass.module.contract.service.signing.ContractSigningPresentationService;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
 import com.tradepass.module.identity.dal.dataobject.permission.RoleDefDO;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
@@ -557,12 +558,20 @@ class TradeServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void pendingContractsStayScopedToCurrentCompany() {
+        var presentation = mock(ContractSigningPresentationService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "signingPresentation", presentation);
         AuthContext.set(7L, null);
         assertThat(service.pendingContracts()).isEmpty();
 
         when(contractMapper.update(any(Wrapper.class))).thenReturn(1);
         AuthContext.set(7L, 3L);
         assertThat(service.pendingContracts()).isEmpty();
+        org.mockito.Mockito.verifyNoInteractions(presentation);
+
+        when(accessControl.hasPermission(3L, "contract_sign")).thenReturn(true);
+        when(contractMapper.selectContractsAwaitingSignature(3L)).thenReturn(List.of());
+        assertThat(service.pendingContracts()).isEmpty();
+        org.mockito.Mockito.verifyNoInteractions(presentation);
 
         TradeContractDO pending = new TradeContractDO();
         pending.setId(1L);
@@ -572,10 +581,42 @@ class TradeServiceTest {
         pending.setName("待签合同");
         pending.setStatus("PENDING");
         pending.setInitiatedBy(8L);
-        when(accessControl.hasPermission(3L, "contract_sign")).thenReturn(true);
         when(contractMapper.selectContractsAwaitingSignature(3L)).thenReturn(List.of(pending));
+        when(presentation.statuses(List.of(pending), 3L)).thenReturn(Map.of(1L,
+                new ContractSigningPresentationService.Progress("sign_progress", "待我方签署")));
 
-        assertThat(service.pendingContracts()).extracting(ContractRespDTO::id).containsExactly("1");
+        var contracts = service.pendingContracts();
+        assertThat(contracts).extracting(ContractRespDTO::id).containsExactly("1");
+        assertThat(contracts.get(0).statusText()).isEqualTo("待我方签署");
+        assertThat(contracts.get(0).signingStatus()).isEqualTo("sign_progress");
+        assertThat(contracts.get(0).status()).isEqualTo("PENDING");
+        verify(presentation).statuses(List.of(pending), 3L);
+    }
+
+    @Test
+    void pendingSigningProgressIsLoadedAsOneBatchIncludingAnUnpreparedInitiator() {
+        var presentation = mock(ContractSigningPresentationService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "signingPresentation", presentation);
+        TradeContractDO incoming = new TradeContractDO();
+        incoming.setId(1L); incoming.setCompanyId(9L); incoming.setCounterpartyCompanyId(3L);
+        incoming.setStatus("PENDING");
+        TradeContractDO outgoing = new TradeContractDO();
+        outgoing.setId(2L); outgoing.setCompanyId(3L); outgoing.setCounterpartyCompanyId(9L);
+        outgoing.setStatus("PENDING");
+        var pending = List.of(incoming, outgoing);
+        when(accessControl.hasPermission(3L, "contract_sign")).thenReturn(true);
+        when(contractMapper.selectContractsAwaitingSignature(3L)).thenReturn(pending);
+        when(presentation.statuses(pending, 3L)).thenReturn(Map.of(
+                1L, new ContractSigningPresentationService.Progress("sign_progress", "待我方签署"),
+                2L, new ContractSigningPresentationService.Progress("WAITING_AUTH", "待我方签署")));
+
+        var contracts = service.pendingContracts();
+
+        assertThat(contracts).extracting(ContractRespDTO::id).containsExactly("1", "2");
+        assertThat(contracts).extracting(ContractRespDTO::statusText).containsOnly("待我方签署");
+        assertThat(contracts).extracting(ContractRespDTO::signingStatus).containsExactly("sign_progress", "WAITING_AUTH");
+        verify(presentation).statuses(pending, 3L);
+        org.mockito.Mockito.verifyNoMoreInteractions(presentation);
     }
 
     @Test

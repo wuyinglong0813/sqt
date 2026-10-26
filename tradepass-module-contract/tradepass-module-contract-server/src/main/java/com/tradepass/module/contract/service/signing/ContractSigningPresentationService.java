@@ -26,6 +26,9 @@ public class ContractSigningPresentationService {
                 });
         if (versions.isEmpty()) return Map.of();
         var result = new HashMap<Long, Progress>();
+        versions.keySet().forEach(id -> result.put(id, new Progress("WAITING_AUTH",
+                ContractSigningProgress.partyText("WAITING_AUTH", null, null,
+                        java.util.Objects.equals(initiators.get(id), viewerCompanyId)))));
         for (var task : tasks.selectList(new LambdaQueryWrapper<FadadaContractSignTaskDO>()
                 .select(FadadaContractSignTaskDO::getContractId, FadadaContractSignTaskDO::getVersionNo,
                         FadadaContractSignTaskDO::getProviderStatus, FadadaContractSignTaskDO::getArchivedAt,
@@ -34,6 +37,8 @@ public class ContractSigningPresentationService {
             if (!java.util.Objects.equals(versions.get(task.getContractId()),
                     task.getVersionNo() == null ? 1 : task.getVersionNo()) || task.getProviderStatus() == null) continue;
             String text = switch (task.getProviderStatus()) {
+                case "CREATING" -> "正在准备签署文件";
+                case "CREATE_FAILED" -> "签署任务准备失败";
                 case "task_terminated" -> "签署已终止";
                 case "expired", "task_expired" -> "签署已过期";
                 case "sign_progress", "finish_creation" -> "签署中";
@@ -44,7 +49,7 @@ public class ContractSigningPresentationService {
             boolean initiator = java.util.Objects.equals(initiators.get(task.getContractId()), viewerCompanyId);
             String partyText = ContractSigningProgress.partyText(task.getProviderStatus(),
                     initiator ? task.getInitiatorSignStatus() : task.getCounterpartySignStatus(),
-                    initiator ? task.getCounterpartySignStatus() : task.getInitiatorSignStatus());
+                    initiator ? task.getCounterpartySignStatus() : task.getInitiatorSignStatus(), initiator);
             if (partyText != null) text = partyText;
             result.put(task.getContractId(), new Progress(task.getProviderStatus(), text));
         }

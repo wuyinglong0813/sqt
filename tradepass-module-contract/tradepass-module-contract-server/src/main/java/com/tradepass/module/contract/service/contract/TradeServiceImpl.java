@@ -731,8 +731,15 @@ public class TradeServiceImpl implements TradeService {
         if (!accessControlService.hasPermission(companyId, "contract_sign")) {
             return List.of();
         }
-        return tradeContractMapper.selectContractsAwaitingSignature(companyId)
-                .stream().map(contract -> toContractPayload(contract, companyId)).toList();
+        var contracts = tradeContractMapper.selectContractsAwaitingSignature(companyId);
+        if (contracts.isEmpty()) return List.of();
+        var signing = signingProgress(contracts);
+        var sales = contractSales(companyId);
+        return contracts.stream().map(contract -> {
+            var result = toContractPayload(contract, companyId, true, sales.get(String.valueOf(contract.getId())));
+            var progress = signing.get(contract.getId());
+            return progress == null ? result : result.withSigningProgress(progress.status(), progress.text());
+        }).toList();
     }
 
     private TradeContractDO ensurePendingIncomingContract(Long id, long companyId) {

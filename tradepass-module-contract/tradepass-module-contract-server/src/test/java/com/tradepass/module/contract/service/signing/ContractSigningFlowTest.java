@@ -187,9 +187,10 @@ class ContractSigningFlowTest {
     @Test void anUnpreparedContractIsActionableOnlyByItsInitiator() {
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(null);
         assertThat(service.current(12L).canSign()).isTrue();
+        assertThat(service.current(12L).statusText()).isEqualTo("待我方签署");
         AuthContext.set(8L, 4L);
         assertThat(service.current(12L).canSign()).isFalse();
-        assertThat(service.current(12L).statusText()).contains("等待发起方");
+        assertThat(service.current(12L).statusText()).isEqualTo("待对方签署");
     }
 
     @Test void recipientBecomesActionableOnlyAfterInitiatorSigns() {
@@ -206,7 +207,7 @@ class ContractSigningFlowTest {
                 new FadadaSigningGateway.ActorStatus("supplier", "signed"),
                 new FadadaSigningGateway.ActorStatus("buyer", "wait_sign"))));
         var initiator = service.syncCurrent(12L);
-        assertThat(initiator.statusText()).isEqualTo("我方已签署，等待对方签署");
+        assertThat(initiator.statusText()).isEqualTo("待对方签署");
         assertThat(initiator.canSign()).isFalse();
         assertThat(initiator.signedFileArchived()).isFalse();
         AuthContext.set(8L, 4L);
@@ -236,9 +237,12 @@ class ContractSigningFlowTest {
                 new FadadaSigningGateway.ActorStatus("supplier", "wait_sign"),
                 new FadadaSigningGateway.ActorStatus("buyer", "wait_sign"))));
         var result = service.syncCurrent(12L);
-        assertThat(result.statusText()).isEqualTo("签署中");
+        assertThat(result.statusText()).isEqualTo("待我方签署");
         assertThat(result.canSign()).isTrue();
         assertThat(result.signedFileArchived()).isFalse();
+        AuthContext.set(8L, 4L);
+        assertThat(service.current(12L).statusText()).isEqualTo("待对方签署");
+        assertThat(service.current(12L).canSign()).isFalse();
         verifyNoInteractions(trade);
     }
 
