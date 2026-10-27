@@ -240,10 +240,44 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                         SELECT balance.id, warehouse.id AS warehouse_id, warehouse.name AS warehouse_name,
                                product.id AS product_id, product.product_name, product.model, product.specification,
                                product.base_unit, balance.quantity, balance.unit_price,
-                               balance.inventory_amount, balance.updated_at
+                               balance.inventory_amount, balance.updated_at,
+                               COALESCE(latest_remark.remark, '') AS remark
                         FROM inventory_balance balance
                         JOIN warehouse ON warehouse.id = balance.warehouse_id
                         JOIN inventory_product product ON product.id = balance.product_id
+                        LEFT JOIN (
+                            SELECT company_id, warehouse_id, product_id, remark,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY company_id, warehouse_id, product_id
+                                       ORDER BY created_at DESC, source_id DESC, item_id DESC
+                                   ) AS remark_rank
+                            FROM (
+                                SELECT company_id, warehouse_id, product_id, remark, created_at,
+                                       id AS source_id, 0 AS item_id
+                                FROM inventory_manual_entry
+                                WHERE company_id = ? AND TRIM(remark) <> ''
+                                UNION ALL
+                                SELECT inbound.company_id, inbound.warehouse_id, item.product_id,
+                                       document_item.remark, inbound.created_at,
+                                       inbound.id AS source_id, item.id AS item_id
+                                FROM inventory_inbound inbound
+                                JOIN inventory_inbound_item item ON item.inbound_id = inbound.id
+                                JOIN business_document_item document_item
+                                  ON document_item.id = item.document_item_id
+                                 AND document_item.document_id = inbound.source_document_id
+                                WHERE inbound.company_id = ? AND inbound.status = 'COMPLETED'
+                                  AND TRIM(document_item.remark) <> ''
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM inventory_transfer transfer
+                                      WHERE transfer.source_document_id = inbound.source_document_id
+                                        AND transfer.inbound_company_id = inbound.company_id
+                                        AND transfer.status = 'REVERSED'
+                                  )
+                            ) inbound_remarks
+                        ) latest_remark ON latest_remark.company_id = balance.company_id
+                            AND latest_remark.warehouse_id = balance.warehouse_id
+                            AND latest_remark.product_id = balance.product_id
+                            AND latest_remark.remark_rank = 1
                         WHERE balance.company_id = ? AND balance.quantity <> 0
                         ORDER BY warehouse.name, product.product_name, product.model, product.specification
                         """, (rs, rowNum) -> {
@@ -259,9 +293,10 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                     view.put("quantity", rs.getBigDecimal("quantity"));
                     view.put("unitPrice", rs.getBigDecimal("unit_price"));
                     view.put("inventoryAmount", rs.getBigDecimal("inventory_amount"));
+                    view.put("remark", rs.getString("remark"));
                     view.put("updatedAt", rs.getTimestamp("updated_at").toLocalDateTime());
                     return view;
-                }, companyId);
+                }, companyId, companyId, companyId);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("warehouseCount", jdbc.queryForObject(
                 "SELECT COUNT(1) FROM warehouse WHERE company_id = ? AND enabled = 1", Long.class, companyId));

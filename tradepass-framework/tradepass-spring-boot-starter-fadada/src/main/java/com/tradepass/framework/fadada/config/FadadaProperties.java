@@ -18,6 +18,8 @@ public class FadadaProperties {
     private String ownerEnterpriseClientCorpId = "";
     // The verified application owner pays provider usage while the contract parties sign.
     private boolean platformInitiatedSigningEnabled;
+    // Apply only to first-time onboarding; existing enterprises may renew consent through administrators.
+    private boolean legalRepresentativeOnlyOnboardingEnabled;
     // The public 5.1 document does not define the SDK extension's operatorId namespace.
     // Enable only after provider confirmation for this integration, never from user input.
     private boolean operatorOpenUserIdConfirmed;
@@ -42,6 +44,8 @@ public class FadadaProperties {
     public void setOwnerEnterpriseClientCorpId(String value) { this.ownerEnterpriseClientCorpId = safe(value); }
     public boolean isPlatformInitiatedSigningEnabled() { return platformInitiatedSigningEnabled; }
     public void setPlatformInitiatedSigningEnabled(boolean value) { this.platformInitiatedSigningEnabled = value; }
+    public boolean isLegalRepresentativeOnlyOnboardingEnabled() { return legalRepresentativeOnlyOnboardingEnabled; }
+    public void setLegalRepresentativeOnlyOnboardingEnabled(boolean value) { this.legalRepresentativeOnlyOnboardingEnabled = value; }
     public boolean isOperatorOpenUserIdConfirmed() { return operatorOpenUserIdConfirmed; }
     public void setOperatorOpenUserIdConfirmed(boolean value) { this.operatorOpenUserIdConfirmed = value; }
 

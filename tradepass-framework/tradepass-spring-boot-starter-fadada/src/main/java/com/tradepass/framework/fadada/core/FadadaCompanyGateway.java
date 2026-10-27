@@ -19,7 +19,14 @@ public interface FadadaCompanyGateway {
 
     record AuthCommand(String clientCorpId, String clientUserId, String accountName, String companyName,
                        String creditCode, List<String> authScopes, String callbackUrl,
-                       String redirectMiniAppUrl) {}
+                       String redirectMiniAppUrl, boolean legalRepresentativeOnly) {
+        public AuthCommand(String clientCorpId, String clientUserId, String accountName, String companyName,
+                           String creditCode, List<String> authScopes, String callbackUrl,
+                           String redirectMiniAppUrl) {
+            this(clientCorpId, clientUserId, accountName, companyName, creditCode, authScopes, callbackUrl,
+                    redirectMiniAppUrl, false);
+        }
+    }
     record CompanyAccount(String clientCorpId, String openCorpId, String bindingStatus,
                           String identStatus, String availableStatus, List<String> authScopes) {}
     record CompanyIdentity(String openCorpId, String identStatus, String companyName,

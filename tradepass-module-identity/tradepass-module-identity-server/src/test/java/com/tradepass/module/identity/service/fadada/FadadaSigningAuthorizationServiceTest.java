@@ -168,10 +168,14 @@ class FadadaSigningAuthorizationServiceTest {
     @Test
     void pollingTheExactTargetsDeliveryNeverIssuesAnotherGrantLink() {
         var f = new Fixture();
+        var events = mock(org.springframework.context.ApplicationEventPublisher.class);
+        f.service.setEvents(events);
         assertThat(f.service.memberSealGrantStatus(3L, 7L).status()).isEqualTo("AUTHORIZATION_REQUIRED");
+        verifyNoInteractions(events);
         when(f.seals.memberSealGrants("corp-3", 88L))
                 .thenReturn(List.of(new MemberSealGrant("912", "enable", "effective")));
         assertThat(f.service.memberSealGrantStatus(3L, 7L).status()).isEqualTo("READY");
+        verify(events).publishEvent(new SigningMemberSyncRequested(3L, 7L, 99L, "SEAL_GRANT_CONFIRMED"));
         verify(f.members, times(2)).existingSigningMember(3L, 7L);
         verify(f.members, never()).ensureSigningMember(anyLong(), anyLong());
         verify(f.access, times(2)).requireManager(3L);

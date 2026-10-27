@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.tradepass.framework.fadada.config.FadadaProperties;
 import com.tradepass.module.identity.dal.mysql.fadada.FadadaSigningMemberSyncMapper;
-import com.tradepass.module.identity.service.fadada.FadadaSigningMemberService;
+import com.tradepass.module.identity.service.fadada.FadadaSigningAuthorizationService;
 import com.tradepass.module.identity.service.fadada.FadadaSigningMemberSyncService;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -30,7 +30,7 @@ class SigningMemberMapperProductionScannerTest {
             factory.setDataSource(mock(DataSource.class)); factory.setConfiguration(configuration);
             var sessions = factory.getObject();
             context.registerBean("sqlSessionFactory", SqlSessionFactory.class, () -> sessions);
-            context.registerBean(FadadaSigningMemberService.class, () -> mock(FadadaSigningMemberService.class));
+            context.registerBean(FadadaSigningAuthorizationService.class, () -> mock(FadadaSigningAuthorizationService.class));
             context.registerBean(FadadaProperties.class, FadadaProperties::new);
             context.registerBean(PlatformTransactionManager.class, () -> mock(PlatformTransactionManager.class));
             context.registerBean(FadadaSigningMemberSyncService.class);

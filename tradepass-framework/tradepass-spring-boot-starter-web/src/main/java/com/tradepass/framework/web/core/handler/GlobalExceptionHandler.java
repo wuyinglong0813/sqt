@@ -3,6 +3,7 @@ package com.tradepass.framework.web.core.handler;
 import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.framework.common.pojo.ApiResponse;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +30,12 @@ public class GlobalExceptionHandler {
                 .map(error -> error.getDefaultMessage() == null ? "参数校验失败" : error.getDefaultMessage())
                 .orElse("参数校验失败");
         return new ApiResponse<>(400, message, null);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiResponse<Void> handleUnreadableRequestBody(HttpMessageNotReadableException ex) {
+        return new ApiResponse<>(400, "请求内容缺失或格式不正确", null);
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)

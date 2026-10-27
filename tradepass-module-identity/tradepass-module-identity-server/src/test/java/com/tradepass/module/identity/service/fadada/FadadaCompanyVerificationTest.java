@@ -1824,6 +1824,97 @@ class FadadaCompanyVerificationTest {
         } finally { AuthContext.clear(); }
     }
 
+    @Test
+    void legalOnlyOnboardingRequestsTheLegalFlowForANewEnterprise() {
+        var f = new Fixture(false);
+        f.properties.setLegalRepresentativeOnlyOnboardingEnabled(true);
+        var missing = new com.tradepass.framework.fadada.core.FadadaCompanyQueryException("210032");
+        when(f.gateway.getCompany(anyString(), any())).thenThrow(missing);
+        when(f.gateway.getCompanyByCreditCode("TEST-CREDIT")).thenThrow(missing);
+        when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/legal-onboarding");
+        AuthContext.set(7L, null);
+        try {
+            assertThat(f.service.createAuthUrl(3L).url()).isEqualTo("https://example.test/legal-onboarding");
+            verify(f.gateway).createAuthUrl(argThat(command -> command.legalRepresentativeOnly()
+                    && command.clientUserId().equals("tradepass-user-7")));
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
+    @Test
+    void legalOnlyOnboardingKeepsADocumentedAgentPendingInsteadOfOpeningAnAdministratorEnterprise() {
+        var f = new Fixture(false); f.superAdmin();
+        f.properties.setLegalRepresentativeOnlyOnboardingEnabled(true);
+        f.documentedOperator("deputy_auth", "open-user-7");
+        var result = f.service.sync(3L);
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.failureReason()).contains("仅允许法定代表人本人");
+        assertThat(result.companyAuthorizationReady()).isTrue();
+        assertThat(f.company.getCertificationStatus()).isEqualTo("PENDING_REVIEW");
+        assertThat(f.identity.getVerifiedAt()).isNull();
+        assertThat(f.identity.getAuthorizationConfirmedAt()).isNull();
+        verifyNoInteractions(f.certifications);
+        verify(f.gateway, never()).listSeals(anyString());
+    }
+
+    @Test
+    void legalOnlyOnboardingCannotUseASuperAdministratorCallbackAsLegalProof() {
+        var f = new Fixture(false); f.superAdmin(); f.detailWithoutOperator("legal_rep");
+        f.properties.setLegalRepresentativeOnlyOnboardingEnabled(true);
+        var result = f.service.syncCallback("local-3", "corp-3", operatorCallback("legal_rep", "tradepass-user-7"));
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.failureReason()).contains("仅允许法定代表人本人");
+        verifyNoInteractions(f.certifications);
+        verify(f.gateway, never()).getMember(anyString(), anyLong());
+    }
+
+    @Test
+    void legalOnlyOnboardingRequiresDocumentedIdentityEvenWhenTheLegacyTrustFlagIsEnabled() {
+        var f = new Fixture(); f.detail("legal_rep", "open-user-7", "identified");
+        f.properties.setLegalRepresentativeOnlyOnboardingEnabled(true);
+        var result = f.service.sync(3L);
+        assertThat(result.status()).isEqualTo("IN_PROGRESS");
+        assertThat(result.failureReason()).contains("尚未取得本人的法人认证记录");
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void legalOnlyOnboardingCompletesForTheLiveDocumentedLegalRepresentative() {
+        var f = new Fixture(false); f.superAdmin();
+        f.properties.setLegalRepresentativeOnlyOnboardingEnabled(true);
+        f.documentedOperator("legal_rep", "open-user-7");
+        assertThat(f.service.sync(3L).status()).isEqualTo("VERIFIED");
+        verify(f.personal).verifiedPerson(7L);
+        verify(f.certifications).completeProviderCertification(eq(3L), eq(7L), anyString(), anyString(),
+                eq(CertifiedApplicantRole.LEGAL));
+    }
+
+    @Test
+    void legalOnlyOnboardingDoesNotTransferAnotherPersonsLegalProofToTheApplicant() {
+        var f = new Fixture(false); f.superAdmin();
+        f.properties.setLegalRepresentativeOnlyOnboardingEnabled(true);
+        f.documentedOperator("legal_rep", "open-user-other");
+        assertThat(f.service.sync(3L).status()).isEqualTo("IN_PROGRESS");
+        assertThat(f.identity.getVerifiedAt()).isNull();
+        verifyNoInteractions(f.certifications);
+    }
+
+    @Test
+    void legalOnlyOnboardingDoesNotRestrictAnEstablishedCompanysSupplementaryConsent() {
+        var f = new Fixture(false); f.detailWithoutOperator("deputy_auth");
+        f.properties.setLegalRepresentativeOnlyOnboardingEnabled(true);
+        f.company.setCertificationStatus("VERIFIED");
+        f.identity.setLocalStatus("VERIFIED");
+        when(f.gateway.createAuthUrl(any())).thenReturn("https://example.test/supplement-consent");
+        AuthContext.set(7L, 3L);
+        try {
+            assertThat(f.service.createAuthUrl(3L).url()).isEqualTo("https://example.test/supplement-consent");
+            verify(f.gateway).createAuthUrl(argThat(command -> !command.legalRepresentativeOnly()
+                    && command.authScopes().contains("organization")));
+            verifyNoInteractions(f.certifications);
+        } finally { AuthContext.clear(); }
+    }
+
     private static List<String> onboardingScopes() {
         return java.util.stream.Stream.concat(SCOPES.stream(), java.util.stream.Stream.of("organization")).toList();
     }

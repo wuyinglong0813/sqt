@@ -9,6 +9,8 @@ import com.tradepass.framework.fadada.core.FadadaCompanyGateway;
 import com.tradepass.framework.fadada.core.FadadaCompanyQueryException;
 import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.module.identity.service.permission.AccessControlService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
 /** Synchronizes ordinary signing members using the person's verified provider account. */
@@ -21,6 +23,10 @@ public class FadadaSigningMemberService {
     private final FadadaPersonalIdentityService personalService;
     private final FadadaCompanyGateway gateway;
     private final FadadaProperties properties;
+    private ApplicationEventPublisher events;
+
+    @Autowired
+    public void setEvents(ApplicationEventPublisher events) { this.events = events; }
 
     public FadadaSigningMemberService(AccessControlService accessControl, FadadaCompanyService companyService,
                                      FadadaPersonalIdentityService personalService, FadadaCompanyGateway gateway,
@@ -64,7 +70,13 @@ public class FadadaSigningMemberService {
     /** Only the current person may receive their own first-join invitation URL. */
     public ServiceUrlPayload syncCurrent(long companyId) {
         var result = synchronize(companyId, AuthContext.userId());
-        if ("activated".equals(result.member().memberStatus())) return new ServiceUrlPayload(null, "member", "READY");
+        if ("activated".equals(result.member().memberStatus())) {
+            // This explicit POST has freshly confirmed the person joined. Wake the existing
+            // seal-delivery queue; a member-only READY response does not attest signing readiness.
+            if (events != null) events.publishEvent(new SigningMemberSyncRequested(
+                    companyId, AuthContext.userId(), AuthContext.userId(), "SELF_MEMBER_CONFIRMED"));
+            return new ServiceUrlPayload(null, "member", "READY");
+        }
         if ("inactive".equals(result.member().memberStatus())) {
             String url = gateway.createMemberActivationUrl(result.identity().getOpenCorpId(), result.member().memberId());
             return new ServiceUrlPayload(url, "member", "ACTIVATION_REQUIRED");

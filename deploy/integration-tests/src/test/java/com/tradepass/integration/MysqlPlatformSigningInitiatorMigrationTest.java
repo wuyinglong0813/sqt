@@ -53,7 +53,9 @@ class MysqlPlatformSigningInitiatorMigrationTest {
                         source,status,policy_revision,operator_id,contract_snapshot,source_sha256,created_at)
                     VALUES (1,1,3,'CREDIT-3','SPECIAL','SPECIAL_QUOTA','UNCERTAIN',1,7,'{}',?,NOW())
                     """, "a".repeat(64));
-            var flyway = Flyway.configure().dataSource(source).locations(location).load();
+            // Keep the one-migration assertion scoped to the frozen-initiator change.
+            String targetVersion = layout.equals("legacy") ? "47" : layout.equals("business") ? "9" : "7";
+            var flyway = Flyway.configure().dataSource(source).locations(location).target(targetVersion).load();
             assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
             assertThat(flyway.migrate().migrationsExecuted).isZero();
             assertThat(jdbc.queryForObject("SELECT provider_initiator_open_corp_id FROM fadada_contract_sign_task WHERE id=101", String.class)).isNull();

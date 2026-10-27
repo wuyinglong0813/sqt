@@ -12,6 +12,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.framework.fadada.config.FadadaProperties;
 import com.tradepass.module.identity.controller.app.certification.vo.CertificationReviewReqVO;
 import com.tradepass.module.identity.api.certification.dto.CertificationApplicationRespDTO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
@@ -50,6 +51,7 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
     private final AuditLogService auditLogService;
     private final boolean caMockEnabled;
     private final String callbackToken;
+    private final FadadaProperties fadadaProperties;
     private CompanyOnboardingAttemptService onboardingAttempts;
 
     @Autowired
@@ -63,8 +65,22 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
                                        AccessControlService accessControlService,
                                        TenantBootstrapService tenantBootstrapService,
                                        AuditLogService auditLogService,
+                                       boolean caMockEnabled,
+                                       String callbackToken) {
+        this(companyMapper, companyMemberMapper, applicationMapper, accessControlService, tenantBootstrapService,
+                auditLogService, caMockEnabled, callbackToken, new FadadaProperties());
+    }
+
+    @Autowired
+    public CompanyCertificationServiceImpl(CompanyMapper companyMapper,
+                                       CompanyMemberMapper companyMemberMapper,
+                                       CompanyCertificationApplicationMapper applicationMapper,
+                                       AccessControlService accessControlService,
+                                       TenantBootstrapService tenantBootstrapService,
+                                       AuditLogService auditLogService,
                                        @Value("${tradepass.ca.mock-enabled:false}") boolean caMockEnabled,
-                                       @Value("${tradepass.verification.callback-token:}") String callbackToken) {
+                                       @Value("${tradepass.verification.callback-token:}") String callbackToken,
+                                       FadadaProperties fadadaProperties) {
         this.companyMapper = companyMapper;
         this.companyMemberMapper = companyMemberMapper;
         this.applicationMapper = applicationMapper;
@@ -73,6 +89,7 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
         this.auditLogService = auditLogService;
         this.caMockEnabled = caMockEnabled;
         this.callbackToken = callbackToken == null ? "" : callbackToken;
+        this.fadadaProperties = fadadaProperties;
     }
 
     @Transactional
@@ -81,6 +98,7 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
         CompanyDO company = requireCompany(companyId);
         accessControlService.requireLegalOrClaim(companyId);
         if (established(company)) throw new BusinessException("企业已完成认证");
+        requireMockCertificationAllowed();
         CompanyOnboardingAttemptDO attempt = onboardingAttempts != null && onboardingAttempts.hasAttempts(companyId)
                 ? onboardingAttempts.requireCurrent(companyId, userId) : null;
         LambdaQueryWrapper<CompanyCertificationApplicationDO> query = new LambdaQueryWrapper<CompanyCertificationApplicationDO>()
@@ -150,6 +168,10 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
                                               String providerRequestId, String reason, CertifiedApplicantRole role) {
         if (role == null) throw new BusinessException("企业认证经办人身份尚未确认");
         CompanyDO company = requireCompany(companyId);
+        if (fadadaProperties.isLegalRepresentativeOnlyOnboardingEnabled() && !established(company)
+                && role != CertifiedApplicantRole.LEGAL) {
+            throw new BusinessException("仅支持法定代表人本人开通企业，请由法人完成身份核验");
+        }
         CompanyCertificationApplicationDO application = requireProviderApplication(companyId, applicantUserId, providerRequestId);
         if (!"APPROVED".equals(application.getStatus())) {
             if (established(company)) throw new BusinessException("企业已正式开通，旧认证申请不能重新授予成员身份");
@@ -384,6 +406,7 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
             // This legacy callback carries no operator identity evidence. A shared secret alone
             // cannot prove that the applicant is the legal representative or an authorized agent.
             if (!caMockEnabled) throw new BusinessException("请通过企业认证状态同步核验经办人身份后开通企业");
+            requireMockCertificationAllowed();
             approve(application, company, request.reason(), CertifiedApplicantRole.LEGAL);
             if (attempt != null) onboardingAttempts.complete(company.getId(), application.getApplicantUserId(), application.getProviderRequestId());
         } else {
@@ -398,6 +421,12 @@ public class CompanyCertificationServiceImpl implements CompanyCertificationServ
     private boolean established(CompanyDO company) {
         return "VERIFIED".equals(company.getCertificationStatus())
                 || onboardingAttempts != null && onboardingAttempts.isEstablished(company);
+    }
+
+    private void requireMockCertificationAllowed() {
+        if (caMockEnabled && fadadaProperties.isLegalRepresentativeOnlyOnboardingEnabled()) {
+            throw new BusinessException("仅支持法定代表人本人开通企业，不能使用模拟认证，请通过法大大核验法人身份");
+        }
     }
 
     private CompanyOnboardingAttemptDO currentReviewAttempt(CompanyDO company,

@@ -73,6 +73,7 @@ public class SdkFadadaCompanyGateway implements FadadaCompanyGateway {
         CorpIdentInfoReq company = new CorpIdentInfoReq();
         company.setCorpName(command.companyName());
         company.setCorpIdentNo(command.creditCode());
+        if (command.legalRepresentativeOnly()) company.setCorpIdentMethod(List.of("legalRepFace"));
         request.setCorpIdentInfo(company);
         request.setCorpNonEditableInfo(List.of("corpName", "corpIdentNo"));
         request.setAuthScopes(command.authScopes());
@@ -113,7 +114,8 @@ public class SdkFadadaCompanyGateway implements FadadaCompanyGateway {
         request.setOpenCorpId(openCorpId);
         CorpIdentityInfoRes response = invoke(request, () -> corpClient.getIdentityInfo(request), "查询企业认证信息");
         CompanyIdentity primary = toCompanyIdentity(response);
-        if (hasText(primary.operatorId()) && hasText(primary.operatorType())) return primary;
+        // SDK fields alone do not document the operatorId namespace. A matching 5.0
+        // result is needed even when the 5.1 extension already returned both fields.
         try {
             CompanyIdentity legacy = legacyIdentityClient.getIdentity(openCorpId);
             if (matchesIdentityVersion(openCorpId, primary, legacy)) return legacy;

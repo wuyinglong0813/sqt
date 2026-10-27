@@ -232,6 +232,7 @@ class SdkFadadaCompanyGatewayTest {
             var request = (com.fasc.open.api.v5_1.req.corp.GetCorpAuthResourceUrlReq) call.getArgument(0);
             assertThat(request.getCorpIdentInfo().getCorpName()).isEqualTo("测试企业");
             assertThat(request.getCorpIdentInfo().getCorpIdentNo()).isEqualTo("TEST-CREDIT");
+            assertThat(request.getCorpIdentInfo().getCorpIdentMethod()).isNull();
             assertThat(request.getCorpName()).isNull();
             assertThat(request.getCorpIdentNo()).isNull();
             assertThat(request.getCorpIdentInfoMatch()).isNull();
@@ -244,6 +245,35 @@ class SdkFadadaCompanyGatewayTest {
         assertThat(gateway.createAuthUrl(new FadadaCompanyGateway.AuthCommand("corp-3", "user-7", accountName,
                 "测试企业", "TEST-CREDIT", java.util.List.of("ident_info"), "https://example.test/callback",
                 "%2Fpages%2Fservice-return%2Fservice-return"))).isEqualTo("https://example.test/auth");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void onlyTheOnboardingCommandRestrictsCertificationToTheLegalRepresentativesFace(boolean legalRepresentativeOnly)
+            throws Exception {
+        var properties = new FadadaProperties();
+        properties.setAppId("test"); properties.setAppSecret("test"); properties.setServerUrl("https://example.test");
+        properties.setLegalRepresentativeOnlyOnboardingEnabled(true);
+        var gateway = new SdkFadadaCompanyGateway(properties, org.mockito.Mockito.mock(FadadaAccessTokenProvider.class));
+        var client = org.mockito.Mockito.mock(com.fasc.open.api.v5_1.client.CorpClient.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "corpClient", client);
+        var detail = new com.fasc.open.api.v5_1.res.common.ECorpAuthUrlRes();
+        detail.setAuthUrl("https://example.test/auth");
+        org.mockito.Mockito.when(client.getCorpAuthUrl(org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+            var request = (com.fasc.open.api.v5_1.req.corp.GetCorpAuthResourceUrlReq) call.getArgument(0);
+            if (legalRepresentativeOnly) {
+                assertThat(request.getCorpIdentInfo().getCorpIdentMethod()).containsExactly("legalRepFace");
+            } else {
+                assertThat(request.getCorpIdentInfo().getCorpIdentMethod()).isNull();
+            }
+            // The public contract does not allow locking the certification method through this list.
+            assertThat(request.getCorpNonEditableInfo()).containsExactly("corpName", "corpIdentNo");
+            assertThat(request.getClientUserId()).isEqualTo("user-7");
+            return successful(detail);
+        });
+        assertThat(gateway.createAuthUrl(new FadadaCompanyGateway.AuthCommand("corp-3", "user-7", null,
+                "测试企业", "TEST-CREDIT", java.util.List.of("ident_info"), "https://example.test/callback",
+                null, legalRepresentativeOnly))).isEqualTo("https://example.test/auth");
     }
     @Test
     @SuppressWarnings("unchecked")
@@ -332,16 +362,32 @@ class SdkFadadaCompanyGatewayTest {
     }
 
     @Test
-    void completeModernOperatorDoesNotUseLegacyOrChangeTheSdkSourceContract() throws Exception {
+    void completeUndocumentedModernOperatorStillNeedsTheMatchingDocumentedLegacySource() throws Exception {
         var primary = identifiedResponse();
-        primary.setOperatorType("deputy_auth"); primary.setOperatorId("open-user-8");
+        primary.setOperatorType("legal_rep"); primary.setOperatorId("open-user-7");
         var client = org.mockito.Mockito.mock(LegacyFadadaCompanyIdentityClient.class);
+        var legacy = legacyIdentity();
+        org.mockito.Mockito.when(client.getIdentity("corp-3")).thenReturn(legacy);
 
         var result = identityGateway(primary, client).getIdentity("corp-3");
 
-        assertThat(result.operatorId()).isEqualTo("open-user-8");
+        assertThat(result).isSameAs(legacy);
+        assertThat(result.operatorOpenUserIdDocumented()).isTrue();
+        org.mockito.Mockito.verify(client).getIdentity("corp-3");
+    }
+
+    @Test
+    void completeConflictingModernOperatorCannotAcquireTheLegacyTrustMarker() throws Exception {
+        var primary = identifiedResponse();
+        primary.setOperatorType("deputy_auth"); primary.setOperatorId("open-user-8");
+        var client = org.mockito.Mockito.mock(LegacyFadadaCompanyIdentityClient.class);
+        org.mockito.Mockito.when(client.getIdentity("corp-3")).thenReturn(legacyIdentity());
+
+        var result = identityGateway(primary, client).getIdentity("corp-3");
+
+        assertThat(result).isEqualTo(SdkFadadaCompanyGateway.toCompanyIdentity(primary));
         assertThat(result.operatorOpenUserIdDocumented()).isFalse();
-        org.mockito.Mockito.verifyNoInteractions(client);
+        org.mockito.Mockito.verify(client).getIdentity("corp-3");
     }
 
     @Test

@@ -10,6 +10,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.framework.fadada.config.FadadaProperties;
 import com.tradepass.module.identity.controller.app.certification.vo.CertificationReviewReqVO;
 import com.tradepass.module.identity.api.certification.dto.CertificationApplicationRespDTO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
@@ -93,6 +94,123 @@ class CompanyCertificationServiceTest {
         verify(tenantBootstrapService).initialize(3L, 7L);
         verify(auditLogService).logAs(3L, 7L, "COMPANY_CERTIFICATION", 18L,
                 "APPROVE", "体验测试模拟认证自动审核");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PENDING", "PENDING_REVIEW", "REJECTED", "CANCELLED"})
+    void legalOnlyOnboardingRejectsAdministratorProofBeforeCreatingOrReadingAnApplication(String status) {
+        var company = company();
+        company.setCertificationStatus(status);
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+
+        assertThatThrownBy(() -> legalOnlyService(false, "").completeProviderCertification(
+                3L, 7L, "corp-3", "经办人已取得企业管理权限", CertifiedApplicantRole.ADMIN))
+                .hasMessageContaining("仅支持法定代表人本人开通企业");
+
+        verifyNoInteractions(applicationMapper, memberMapper, tenantBootstrapService, auditLogService);
+        verify(companyMapper, never()).update(any(Wrapper.class));
+    }
+
+    @Test
+    void legalOnlyOnboardingAllowsTheProviderVerifiedLegalApplicantToCompleteOpening() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        var pending = application("SUBMITTED");
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(pending);
+
+        legalOnlyService(false, "").completeProviderCertification(
+                3L, 7L, "corp-3", "法大大已核验法人本人", CertifiedApplicantRole.LEGAL);
+
+        assertThat(pending.getStatus()).isEqualTo("APPROVED");
+        verify(memberMapper).update(argThat((Wrapper<CompanyMemberDO> wrapper) -> {
+            var update = (com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<CompanyMemberDO>) wrapper;
+            update.getSqlSegment();
+            assertThat(update.getParamNameValuePairs().values()).contains("LEGAL", "[\"LEGAL\"]", true, false, "ACTIVE");
+            return true;
+        }));
+        verify(tenantBootstrapService).initialize(3L, 7L);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"VERIFIED", "REJECTED"})
+    void legalOnlyOnboardingPreservesEstablishedEnterprisesApprovedAdministratorRefresh(String status) {
+        var company = company();
+        company.setCertificationStatus(status);
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(approvedAdministratorApplication());
+        when(onboardingAttempts.isEstablished(company)).thenReturn(true);
+        var service = legalOnlyService(false, "");
+        service.setOnboardingAttemptService(onboardingAttempts);
+
+        service.completeProviderCertification(3L, 7L, "corp-3", "企业认证状态刷新", CertifiedApplicantRole.ADMIN);
+
+        verify(companyMapper).update(any(Wrapper.class));
+        verifyNoInteractions(memberMapper, tenantBootstrapService);
+        verify(applicationMapper, never()).insert(any(CompanyCertificationApplicationDO.class));
+        verify(onboardingAttempts, never()).requireCurrent(3L, 7L);
+    }
+
+    @Test
+    void legalOnlyOnboardingCannotUseVerifiedMockFlagsToAutoApproveSubmission() {
+        var company = company();
+        company.setRealNameStatus("VERIFIED");
+        company.setFaceStatus("VERIFIED");
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company);
+
+        assertThatThrownBy(() -> legalOnlyService(true, "").submit(3L))
+                .hasMessageContaining("不能使用模拟认证", "法大大核验法人身份");
+
+        verifyNoInteractions(applicationMapper, memberMapper, tenantBootstrapService, auditLogService);
+        verify(companyMapper, never()).update(any(Wrapper.class));
+    }
+
+    @Test
+    void legalOnlyOnboardingCanStillSubmitARealPendingApplicationWithoutGrantingMembership() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+
+        var result = legalOnlyService(false, "").submit(3L);
+
+        assertThat(result.status()).isEqualTo("SUBMITTED");
+        assertThat(result.providerRequestId()).startsWith("CERT-");
+        verify(applicationMapper).insert(any(CompanyCertificationApplicationDO.class));
+        verifyNoInteractions(memberMapper, tenantBootstrapService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void legalOnlyOnboardingCannotApproveThroughTheIdentityFreeLegacyCallback(boolean caMockEnabled) {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(application("SUBMITTED"));
+
+        assertThatThrownBy(() -> legalOnlyService(caMockEnabled, "secret").review("secret",
+                new CertificationReviewReqVO("corp-3", "APPROVED", "回调模拟通过")))
+                .hasMessageContaining(caMockEnabled ? "不能使用模拟认证" : "核验经办人身份");
+
+        assertNoCertificationOutcomeWritten();
+        verify(applicationMapper, never()).insert(any(CompanyCertificationApplicationDO.class));
+    }
+
+    @Test
+    void disabledLegalOnlyOnboardingRetainsTheDevelopmentMockReview() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(application("SUBMITTED"));
+
+        var result = service(true, "secret").review("secret",
+                new CertificationReviewReqVO("corp-3", "APPROVED", "开发模拟通过"));
+
+        assertThat(result.status()).isEqualTo("APPROVED");
+        verify(tenantBootstrapService).initialize(3L, 7L);
+    }
+
+    @Test
+    void legalOnlyOnboardingStillAllowsARealApplicationToBeRejected() {
+        when(companyMapper.selectByIdForUpdate(3L)).thenReturn(company());
+        when(applicationMapper.selectOne(any(Wrapper.class))).thenReturn(application("SUBMITTED"));
+
+        var result = legalOnlyService(true, "secret").review("secret",
+                new CertificationReviewReqVO("corp-3", "REJECTED", "资料需要补正"));
+
+        assertThat(result.status()).isEqualTo("REJECTED");
+        verifyNoInteractions(memberMapper, tenantBootstrapService);
     }
 
     @Test
@@ -885,6 +1003,13 @@ class CompanyCertificationServiceTest {
     private CompanyCertificationService service(boolean autoApprove, String token) {
         return new CompanyCertificationServiceImpl(companyMapper, memberMapper, applicationMapper,
                 accessControlService, tenantBootstrapService, auditLogService, autoApprove, token);
+    }
+
+    private CompanyCertificationServiceImpl legalOnlyService(boolean autoApprove, String token) {
+        var properties = new FadadaProperties();
+        properties.setLegalRepresentativeOnlyOnboardingEnabled(true);
+        return new CompanyCertificationServiceImpl(companyMapper, memberMapper, applicationMapper,
+                accessControlService, tenantBootstrapService, auditLogService, autoApprove, token, properties);
     }
 
     private CompanyCertificationServiceImpl managedService(boolean autoApprove, String token) {

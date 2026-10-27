@@ -140,14 +140,6 @@ class MysqlWorkflowConcurrencyTest {
         jdbc = new JdbcTemplate(dataSource);
         String migrationLocation = "filesystem:" + com.tradepass.support.RepoRoot.legacyMysqlMigrations().toAbsolutePath();
         Flyway flyway = Flyway.configure().dataSource(dataSource).locations(migrationLocation).load();
-        if (flyway.info().current() == null) {
-            Flyway.configure().dataSource(dataSource).locations(migrationLocation).target("24").load().migrate();
-            jdbc.update("""
-                    INSERT INTO fadada_callback_event
-                        (event_id, event_type, subject_type, payload_sha256, status)
-                    VALUES ('legacy-before-v25', 'test', 'CALLBACK', ?, 'FAILED')
-                    """, "0".repeat(64));
-        }
         flyway.migrate();
         flyway.validate();
         assertThat(jdbc.queryForObject("""
@@ -509,11 +501,50 @@ class MysqlWorkflowConcurrencyTest {
         assertThat(events.claim(event.getId(), "retry", now.plusMinutes(2), now.plusMinutes(7))).isEqualTo(1);
     }
 
-    @Test void migrationPreservesLegacyEventAndRedeliveryCanRestoreItsPayload() {
-        Long id = jdbc.queryForObject("SELECT id FROM fadada_callback_event WHERE event_id = 'legacy-before-v25'", Long.class);
-        events.restoreLegacyPayload(id, "{\"signTaskId\":\"legacy\"}", LocalDateTime.now());
-        assertThat(events.selectById(id).getRetryPayload()).contains("legacy");
-        assertThat(events.restoreLegacyPayload(id, "{}", LocalDateTime.now())).isZero();
+    @Test void migrationPreservesLegacyEventAndRedeliveryCanRestoreItsPayload() throws Exception {
+        // Other integration classes may already have migrated the shared database.
+        // Own the pre-V25 schema so this test always exercises a real upgrade.
+        String url = System.getProperty("tradepass.test.mysql.url");
+        String database = "tradepass_fix_validation_legacy_v25_" + Long.toUnsignedString(System.nanoTime());
+        jdbc.execute("CREATE DATABASE `" + database + "` CHARACTER SET utf8mb4");
+        try {
+            var source = new DriverManagerDataSource(
+                    url.replaceFirst("/tradepass_fix_validation_[a-zA-Z0-9_]+", "/" + database),
+                    System.getProperty("tradepass.test.mysql.username", "root"),
+                    System.getProperty("tradepass.test.mysql.password", ""));
+            var legacyJdbc = new JdbcTemplate(source);
+            String location = "filesystem:" + com.tradepass.support.RepoRoot.legacyMysqlMigrations().toAbsolutePath();
+            Flyway.configure().dataSource(source).locations(location).target("24").load().migrate();
+            legacyJdbc.update("""
+                    INSERT INTO fadada_callback_event
+                        (event_id, event_type, subject_type, payload_sha256, status)
+                    VALUES ('legacy-before-v25', 'test', 'CALLBACK', ?, 'FAILED')
+                    """, "0".repeat(64));
+            Long id = legacyJdbc.queryForObject(
+                    "SELECT id FROM fadada_callback_event WHERE event_id = 'legacy-before-v25'", Long.class);
+            var migration = Flyway.configure().dataSource(source).locations(location).target("25").load();
+            assertThat(migration.migrate().migrationsExecuted).isEqualTo(1);
+            migration.validate();
+
+            var configuration = new MybatisConfiguration();
+            configuration.setMapUnderscoreToCamelCase(true);
+            configuration.addMapper(FadadaCallbackEventMapper.class);
+            var factory = new MybatisSqlSessionFactoryBean();
+            factory.setDataSource(source);
+            factory.setConfiguration(configuration);
+            var legacyEvents = new SqlSessionTemplate(factory.getObject()).getMapper(FadadaCallbackEventMapper.class);
+            var preserved = legacyEvents.selectById(id);
+            assertThat(preserved).isNotNull();
+            assertThat(preserved.getEventId()).isEqualTo("legacy-before-v25");
+            assertThat(preserved.getStatus()).isEqualTo("FAILED");
+            assertThat(preserved.getRetryPayload()).isNull();
+            assertThat(legacyEvents.restoreLegacyPayload(id, "{\"signTaskId\":\"legacy\"}", LocalDateTime.now())).isEqualTo(1);
+            assertThat(legacyEvents.selectById(id).getRetryPayload()).contains("legacy");
+            assertThat(legacyEvents.restoreLegacyPayload(id, "{}", LocalDateTime.now())).isZero();
+            assertThat(legacyEvents.selectById(id).getRetryPayload()).isEqualTo("{\"signTaskId\":\"legacy\"}");
+        } finally {
+            jdbc.execute("DROP DATABASE `" + database + "`");
+        }
     }
 
     @Test void onlyMembershipLedgersUseDatabaseGeneratedIdsAndUsersKeepApplicationIds() {

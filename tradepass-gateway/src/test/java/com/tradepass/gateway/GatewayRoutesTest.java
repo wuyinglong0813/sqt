@@ -36,6 +36,7 @@ class GatewayRoutesTest {
             assertNotNull(routes);
             int count = 0;
             boolean sealGrantStatusMapped = false;
+            boolean signingReadinessMapped = false;
             var scanner = new ClassPathScanningCandidateComponentProvider(true);
             for (var candidate : scanner.findCandidateComponents("com.tradepass")) {
                 Class<?> type = Class.forName(candidate.getBeanClassName());
@@ -51,6 +52,11 @@ class GatewayRoutesTest {
                             assertEquals("identity", expected);
                             sealGrantStatusMapped = true;
                         }
+                        if (path.equals("/api/fadada/companies/{companyId}/signing-readiness")) {
+                            assertEquals(Set.of(RequestMethod.GET), mapping.getMethodsCondition().getMethods());
+                            assertEquals("identity", expected);
+                            signingReadinessMapped = true;
+                        }
                         assertEquals(expected.equals("all") ? "identity" : expected, owner(routes, concrete), mapping.toString());
                     }
                     count++;
@@ -58,8 +64,9 @@ class GatewayRoutesTest {
             }
             // Includes signing prerequisites, member preparation, seal grants/status, preview manifests and invitation previews.
             // Every mapping above must retain its assigned service owner.
-            assertEquals(188, count, "Update the original HTTP contract deliberately when adding APIs");
+            assertEquals(189, count, "Update the original HTTP contract deliberately when adding APIs");
             assertTrue(sealGrantStatusMapped, "The member seal-grant status API must remain available via POST in identity");
+            assertTrue(signingReadinessMapped, "Signing readiness must be a read-only GET in identity");
             assertNull(owner(routes, "/internal/identity/resolve"));
             assertNull(owner(routes, "/internal/storage/put"));
             assertNull(owner(routes, "/actuator/prometheus"));

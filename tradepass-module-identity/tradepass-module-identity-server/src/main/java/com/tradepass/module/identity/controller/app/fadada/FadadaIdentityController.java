@@ -5,11 +5,13 @@ import com.tradepass.module.identity.api.fadada.dto.FadadaAuthUrlRespDTO;
 import com.tradepass.module.identity.api.fadada.dto.FadadaCompanyIdentityRespDTO;
 import com.tradepass.module.identity.api.fadada.dto.LegalRepresentativeRespDTO;
 import com.tradepass.module.identity.api.fadada.dto.PersonalIdentityRespDTO;
+import com.tradepass.module.identity.api.fadada.dto.SigningReadinessRespDTO;
 import com.tradepass.framework.common.pojo.ServiceUrlPayload;
 import com.tradepass.module.identity.service.fadada.FadadaCompanyService;
 import com.tradepass.module.identity.service.fadada.FadadaPersonalIdentityService;
 import com.tradepass.module.identity.service.fadada.FadadaSigningMemberService;
 import com.tradepass.module.identity.service.fadada.FadadaSigningAuthorizationService;
+import com.tradepass.module.identity.service.fadada.FadadaSigningReadinessService;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,14 +25,17 @@ public class FadadaIdentityController {
     private final FadadaCompanyService companyService;
     private final FadadaSigningMemberService signingMemberService;
     private final FadadaSigningAuthorizationService signingAuthorizationService;
+    private final FadadaSigningReadinessService signingReadinessService;
 
     public FadadaIdentityController(FadadaPersonalIdentityService personalIdentityService, FadadaCompanyService companyService,
                                     FadadaSigningMemberService signingMemberService,
-                                    FadadaSigningAuthorizationService signingAuthorizationService) {
+                                    FadadaSigningAuthorizationService signingAuthorizationService,
+                                    FadadaSigningReadinessService signingReadinessService) {
         this.personalIdentityService = personalIdentityService;
         this.companyService = companyService;
         this.signingMemberService = signingMemberService;
         this.signingAuthorizationService = signingAuthorizationService;
+        this.signingReadinessService = signingReadinessService;
     }
 
     @GetMapping("/users/me/identity")
@@ -76,6 +81,11 @@ public class FadadaIdentityController {
     @PostMapping("/companies/{companyId}/signing-member/sync")
     public ApiResponse<ServiceUrlPayload> syncSigningMember(@PathVariable long companyId) {
         return ApiResponse.ok(signingMemberService.syncCurrent(companyId));
+    }
+
+    @GetMapping("/companies/{companyId}/signing-readiness")
+    public ApiResponse<SigningReadinessRespDTO> signingReadiness(@PathVariable long companyId) {
+        return ApiResponse.ok(signingReadinessService.current(companyId));
     }
 
     @PostMapping("/companies/{companyId}/members/{userId}/seal-grant-url")

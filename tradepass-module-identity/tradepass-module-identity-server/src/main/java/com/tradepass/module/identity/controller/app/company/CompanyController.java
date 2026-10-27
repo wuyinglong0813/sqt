@@ -1,6 +1,7 @@
 package com.tradepass.module.identity.controller.app.company;
 
 import com.tradepass.framework.common.pojo.TradePassDtos;
+import com.tradepass.framework.fadada.config.FadadaProperties;
 
 import com.tradepass.framework.common.pojo.ApiResponse;
 import com.tradepass.framework.common.pojo.TradePassDtos.AuthorizationRecord;
@@ -42,11 +43,18 @@ import java.util.Map;
 public class CompanyController {
     private final CompanyService companyService;
     private final CompanyCertificationService certificationService;
+    private final FadadaProperties fadadaProperties;
 
     @Autowired
-    public CompanyController(CompanyService companyService, CompanyCertificationService certificationService) {
+    public CompanyController(CompanyService companyService, CompanyCertificationService certificationService,
+                             FadadaProperties fadadaProperties) {
         this.companyService = companyService;
         this.certificationService = certificationService;
+        this.fadadaProperties = fadadaProperties;
+    }
+
+    public CompanyController(CompanyService companyService, CompanyCertificationService certificationService) {
+        this(companyService, certificationService, new FadadaProperties());
     }
 
     CompanyController(CompanyService companyService) {
@@ -89,7 +97,8 @@ public class CompanyController {
 
     @GetMapping("/ca/config")
     public ApiResponse<Map<String, Boolean>> caConfig() {
-        return ApiResponse.ok(Map.of("mockEnabled", companyService.caMockEnabled()));
+        return ApiResponse.ok(Map.of("mockEnabled", companyService.caMockEnabled(),
+                "legalOnlyOnboardingEnabled", fadadaProperties.isLegalRepresentativeOnlyOnboardingEnabled()));
     }
 
     @PostMapping("/verifications/real-name")

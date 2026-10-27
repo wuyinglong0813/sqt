@@ -1,0 +1,5 @@
+# Merge into the existing tradepass-identity.yaml in TRADEPASS_CORE.
+# Default false preserves the existing legal-representative/authorized-agent onboarding flow.
+tradepass:
+  fadada:
+    legal-representative-only-onboarding-enabled: false

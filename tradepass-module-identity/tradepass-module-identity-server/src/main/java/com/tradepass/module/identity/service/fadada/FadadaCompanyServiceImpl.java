@@ -154,7 +154,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                 identity.getClientCorpId(), clientUserId(userId), currentUser == null ? null : currentUser.getPhone(),
                 expectedCompanyName(company, identity), company.getCreditCode(), ONBOARDING_SCOPES, properties.getCallbackUrl(),
                 java.net.URLEncoder.encode("/pages/service-return/service-return?scene=company&companyId=" + companyId,
-                        java.nio.charset.StandardCharsets.UTF_8)));
+                        java.nio.charset.StandardCharsets.UTF_8), legalOnlyOnboardingRequired(company)));
         } catch (FadadaCompanyQueryException exception) {
             if (!"210002".equals(exception.providerCode())) throw exception;
             // Already authorized is a cue to reconcile, never proof of this applicant's role.
@@ -213,8 +213,10 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         }
         var result = applyAccount(company, identity, account, OperatorEvidence.NONE, true);
         if (result.organizationAuthorized()) return new ServiceUrlPayload(null, "company", result.status());
-        identity.setFailureReason("已查到企业对商签通的有效授权，但尚未取得当前申请人作为法人本人或企业管理员的核验依据。"
-                + "企业授权不代表已确认本人身份，无需重复办理企业授权；请联系平台支持完成本人企业身份核验");
+        identity.setFailureReason(legalOnlyOnboardingRequired(company)
+                ? "当前仅允许法定代表人本人办理企业入驻。企业已有有效授权，但尚未取得当前申请人的法人本人核验依据；请由法人使用自己的账号办理，已由代理人认证的企业需联系平台支持补充核验"
+                : "已查到企业对商签通的有效授权，但尚未取得当前申请人作为法人本人或企业管理员的核验依据。"
+                    + "企业授权不代表已确认本人身份，无需重复办理企业授权；请联系平台支持完成本人企业身份核验");
         identityMapper.updateById(identity);
         return new ServiceUrlPayload(null, "company", "IDENTITY_VERIFICATION_REQUIRED");
     }
@@ -388,8 +390,7 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
             verifyAccount(identity, account, detail);
             identity.setOpenCorpId(account.openCorpId());
             long operatorUserId = authorizationUserId(identity);
-            boolean established = "VERIFIED".equals(company.getCertificationStatus())
-                    || onboardingAttempts != null && onboardingAttempts.isEstablished(company);
+            boolean established = isEstablishedCompany(company);
             if (established) {
                 // Renewing application consent does not re-approve the historical certification
                 // application. Ordinary resource callbacks must not depend on its former operator.
@@ -423,6 +424,10 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
                 if (operatorUserId != identity.getApplicantUserId()) {
                     throw new BusinessException("原企业认证申请尚未完成，请由原申请人完成认证；其他经办人不能代替原申请取得企业权限");
                 }
+                if (legalOnlyOnboardingRequired(company) && (!detail.operatorOpenUserIdDocumented()
+                        || !"legal_rep".equals(detail.operatorType()))) {
+                    throw new BusinessException("当前仅允许法定代表人本人办理企业入驻。尚未取得本人的法人认证记录，请由法人使用自己的账号办理；已由代理人认证的企业需联系平台支持补充核验");
+                }
                 resolved = resolveApplicantRole(identity, account, detail, operatorUserId, evidence);
             } catch (BusinessException exception) {
                 identity.setLocalStatus("IN_PROGRESS");
@@ -450,6 +455,15 @@ public class FadadaCompanyServiceImpl implements FadadaCompanyService {
         identity.setLastSyncAt(LocalDateTime.now());
         identityMapper.updateById(identity);
         return payload(companyId, identity).withCompanyAuthorizationReady(companyAuthorizationReady(account));
+    }
+
+    private boolean isEstablishedCompany(CompanyDO company) {
+        return "VERIFIED".equals(company.getCertificationStatus())
+                || onboardingAttempts != null && onboardingAttempts.isEstablished(company);
+    }
+
+    private boolean legalOnlyOnboardingRequired(CompanyDO company) {
+        return properties.isLegalRepresentativeOnlyOnboardingEnabled() && !isEstablishedCompany(company);
     }
 
     @Transactional

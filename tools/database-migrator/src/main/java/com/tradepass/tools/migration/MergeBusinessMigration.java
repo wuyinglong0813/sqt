@@ -46,15 +46,8 @@ public final class MergeBusinessMigration {
                 if (!tables(source).equals(expected)) throw new IllegalStateException("Unreviewed source table inventory: " + role);
                 try (var statement = source.createStatement(); var rows = statement.executeQuery(
                         "SELECT COUNT(*), MAX(CAST(version AS UNSIGNED)), SUM(success = 0) FROM flyway_schema_history WHERE version IS NOT NULL")) {
-                    boolean trade = role.equals("trade");
-                    boolean contract = role.equals("contract");
-                    if (!rows.next() || rows.getInt(3) != 0
-                            || (trade ? rows.getInt(1) != 3 || rows.getInt(2) != 3
-                            : contract ? !((rows.getInt(1) == 4 && rows.getInt(2) == 4)
-                                || (rows.getInt(1) == 5 && rows.getInt(2) == 5))
-                            : !((rows.getInt(1) == 1 && rows.getInt(2) == 1)
-                            || (rows.getInt(1) == 2 && rows.getInt(2) == 2)))) {
-                        throw new IllegalStateException("Source must match reviewed owned migrations (trade V3; contract V4 or V5; settlement V1 or V2): " + role);
+                    if (!rows.next() || !isReviewedOwnedHistory(role, rows.getInt(1), rows.getInt(2), rows.getInt(3))) {
+                        throw new IllegalStateException("Source must match reviewed owned migrations (trade V3 or V4; contract V4, V5 or V7; settlement V1 or V2): " + role);
                     }
                 }
                 if (count(source, "undo_log") != 0) throw new IllegalStateException("Pending Seata undo records: " + role);
@@ -88,6 +81,16 @@ public final class MergeBusinessMigration {
         } finally {
             for (Connection source : sources.values()) source.close();
         }
+    }
+
+    static boolean isReviewedOwnedHistory(String role, int count, int latest, int failures) {
+        if (failures != 0 || count != latest) return false;
+        return switch (role) {
+            case "trade" -> latest == 3 || latest == 4;
+            case "contract" -> latest == 4 || latest == 5 || latest == 7;
+            case "settlement" -> latest == 1 || latest == 2;
+            default -> false;
+        };
     }
 
     private static long copyVerified(Connection source, Connection target, String table) throws Exception {

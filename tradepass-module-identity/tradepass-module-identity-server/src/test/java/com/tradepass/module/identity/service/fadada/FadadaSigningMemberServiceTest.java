@@ -316,6 +316,8 @@ class FadadaSigningMemberServiceTest {
     @Test
     void theCurrentPersonCanReceiveTheirOwnH5InvitationWithoutManagerApproval() {
         var f = new Fixture();
+        var events = mock(org.springframework.context.ApplicationEventPublisher.class);
+        f.service.setEvents(events);
         when(f.gateway.findMemberByInternalIdentifier("corp-3", "tradepass-user-7"))
                 .thenReturn(f.linked(90L, "inactive", null));
         when(f.gateway.createMemberActivationUrl("corp-3", 90L)).thenReturn("https://example.test/my-join-invitation");
@@ -324,7 +326,25 @@ class FadadaSigningMemberServiceTest {
         assertThat(result.scene()).isEqualTo("member");
         assertThat(result.url()).isEqualTo("https://example.test/my-join-invitation");
         verify(f.access, never()).requireManager(anyLong());
+        verifyNoInteractions(events);
         assertThatThrownBy(() -> f.service.ensureSigningMember(3L, 7L)).hasMessageContaining("请本人");
+    }
+
+    @Test
+    void onlyAnExplicitSuccessfulMemberCheckWakesTheExactPersonsSigningPreparation() {
+        var f = new Fixture();
+        var events = mock(org.springframework.context.ApplicationEventPublisher.class);
+        f.service.setEvents(events);
+        when(f.gateway.findMemberByInternalIdentifier("corp-3", "tradepass-user-7"))
+                .thenReturn(f.linked(90L, "activated", "current-fdd-id"));
+
+        f.service.requireCurrentSigningMember(3L);
+        verifyNoInteractions(events);
+        assertThat(f.service.syncCurrent(3L).status()).isEqualTo("READY");
+
+        verify(events).publishEvent(new SigningMemberSyncRequested(3L, 7L, 7L, "SELF_MEMBER_CONFIRMED"));
+        verify(f.gateway, never()).createMemberActivationUrl(anyString(), anyLong());
+        verify(f.gateway, never()).createMember(any());
     }
 
     @Test

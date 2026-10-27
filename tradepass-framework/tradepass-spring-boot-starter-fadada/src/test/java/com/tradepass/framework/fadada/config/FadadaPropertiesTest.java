@@ -9,6 +9,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class FadadaPropertiesTest {
     @Test
+    void legalRepresentativeOnlyOnboardingIsOptInAndBindsTheDeploymentSetting() {
+        assertThat(new FadadaProperties().isLegalRepresentativeOnlyOnboardingEnabled()).isFalse();
+        var source = new org.springframework.boot.context.properties.source.MapConfigurationPropertySource(
+                java.util.Map.of("tradepass.fadada.legal-representative-only-onboarding-enabled", "true"));
+        var properties = new org.springframework.boot.context.properties.bind.Binder(source)
+                .bind("tradepass.fadada", FadadaProperties.class).get();
+        assertThat(properties.isLegalRepresentativeOnlyOnboardingEnabled()).isTrue();
+        assertThat(properties.isOperatorOpenUserIdConfirmed()).isFalse();
+    }
+
+    @Test
     void platformInitiationIsOptInAndReturnsTheBusinessInitiatorWhenDisabled() {
         var properties = new FadadaProperties();
         assertThat(properties.isPlatformInitiatedSigningEnabled()).isFalse();

@@ -39,6 +39,7 @@
 {GET [/api/dev/users]}
 {GET [/api/document-templates]}
 {GET [/api/fadada/companies/{companyId}/identity]}
+{GET [/api/fadada/companies/{companyId}/signing-readiness]}
 {GET [/api/fadada/users/me/identity]}
 {GET [/api/home/buyer]}
 {GET [/api/home/supplier]}

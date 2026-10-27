@@ -242,6 +242,8 @@ class IndependentServicesIT {
             // A valid adapter configuration pointing exclusively to a closed local endpoint.
             command.addAll(List.of("--tradepass.storage.provider=aliyun-oss", "--tradepass.storage.oss.endpoint=https://127.0.0.1:1",
                     "--tradepass.storage.oss.region=cn-test", "--tradepass.storage.oss.bucket=isolated-test-bucket",
+                    "--tradepass.storage.oss.access-key-id=isolated-test-access-key",
+                    "--tradepass.storage.oss.access-key-secret=isolated-test-access-secret",
                     "--tradepass.storage.connection-timeout-millis=1000", "--tradepass.storage.socket-timeout-millis=1000"));
         }
         if (nacosConfig == null) {
@@ -322,12 +324,19 @@ class IndependentServicesIT {
             if (path.equals("/tcb_probe") || path.equals("/CqVT3HIuWt.txt")
                     || path.equals("/api/contracts/desktop-sign-frame")
                     || path.startsWith("/api/dev/") || path.equals("/api/auth/wechat-login")
-                    || path.equals("/api/company-certifications/provider-callback") || path.equals("/api/fadada/callback")) continue;
+                    || path.equals("/api/company-certifications/provider-callback") || path.equals("/api/fadada/callback")
+                    || path.equals("/api/membership/payment/notify")) continue;
             String method = line.substring(1, line.indexOf(' '));
             String type = line.contains("consumes [multipart/form-data]") ? "multipart/form-data; boundary=smoke" : "application/json";
             var result = request(PORTS.get("gateway"), method, path, "", Map.of("Content-Type", type));
             assertEquals(401, result.statusCode(), line + " -> " + result.body());
         }
+        // Payment notifications authenticate the provider signature rather than a user session.
+        // An absent body is rejected by request binding before any payment processing begins.
+        var emptyPaymentCallback = request(PORTS.get("gateway"), "POST", "/api/membership/payment/notify", "",
+                Map.of("Content-Type", "application/json"));
+        assertEquals(400, emptyPaymentCallback.statusCode(), emptyPaymentCallback.body());
+        assertEquals(400, json(emptyPaymentCallback).path("code").asInt(-1), emptyPaymentCallback.body());
         assertEquals(404, request(PORTS.get("gateway"), "POST", "/internal/identity/resolve", "", Map.of("X-TradePass-Internal-Key", KEY)).statusCode());
         assertEquals(401, request(PORTS.get("identity"), "POST", "/internal/identity/resolve", "", auth()).statusCode());
         assertEquals(401, request(PORTS.get("file"), "POST", "/internal/storage/get", "{}", Map.of()).statusCode());

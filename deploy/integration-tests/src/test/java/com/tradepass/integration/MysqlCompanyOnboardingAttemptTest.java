@@ -108,7 +108,8 @@ class MysqlCompanyOnboardingAttemptTest {
                     SELECT applicant_user_id,client_corp_id,open_corp_id,local_status,auth_scopes,
                            provider_request_id,submitted_at FROM fadada_corp_identity WHERE id=4
                     """);
-            var flyway = upgraded.flyway(null);
+            // Exercise only the onboarding migration; later unrelated migrations have their own fixtures.
+            var flyway = upgraded.flyway(layout.equals("identity") ? "5" : "45");
             assertThat(flyway.migrate().migrationsExecuted).isOne();
             flyway.validate();
             assertThat(upgraded.jdbc.queryForMap("""
