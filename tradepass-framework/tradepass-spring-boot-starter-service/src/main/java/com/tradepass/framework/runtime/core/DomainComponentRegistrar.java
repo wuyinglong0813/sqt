@@ -55,6 +55,7 @@ public final class DomainComponentRegistrar implements BeanDefinitionRegistryPos
                 "com.tradepass.module.identity.service.fadada.FadadaSigningMemberSyncService"));
         if (HostedRoles.hosts(role, "contract")) roots.addAll(List.of("com.tradepass.module.contract.framework.callback.FadadaCallbackRecovery",
                 "com.tradepass.module.contract.job.LocalCallbackRecoveryScheduler",
+                "com.tradepass.module.contract.job.UnsignedSigningTimeoutScheduler",
                 "com.tradepass.module.contract.framework.membership.MembershipNacosLoader",
                 "com.tradepass.module.contract.framework.membership.WechatPayNacosLoader",
                 "com.tradepass.module.contract.job.MembershipPaymentReconciler"));

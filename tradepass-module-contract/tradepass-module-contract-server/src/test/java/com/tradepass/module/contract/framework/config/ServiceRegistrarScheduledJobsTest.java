@@ -6,11 +6,33 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
 import org.springframework.mock.env.MockEnvironment;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Exercise the production registrar: a plain component can otherwise silently lose its schedule. */
 class ServiceRegistrarScheduledJobsTest {
+    @ParameterizedTest
+    @CsvSource({"business,true", "contract,true", "identity,false", "gateway,false"})
+    void unsignedSigningRecoveryIsRegisteredByTheProductionAssemblyOnlyInContractHosts(String role, boolean hostsContract) {
+        var environment = new MockEnvironment().withProperty("tradepass.services.split", "true")
+                .withProperty("tradepass.runtime.role", role);
+        var registry = new DefaultListableBeanFactory();
+
+        new DomainComponentRegistrar(environment).postProcessBeanDefinitionRegistry(registry);
+
+        var required = Map.of(
+                "unsignedSigningTimeoutScheduler", "com.tradepass.module.contract.job.UnsignedSigningTimeoutScheduler",
+                "unsignedSigningTimeoutService", "com.tradepass.module.contract.service.signing.UnsignedSigningTimeoutService",
+                "signingCancellationProcessor", "com.tradepass.module.contract.service.signing.SigningCancellationProcessor",
+                "signingCancellationIntentStore", "com.tradepass.module.contract.service.signing.SigningCancellationIntentStore");
+        required.forEach((name, className) -> {
+            assertThat(registry.containsBeanDefinition(name)).as("%s hosted by %s", name, role)
+                    .isEqualTo(hostsContract);
+            if (hostsContract) assertThat(registry.getBeanDefinition(name).getBeanClassName()).isEqualTo(className);
+        });
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"contract", "business", "identity"})
     void registersReconciliationJobsOnlyInTheirHostingRole(String role) {

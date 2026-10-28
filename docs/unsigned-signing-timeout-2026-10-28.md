@@ -59,6 +59,7 @@ tradepass:
 - 真实 MySQL 会员/恢复意图/超时全链路共 33 项执行通过；另 1 项依赖 Nacos 的原有条件测试跳过。
 - 49 个原合库 Flyway 迁移在隔离空库完整执行成功，包含本次新增恢复表和索引。
 - business 后端打包成功，已确认部署 JAR 包含新增 business V11 迁移；三套迁移文件内容一致。临时 MySQL 测试容器已停止。
+- 发布验收补充：运行时使用显式组件装配，单独的 `@Component` 调度器需要加入 `DomainComponentRegistrar` 的合同域根列表。本次补齐该注册，并使用真实生产注册器验证 business/contract 会注册调度器及依赖、identity/gateway 不注册；相关 11 项测试通过。该修复只需更新 business 服务。
 
 开发阶段的验证未发布到服务器或小程序，也未撤回线上合同。用户随后授权推送两仓库并发布后端，前端仍由用户自行发布。后端采用现有三进程发布器，发布凭据、数据库备份、源文件校验和及实际健康核验保存在服务器私有发布目录 `/docker/tradepass/jenkins/releases/<revision>-2026102801/`，以该目录的 `verified.json` 为发布完成依据。
 
