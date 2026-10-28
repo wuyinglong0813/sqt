@@ -112,6 +112,8 @@ public class MembershipService {
             Reservation existing = existing(contractId, version);
             if (existing != null) {
                 if ("CONSUMED".equals(existing.status())) return existing;
+                if ("REFUNDED".equals(existing.status()))
+                    throw new BusinessException("该版本签署已撤回并返还额度，请修改合同后重新发起");
                 if (!"RELEASED".equals(existing.status()))
                     throw new BusinessException(pendingMessage(contractId, version));
             }
@@ -174,6 +176,42 @@ public class MembershipService {
 
     public void uncertain(long id) {
         uncertain(id, null);
+    }
+
+    /**
+     * Return a consumed local credit only after the caller has independently confirmed that the exact
+     * provider task is stopped and both expected actors have never signed. The original task receipt
+     * remains terminal so a stale callback or retry cannot consume or recreate this version again.
+     */
+    public void refundCancelledUnsigned(long contractId, int version, String signTaskId) {
+        if (contractId <= 0 || version <= 0 || signTaskId == null || signTaskId.isBlank())
+            throw new IllegalArgumentException("未签署额度返还参数不完整");
+        tx.executeWithoutResult(t -> {
+            policies.current(true);
+            var rows = jdbc.queryForList("""
+                    SELECT id,scope_key,subject_key,status,sign_task_id FROM membership_signing_usage
+                    WHERE contract_id=? AND version_no=? FOR UPDATE
+                    """, contractId, version);
+            // Tasks created before the local membership ledger have no local credit to return.
+            if (rows.isEmpty()) return;
+            if (rows.size() != 1) throw new IllegalStateException("签署消费记录不唯一");
+            var row = rows.get(0);
+            if (!signTaskId.equals(row.get("sign_task_id")))
+                throw new IllegalStateException("签署任务与消费记录不一致，不能返还额度");
+            if ("REFUNDED".equals(row.get("status"))) return;
+            if (!"CONSUMED".equals(row.get("status")))
+                throw new IllegalStateException("签署消费状态不允许返还额度");
+            int changed = jdbc.update("""
+                    UPDATE membership_quota_pool SET consumed_amount=consumed_amount-1
+                    WHERE scope_key=? AND subject_key=? AND consumed_amount>0
+                    """, row.get("scope_key"), row.get("subject_key"));
+            if (changed != 1) throw new IllegalStateException("签署消费额度记录不一致");
+            int refunded = jdbc.update("""
+                    UPDATE membership_signing_usage SET status='REFUNDED',last_error='未签署任务已撤回，已返还原签署额度'
+                    WHERE id=? AND status='CONSUMED' AND sign_task_id=?
+                    """, row.get("id"), signTaskId);
+            if (refunded != 1) throw new IllegalStateException("签署消费状态已变化");
+        });
     }
 
     /** Persist only a controlled reason independently of the surrounding signing transaction. */

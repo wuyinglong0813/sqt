@@ -59,6 +59,7 @@ BEGIN
         ('tradepass_staging_business', 'fadada_contract_sign_task'),
         ('tradepass_staging_business', 'fadada_cancelled_abolish_task'),
         ('tradepass_staging_business', 'fadada_abolish_creation_intent'),
+        ('tradepass_staging_business', 'fadada_signing_cancellation_intent'),
         ('tradepass_staging_business', 'membership_policy_state'),
         ('tradepass_staging_business', 'membership_policy_history'),
         ('tradepass_staging_business', 'membership_quota_pool'),

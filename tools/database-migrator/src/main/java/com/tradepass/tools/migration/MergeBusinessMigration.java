@@ -23,6 +23,7 @@ public final class MergeBusinessMigration {
             ownership = new ObjectMapper().readValue(input, new TypeReference<>() {});
         }
         var sources = new LinkedHashMap<String, Connection>();
+        var sourceTables = new LinkedHashMap<String, List<String>>();
         String targetUrl = required("TARGET_BUSINESS_DATABASE_URL");
         String targetUser = required("TARGET_BUSINESS_DB_USERNAME"), targetPassword = required("TARGET_BUSINESS_DB_PASSWORD");
         try (Connection target = DriverManager.getConnection(targetUrl, targetUser, targetPassword)) {
@@ -41,17 +42,21 @@ public final class MergeBusinessMigration {
                 if (source.getCatalog() == null || !source.getCatalog().endsWith("_" + role)) {
                     throw new IllegalStateException("Incorrect source schema for " + role);
                 }
-                var expected = new HashSet<>(ownership.get(role));
-                expected.addAll(List.of("audit_log", "undo_log", "flyway_schema_history"));
-                if (!tables(source).equals(expected)) throw new IllegalStateException("Unreviewed source table inventory: " + role);
+                int latest;
                 try (var statement = source.createStatement(); var rows = statement.executeQuery(
                         "SELECT COUNT(*), MAX(CAST(version AS UNSIGNED)), SUM(success = 0) FROM flyway_schema_history WHERE version IS NOT NULL")) {
                     if (!rows.next() || !isReviewedOwnedHistory(role, rows.getInt(1), rows.getInt(2), rows.getInt(3))) {
-                        throw new IllegalStateException("Source must match reviewed owned migrations (trade V3 or V4; contract V4, V5 or V7; settlement V1 or V2): " + role);
+                        throw new IllegalStateException("Source must match reviewed owned migrations (trade V3 or V4; contract V4, V5, V7 or V8; settlement V1 or V2): " + role);
                     }
+                    latest = rows.getInt(2);
                 }
+                var reviewedTables = ownedTablesForVersion(role, latest, ownership.get(role));
+                sourceTables.put(role, reviewedTables);
+                var expected = new HashSet<>(reviewedTables);
+                expected.addAll(List.of("audit_log", "undo_log", "flyway_schema_history"));
+                if (!tables(source).equals(expected)) throw new IllegalStateException("Unreviewed source table inventory: " + role);
                 if (count(source, "undo_log") != 0) throw new IllegalStateException("Pending Seata undo records: " + role);
-                for (String table : ownership.get(role)) System.out.println(role + "." + table + " rows=" + count(source, table));
+                for (String table : reviewedTables) System.out.println(role + "." + table + " rows=" + count(source, table));
                 System.out.println(role + ".audit_log rows=" + count(source, "audit_log"));
             }
             if (!apply) { System.out.println("Plan complete. No schema or data changed."); return; }
@@ -63,7 +68,7 @@ public final class MergeBusinessMigration {
                 long auditRows = 0;
                 for (String role : ROLES) {
                     Connection source = sources.get(role);
-                    for (String table : ownership.get(role)) {
+                    for (String table : sourceTables.get(role)) {
                         long copied = copyVerified(source, target, table);
                         if (count(target, table) != copied) throw new IllegalStateException("Row count mismatch: " + table);
                     }
@@ -87,10 +92,17 @@ public final class MergeBusinessMigration {
         if (failures != 0 || count != latest) return false;
         return switch (role) {
             case "trade" -> latest == 3 || latest == 4;
-            case "contract" -> latest == 4 || latest == 5 || latest == 7;
+            case "contract" -> latest == 4 || latest == 5 || latest == 7 || latest == 8;
             case "settlement" -> latest == 1 || latest == 2;
             default -> false;
         };
+    }
+
+    static List<String> ownedTablesForVersion(String role, int latest, List<String> ownership) {
+        // V8 introduces a new recovery table. An older reviewed source cannot contain
+        // these intents; the target's V11 creates an empty table before its rows are copied.
+        return ownership.stream().filter(table -> !role.equals("contract") || latest >= 8
+                || !table.equals("fadada_signing_cancellation_intent")).toList();
     }
 
     private static long copyVerified(Connection source, Connection target, String table) throws Exception {

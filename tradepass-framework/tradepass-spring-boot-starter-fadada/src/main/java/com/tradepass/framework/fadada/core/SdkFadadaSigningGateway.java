@@ -18,6 +18,7 @@ import com.fasc.open.api.v5_1.req.signtask.AddActorsInfo;
 import com.fasc.open.api.v5_1.req.signtask.AddDocInfo;
 import com.fasc.open.api.v5_1.req.signtask.AddSignConfigInfo;
 import com.fasc.open.api.v5_1.req.signtask.AddSignFieldInfo;
+import com.fasc.open.api.v5_1.req.signtask.BlockReq;
 import com.fasc.open.api.v5_1.req.signtask.CancelSignTaskCreateReq;
 import com.fasc.open.api.v5_1.req.signtask.CreateSignTaskReq;
 import com.fasc.open.api.v5_1.req.signtask.GetOwnerDownloadUrlReq;
@@ -26,6 +27,7 @@ import com.fasc.open.api.v5_1.req.signtask.ListSignTaskActorReq;
 import com.fasc.open.api.v5_1.req.signtask.SignTaskActorGetUrlReq;
 import com.fasc.open.api.v5_1.req.signtask.QuerySignTaskDetailReq;
 import com.fasc.open.api.v5_1.req.signtask.SignTaskCancelReq;
+import com.fasc.open.api.v5_1.req.signtask.UnblockReq;
 import com.fasc.open.api.v5_1.res.doc.FileId;
 import com.fasc.open.api.v5_1.res.doc.FileProcessRes;
 import com.fasc.open.api.v5_1.res.doc.GetUploadUrlRes;
@@ -227,14 +229,16 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         actorRequest.setSignTaskId(signTaskId);
         List<ListSignTaskActorRes> actors = invoke(actorRequest, () -> signTaskClient.listSignTaskActor(actorRequest),
                 "查询合同参与方状态");
+        if (actors == null) throw new BusinessException("签署参与方结果不完整，请稍后重试");
         var actorIds = new java.util.HashSet<String>();
         for (var actor : actors) {
             if (actor == null || !hasText(actor.getActorId()) || !actorIds.add(actor.getActorId())) {
                 throw new BusinessException("签署参与方结果不完整，请稍后重试");
             }
         }
-        return new TaskStatus(signTaskId, detail.getSignTaskStatus(), actors == null ? List.of() : actors.stream()
-                .map(value -> new ActorStatus(value.getActorId(), value.getSignStatus())).toList(),
+        return new TaskStatus(signTaskId, detail.getSignTaskStatus(), actors.stream()
+                .map(value -> new ActorStatus(value.getActorId(), value.getSignStatus(),
+                        value.getSignTime(), value.getBlockStatus())).toList(),
                 detail.getOriginalSignTaskId(), detail.getAbolishedSignTaskId());
     }
 
@@ -302,6 +306,32 @@ public class SdkFadadaSigningGateway implements FadadaSigningGateway {
         request.setSignTaskId(signTaskId);
         request.setTerminationNote(reason);
         invokeNoData(request, () -> signTaskClient.cancel(request), "撤回合同签署任务");
+    }
+
+    @Override
+    public void blockActor(String signTaskId, String actorId) {
+        requireActorTarget(signTaskId, actorId);
+        BlockReq request = new BlockReq();
+        request.setAccessToken(tokenProvider.get());
+        request.setSignTaskId(signTaskId);
+        request.setActorId(actorId);
+        invokeNoData(request, () -> signTaskClient.block(request), "阻塞合同签署参与方");
+    }
+
+    @Override
+    public void unblockActor(String signTaskId, String actorId) {
+        requireActorTarget(signTaskId, actorId);
+        UnblockReq request = new UnblockReq();
+        request.setAccessToken(tokenProvider.get());
+        request.setSignTaskId(signTaskId);
+        request.setActorId(actorId);
+        invokeNoData(request, () -> signTaskClient.unblock(request), "解阻合同签署参与方");
+    }
+
+    private static void requireActorTarget(String signTaskId, String actorId) {
+        if (!hasText(signTaskId) || signTaskId.length() > 128 || !hasText(actorId) || actorId.length() > 64) {
+            throw new BusinessException("签署任务或参与方标识无效");
+        }
     }
 
     @Override

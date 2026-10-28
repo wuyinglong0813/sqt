@@ -20,13 +20,19 @@ public class ContractSigningCancellationServiceImpl implements ContractSigningCa
     private final FadadaContractSignTaskMapper taskMapper;
     private final FadadaSigningGateway gateway;
     private final AccessControlOperations accessControl;
+    private final SigningCancellationIntentStore intents;
+    private final SigningCancellationProcessor processor;
 
     public ContractSigningCancellationServiceImpl(FadadaContractSignTaskMapper taskMapper,
                                                FadadaSigningGateway gateway,
-                                               AccessControlOperations accessControl) {
+                                               AccessControlOperations accessControl,
+                                               SigningCancellationIntentStore intents,
+                                               SigningCancellationProcessor processor) {
         this.taskMapper = taskMapper;
         this.gateway = gateway;
         this.accessControl = accessControl;
+        this.intents = intents;
+        this.processor = processor;
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
@@ -47,30 +53,19 @@ public class ContractSigningCancellationServiceImpl implements ContractSigningCa
         }
         // Always consult the provider: a previous cancellation can have succeeded remotely
         // even when our transaction rolled back or the HTTP response was lost.
-        String status = status(task.getSignTaskId());
-        if ("task_finished".equalsIgnoreCase(status) || "sign_completed".equalsIgnoreCase(status)) {
-            throw new BusinessException("合同已完成签署，请同步状态后处理");
-        }
-        if (!stopped(status)) {
-            gateway.cancel(task.getSignTaskId(), reason);
-            status = status(task.getSignTaskId());
-            if (!stopped(status)) throw new BusinessException("签署撤销结果尚未确认，请稍后重试");
-        }
-        task.setProviderStatus(status);
-        task.setLastError(reason);
-        taskMapper.updateById(task);
-    }
-
-    private String status(String taskId) {
-        var result = gateway.status(taskId);
-        if (result == null || result.status() == null) {
+        var initial = gateway.status(task.getSignTaskId());
+        if (initial == null || !task.getSignTaskId().equals(initial.signTaskId()) || initial.status() == null) {
             throw new BusinessException("无法确认签署状态，请稍后重试");
         }
-        return result.status();
-    }
-
-    private boolean stopped(String status) {
-        return "task_terminated".equalsIgnoreCase(status) || "expired".equalsIgnoreCase(status)
-                || "task_expired".equalsIgnoreCase(status);
+        if ("task_finished".equalsIgnoreCase(initial.status()) || "sign_completed".equalsIgnoreCase(initial.status())
+                || "revoked".equalsIgnoreCase(initial.status())) {
+            throw new BusinessException("合同已完成签署，请同步状态后处理");
+        }
+        var intent = intents.request(task, reason, false);
+        if (processor.process(task, intent) != SigningCancellationProcessor.Result.CANCELLED) {
+            throw new BusinessException("合同已完成签署，请同步状态后处理");
+        }
+        if (taskMapper.updateById(task) != 1) throw new BusinessException("签署状态已变化，请稍后重试");
+        intents.complete(task.getSignTaskId(), false);
     }
 }

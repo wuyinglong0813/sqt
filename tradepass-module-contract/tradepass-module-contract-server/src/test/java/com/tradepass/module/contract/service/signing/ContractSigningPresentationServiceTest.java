@@ -96,6 +96,52 @@ class ContractSigningPresentationServiceTest {
         });
     }
 
+    @Test void anUnsignedTimeoutIsShownForBothPartiesWithoutChangingTheCancelledLifecycle() {
+        MybatisTestSupport.initialize(FadadaContractSignTaskDO.class);
+        var tasks = mock(FadadaContractSignTaskMapper.class);
+        var contract = new TradeContractDO(); contract.setId(12L); contract.setCompanyId(3L);
+        contract.setVersionNo(2); contract.setStatus("CANCELLED");
+        var current = task(2, "task_terminated");
+        current.setLastError("超过默认签署时间已撤回");
+        when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(current));
+        var service = new ContractSigningPresentationService(tasks);
+        var timeout = new ContractSigningPresentationService.Progress("SIGNING_TIMEOUT", "超过默认签署时间已撤回");
+
+        assertThat(service.statuses(List.of(contract), 3L).get(12L)).isEqualTo(timeout);
+        assertThat(service.statuses(List.of(contract), 4L).get(12L)).isEqualTo(timeout);
+        assertThat(contract.getStatus()).isEqualTo("CANCELLED");
+    }
+
+    @Test void historicalTimeoutsAndManualWithdrawalsDoNotLabelTheCurrentVersionAsTimedOut() {
+        MybatisTestSupport.initialize(FadadaContractSignTaskDO.class);
+        var tasks = mock(FadadaContractSignTaskMapper.class);
+        var contract = new TradeContractDO(); contract.setId(12L); contract.setCompanyId(3L);
+        contract.setVersionNo(2); contract.setStatus("CANCELLED");
+        var old = task(1, "task_terminated"); old.setLastError("超过默认签署时间已撤回");
+        var current = task(2, "task_terminated"); current.setLastError("发起方撤回合同");
+        when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(old, current));
+        var service = new ContractSigningPresentationService(tasks);
+
+        assertThat(service.statuses(List.of(contract), 3L)).isEmpty();
+        current.setLastError("超过默认签署时间已撤回");
+        current.setProviderStatus("sign_progress");
+        assertThat(service.statuses(List.of(contract), 3L)).isEmpty();
+    }
+
+    @Test void aNewPendingVersionAndClosedContractNeverInheritATimeoutWithdrawalLabel() {
+        MybatisTestSupport.initialize(FadadaContractSignTaskDO.class);
+        var tasks = mock(FadadaContractSignTaskMapper.class);
+        var contract = new TradeContractDO(); contract.setId(12L); contract.setCompanyId(3L);
+        contract.setVersionNo(2); contract.setStatus("PENDING");
+        var old = task(1, "task_terminated"); old.setLastError("超过默认签署时间已撤回");
+        when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(old));
+        var service = new ContractSigningPresentationService(tasks);
+
+        assertThat(service.statuses(List.of(contract), 3L).get(12L).status()).isEqualTo("WAITING_AUTH");
+        contract.setStatus("VOIDED");
+        assertThat(service.statuses(List.of(contract), 3L)).isEmpty();
+    }
+
     private FadadaContractSignTaskDO task(int version, String status) {
         var task = new FadadaContractSignTaskDO(); task.setContractId(12L); task.setVersionNo(version);
         task.setProviderStatus(status); return task;

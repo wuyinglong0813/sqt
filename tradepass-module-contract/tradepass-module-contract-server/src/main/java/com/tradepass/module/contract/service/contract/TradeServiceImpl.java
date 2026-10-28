@@ -593,7 +593,7 @@ public class TradeServiceImpl implements TradeService {
                     "CONTRACT", id, null, "CANCELLED", "合同已被发起方撤回",
                     "发起方已撤回合同 " + contract.getContractNo(), null);
         }
-        return "合同审批已撤回";
+        return "合同已撤回";
     }
 
     @Transactional

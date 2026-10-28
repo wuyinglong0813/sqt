@@ -9,6 +9,7 @@ import com.tradepass.module.contract.dal.dataobject.signing.FadadaContractSignTa
 import com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO;
 import com.tradepass.framework.fadada.core.FadadaSigningGateway;
 import com.tradepass.module.contract.dal.mysql.signing.FadadaContractSignTaskMapper;
+import com.tradepass.module.contract.service.membership.MembershipService;
 import com.tradepass.support.MybatisTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,7 +23,10 @@ class ContractSigningCancellationServiceTest {
     private final FadadaContractSignTaskMapper mapper = mock(FadadaContractSignTaskMapper.class);
     private final FadadaSigningGateway gateway = mock(FadadaSigningGateway.class);
     private final AccessControlOperations access = mock(AccessControlOperations.class);
-    private final ContractSigningCancellationService service = new ContractSigningCancellationServiceImpl(mapper, gateway, access);
+    private final SigningCancellationIntentStore intents = mock(SigningCancellationIntentStore.class);
+    private final MembershipService membership = mock(MembershipService.class);
+    private final ContractSigningCancellationService service = new ContractSigningCancellationServiceImpl(mapper, gateway, access,
+            intents, new SigningCancellationProcessor(gateway,intents,membership));
     private TradeContractDO contract;
     private FadadaContractSignTaskDO task;
 
@@ -32,7 +36,12 @@ class ContractSigningCancellationServiceTest {
         contract = new TradeContractDO(); contract.setId(12L); contract.setCompanyId(3L);
         contract.setCounterpartyCompanyId(4L); contract.setVersionNo(2);
         task = new FadadaContractSignTaskDO(); task.setId(20L); task.setSignTaskId("v2-task");
+        task.setContractId(12L); task.setVersionNo(2); task.setInitiatorActorId("supplier"); task.setCounterpartyActorId("buyer");
         when(mapper.selectOne(any(Wrapper.class))).thenReturn(task);
+        when(mapper.updateById(task)).thenReturn(1);
+        when(intents.request(eq(task),anyString(),eq(false))).thenAnswer(call ->
+                new SigningCancellationIntentStore.Intent("v2-task",12L,2,false,call.getArgument(1),List.of()));
+        when(intents.ownedActors("v2-task")).thenReturn(List.of());
     }
     @AfterEach void clear() { AuthContext.clear(); }
 
@@ -49,13 +58,15 @@ class ContractSigningCancellationServiceTest {
     }
 
     @Test void changeWaitsForConfirmedProviderCancellation() {
-        when(gateway.status("v2-task")).thenReturn(status("sign_progress"), status("task_terminated"));
+        when(gateway.status("v2-task")).thenReturn(status("sign_progress"), status("sign_progress"), status("task_terminated"));
         service.cancelForChange(contract, "修改");
         var order = inOrder(gateway, mapper);
         order.verify(mapper).selectOne(any(Wrapper.class));
-        order.verify(gateway).status("v2-task"); order.verify(gateway).cancel("v2-task", "修改");
+        order.verify(gateway,times(2)).status("v2-task"); order.verify(gateway).cancel("v2-task", "修改");
         order.verify(gateway).status("v2-task"); order.verify(mapper).updateById(task);
         assertThat(task.getProviderStatus()).isEqualTo("task_terminated");
+        verify(membership).refundCancelledUnsigned(12L,2,"v2-task");
+        verify(intents).complete("v2-task",false);
     }
 
     @Test void retryAfterRemoteSuccessDoesNotCancelAgain() {
@@ -78,6 +89,8 @@ class ContractSigningCancellationServiceTest {
     }
 
     private FadadaSigningGateway.TaskStatus status(String value) {
-        return new FadadaSigningGateway.TaskStatus("v2-task", value, List.of());
+        return new FadadaSigningGateway.TaskStatus("v2-task", value, List.of(
+                new FadadaSigningGateway.ActorStatus("supplier","wait_sign"),
+                new FadadaSigningGateway.ActorStatus("buyer","wait_sign")));
     }
 }

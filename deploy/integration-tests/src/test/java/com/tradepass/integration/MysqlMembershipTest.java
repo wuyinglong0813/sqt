@@ -169,6 +169,102 @@ class MysqlMembershipTest {
         assertThat(service.status(company(3)).used()).isEqualTo(1);
     }
 
+    @Test void unsignedCancellationReturnsOneCreditAndPreservesTheOriginalTaskReceipt() {
+        quota(1); consume(1);
+        var receipt = jdbc.queryForMap("""
+                SELECT sign_task_id,source_file_id,doc_id,contract_snapshot,source_sha256,consumed_at,
+                  scope_key,subject_key,provider_initiator_open_corp_id
+                FROM membership_signing_usage WHERE contract_id=1 AND version_no=1
+                """);
+        long usageId = jdbc.queryForObject("SELECT id FROM membership_signing_usage", Long.class);
+        service.refundCancelledUnsigned(1L, 1, "task-1");
+        service.refundCancelledUnsigned(1L, 1, "task-1");
+
+        assertThat(service.status(company(3)).remaining()).isEqualTo(1);
+        assertThat(service.status(company(3)).used()).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM membership_signing_usage", String.class)).isEqualTo("REFUNDED");
+        assertThat(jdbc.queryForMap("""
+                SELECT sign_task_id,source_file_id,doc_id,contract_snapshot,source_sha256,consumed_at,
+                  scope_key,subject_key,provider_initiator_open_corp_id
+                FROM membership_signing_usage WHERE contract_id=1 AND version_no=1
+                """)).isEqualTo(receipt);
+        assertThatThrownBy(() -> reserve(1)).hasMessageContaining("已撤回并返还额度");
+        assertThatThrownBy(() -> service.confirm(usageId, new FadadaSigningGateway.CreatedTask("task-1", "f", "d")))
+                .hasMessageContaining("状态已变化");
+        var newVersion = service.reserve(company(3), 1, 2, "{\"version\":2}", "b".repeat(64));
+        service.confirm(newVersion.id(), new FadadaSigningGateway.CreatedTask("task-1-v2", "file-v2", "doc"));
+        assertThat(service.status(company(3)).used()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM membership_signing_usage", Long.class)).isEqualTo(2);
+    }
+
+    @Test void concurrentRefundsReturnTheConsumedCreditOnlyOnce() throws Exception {
+        quota(1); consume(1);
+        var executor = Executors.newFixedThreadPool(2);
+        var start = new CountDownLatch(1);
+        try {
+            List<Future<?>> refunds = new ArrayList<>();
+            for (int i = 0; i < 2; i++) refunds.add(executor.submit(() -> {
+                try { start.await(); service.refundCancelledUnsigned(1L, 1, "task-1"); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }
+            }));
+            start.countDown();
+            for (var refund : refunds) refund.get(10, TimeUnit.SECONDS);
+            assertThat(service.status(company(3)).remaining()).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT consumed_amount FROM membership_quota_pool", Long.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT status FROM membership_signing_usage", String.class)).isEqualTo("REFUNDED");
+        } finally { executor.shutdownNow(); }
+    }
+
+    @Test void refundOfAnExpiredPaidPoolDoesNotExtendItsLifetimeOrCreateANewPool() {
+        quota(0);
+        jdbc.update("""
+                INSERT INTO membership_quota_pool(scope_key,subject_key,company_id,total_amount,expires_at)
+                VALUES ('PAID:expiring-order','CREDIT-3',3,1,'2026-10-10 00:00:00')
+                """);
+        consume(1);
+        var expiry = jdbc.queryForObject("SELECT expires_at FROM membership_quota_pool", java.sql.Timestamp.class);
+        var later = new MembershipService(jdbc, policies, manager,
+                Clock.fixed(Instant.parse("2026-10-11T08:00:00Z"), ZoneOffset.UTC));
+        later.refundCancelledUnsigned(1L, 1, "task-1");
+        assertThat(jdbc.queryForObject("SELECT consumed_amount FROM membership_quota_pool", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT expires_at FROM membership_quota_pool", java.sql.Timestamp.class)).isEqualTo(expiry);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM membership_quota_pool", Long.class)).isEqualTo(1);
+        assertThat(later.status(company(3)).paidRemaining()).isZero();
+        assertThat(later.status(company(3)).canInitiate()).isFalse();
+    }
+
+    @Test void refundRequiresTheExactReceiptAndCannotUnderflowAnInconsistentPool() {
+        quota(2); consume(1);
+        assertThatThrownBy(() -> service.refundCancelledUnsigned(1L, 1, "other-task"))
+                .hasMessageContaining("不一致");
+        service.refundCancelledUnsigned(99L, 1, "legacy-task");
+        var reserved = reserve(2);
+        assertThatThrownBy(() -> service.refundCancelledUnsigned(2L, 1, "unconfirmed-task"))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(service.status(company(3)).used()).isEqualTo(1);
+        assertThat(service.status(company(3)).reserved()).isEqualTo(1);
+
+        jdbc.update("UPDATE membership_quota_pool SET consumed_amount=0");
+        assertThatThrownBy(() -> service.refundCancelledUnsigned(1L, 1, "task-1"))
+                .hasMessageContaining("额度记录不一致");
+        assertThat(jdbc.queryForObject("SELECT status FROM membership_signing_usage WHERE contract_id=1", String.class))
+                .isEqualTo("CONSUMED");
+        assertThat(service.existing(2, 1).id()).isEqualTo(reserved.id());
+    }
+
+    @Test void remoteCancellationRefundSurvivesAnOuterTransactionRollback() {
+        quota(1); consume(1);
+        var outer = new TransactionTemplate(manager);
+        assertThatThrownBy(() -> outer.execute(t -> {
+            service.refundCancelledUnsigned(1L, 1, "task-1");
+            throw new IllegalStateException("local contract update failed after provider cancellation");
+        })).isInstanceOf(IllegalStateException.class);
+        assertThat(jdbc.queryForObject("SELECT status FROM membership_signing_usage", String.class)).isEqualTo("REFUNDED");
+        assertThat(service.status(company(3)).remaining()).isEqualTo(1);
+        service.refundCancelledUnsigned(1L, 1, "task-1");
+        assertThat(service.status(company(3)).remaining()).isEqualTo(1);
+    }
+
     @Test void platformBillingInitiatorIsPersistedAndCannotChangeAfterTheCreateIntent() {
         quota(2);
         var first = service.reserve(company(3), 1, 1, "{}", "a".repeat(64), "platform-original");

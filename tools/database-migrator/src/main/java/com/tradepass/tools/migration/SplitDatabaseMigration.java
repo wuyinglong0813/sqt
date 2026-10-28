@@ -153,12 +153,12 @@ public final class SplitDatabaseMigration {
         try (var statement = source.createStatement(); var rows = statement.executeQuery(
                 "SELECT MAX(CAST(version AS UNSIGNED)), SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) FROM flyway_schema_history")) {
             if (!rows.next() || !isReviewedSourceVersion(rows.getInt(1), rows.getInt(2))) {
-                throw new IllegalStateException("Upgrade the source to reviewed V48 before cutover, including onboarding attempts, signing initiator and inventory model migrations; other source versions are not supported");
+                throw new IllegalStateException("Upgrade the source to reviewed V49 before cutover, including the unsigned-signing cancellation recovery migration; other source versions are not supported");
             }
         }
     }
     static boolean isReviewedSourceVersion(int latest, int failures) {
-        return latest == 48 && failures == 0;
+        return latest == 49 && failures == 0;
     }
     private static void requireEmpty(Connection target) throws SQLException {
         try (var tables = target.getMetaData().getTables(target.getCatalog(), null, "%", new String[]{"TABLE"})) {

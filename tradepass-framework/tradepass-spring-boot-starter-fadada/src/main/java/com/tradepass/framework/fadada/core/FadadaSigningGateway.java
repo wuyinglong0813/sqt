@@ -16,6 +16,14 @@ public interface FadadaSigningGateway {
         throw new UnsupportedOperationException("合同完整预览尚未实现");
     }
     void cancel(String signTaskId, String reason);
+    /** Prevent an unsigned participant from signing while its task is being reconciled. */
+    default void blockActor(String signTaskId, String actorId) {
+        throw new UnsupportedOperationException("签署参与方阻塞尚未实现");
+    }
+    /** Restore only a participant whose blocking was initiated by this application. */
+    default void unblockActor(String signTaskId, String actorId) {
+        throw new UnsupportedOperationException("签署参与方解阻尚未实现");
+    }
     String abolish(String signTaskId, String actorId, String reason, String callbackUrl);
     default List<String> actorSealIds(String signTaskId, String actorId) {
         throw new UnsupportedOperationException("签署任务印章查询尚未实现");
@@ -105,7 +113,11 @@ public interface FadadaSigningGateway {
                     counterpartyActorId, fileName, initiatorOpenCorpId);
         }
     }
-    record ActorStatus(String actorId, String signStatus) {}
+    record ActorStatus(String actorId, String signStatus, String signTime, String blockStatus) {
+        public ActorStatus(String actorId, String signStatus) {
+            this(actorId, signStatus, null, null);
+        }
+    }
     record TaskStatus(String signTaskId, String status, List<ActorStatus> actors,
                       String originalSignTaskId, String abolishedSignTaskId) {
         public TaskStatus(String signTaskId, String status, List<ActorStatus> actors) {

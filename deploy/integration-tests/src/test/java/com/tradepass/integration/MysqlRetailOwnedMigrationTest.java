@@ -36,9 +36,15 @@ class MysqlRetailOwnedMigrationTest {
         jdbc.update("INSERT INTO warehouse(id,company_id,name,created_by) VALUES (987654,3,'existing warehouse',7)");
 
         var flyway = Flyway.configure().dataSource(source).locations(location).load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(role.equals("business") ? 8 : 2);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(role.equals("business") ? 9 : 2);
         flyway.validate();
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(role.equals("business") ? "10" : "4");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(role.equals("business") ? "11" : "4");
+        if (role.equals("business")) {
+            assertThat(jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()
+                    AND table_name='fadada_signing_cancellation_intent'
+                    """, Integer.class)).isEqualTo(1);
+        }
         assertThat(jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE()
                 AND table_name IN ('inventory_product','business_document_item','retail_document_item') AND column_name='model'

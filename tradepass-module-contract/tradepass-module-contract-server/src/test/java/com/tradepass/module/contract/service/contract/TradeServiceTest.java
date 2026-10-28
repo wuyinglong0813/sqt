@@ -390,7 +390,7 @@ class TradeServiceTest {
         when(contractMapper.selectOne(any(Wrapper.class))).thenReturn(outgoing);
         when(contractMapper.update(any(Wrapper.class))).thenReturn(1);
 
-        assertThat(service.cancelContract(41L)).isEqualTo("合同审批已撤回");
+        assertThat(service.cancelContract(41L)).isEqualTo("合同已撤回");
         var cancellationOrder = org.mockito.Mockito.inOrder(signingCancellation, contractMapper);
         cancellationOrder.verify(signingCancellation).cancelForChange(outgoing, "发起方撤回合同");
         cancellationOrder.verify(contractMapper).update(any(Wrapper.class));
