@@ -62,9 +62,10 @@ class GatewayRoutesTest {
                     count++;
                 }
             }
-            // Includes signing prerequisites, member preparation, seal grants/status, preview manifests and invitation previews.
+            // Includes signing prerequisites, member preparation, seal grants/status, invitation previews,
+            // PDF preview manifests/chunks and outbound warehouse selection.
             // Every mapping above must retain its assigned service owner.
-            assertEquals(189, count, "Update the original HTTP contract deliberately when adding APIs");
+            assertEquals(194, count, "Update the original HTTP contract deliberately when adding APIs");
             assertTrue(sealGrantStatusMapped, "The member seal-grant status API must remain available via POST in identity");
             assertTrue(signingReadinessMapped, "Signing readiness must be a read-only GET in identity");
             assertNull(owner(routes, "/internal/identity/resolve"));
