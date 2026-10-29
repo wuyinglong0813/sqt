@@ -74,6 +74,18 @@
     </dependency>
   </dependencies>
   <build>
+    <testResources>
+      <testResource>
+        <directory>src/test/resources</directory>
+      </testResource>
+      <testResource>
+        <directory>${project.basedir}/../deploy/smoke-tests/src/test/resources</directory>
+        <filtering>false</filtering>
+        <includes>
+          <include>architecture/http-api-baseline.txt</include>
+        </includes>
+      </testResource>
+    </testResources>
     <plugins>
       <plugin>
         <groupId>org.springframework.boot</groupId>

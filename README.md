@@ -32,6 +32,16 @@ bash scripts/ci/verify.sh
 
 完整验证需要本机 Docker，将创建隔离 MySQL、Seata 和 RocketMQ；数据库业务回归与独立进程测试使用两个不同的测试库。前端在同级 `../sqt-front` 独立维护和测试。
 
+新增、删除或修改公共 API 后，更新唯一的 HTTP 基线并执行网关回归：
+
+```bash
+python3 scripts/generate-http-api-baseline.py
+python3 scripts/generate-http-api-baseline.py --check
+mvn -B -pl tradepass-gateway -am -Dtest=GatewayRoutesTest,GatewayProtectionTest -Dsurefire.failIfNoSpecifiedTests=false test
+```
+
+网关与独立进程测试共用 `deploy/smoke-tests/src/test/resources/architecture/http-api-baseline.txt`，按 HTTP 方法、路径及请求/响应类型逐条核对，不再维护固定接口数量。审查基线差异后，将代码与基线一起提交并推送；Jenkins 只构建远端提交，并在日志显示实际发布版本。基线遗漏会在 Maven 构建前列出差异及更新命令。
+
 ## 部署
 
 Docker 构建入口在根目录：

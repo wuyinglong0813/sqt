@@ -44,6 +44,7 @@ pipeline {
                         error('仅允许发布已拉取的 origin/main 或 origin/master 当前提交')
                     }
                     env.RELEASE_ID = sh(script: 'git rev-parse HEAD', returnStdout: true).trim() + '-' + env.BUILD_NUMBER
+                    echo "Checked-out release: ${env.RELEASE_ID}"
                 }
             }
         }
@@ -70,6 +71,7 @@ case "$SERVICE" in
   all) modules=tradepass-module-identity/tradepass-module-identity-server,tradepass-business,tradepass-gateway ;;
   *) exit 2 ;;
 esac
+python3 scripts/generate-http-api-baseline.py --check
 python3 -m unittest discover -s scripts/ci/tests -p test_core_release.py -v
 mvn -B -pl "$modules" -am clean package
 '''
