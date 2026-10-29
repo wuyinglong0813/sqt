@@ -55,12 +55,18 @@ public class UserIdentityServiceImpl implements UserIdentityService {
     }
 
     public String requireCurrentVerifiedName(long companyId) {
-        if (identityMapper == null) return currentDisplayName();
+        String name = verifiedName(AuthContext.userId());
+        if (name.isBlank()) throw new BusinessException("请先完成个人认证，再确认业务单据");
+        return name;
+    }
+
+    public String verifiedName(long userId) {
+        if (identityMapper == null) return "";
         FadadaUserIdentityDO identity = identityMapper.selectOne(new LambdaQueryWrapper<FadadaUserIdentityDO>()
-                .eq(FadadaUserIdentityDO::getUserId, AuthContext.userId()).last("LIMIT 1"));
+                .eq(FadadaUserIdentityDO::getUserId, userId).last("LIMIT 1"));
         if (identity == null || !"VERIFIED".equals(identity.getLocalStatus())
                 || identity.getVerifiedName() == null || identity.getVerifiedName().isBlank()) {
-            throw new BusinessException("请先完成个人认证，再确认业务单据");
+            return "";
         }
         return trim(identity.getVerifiedName(), 64);
     }

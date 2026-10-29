@@ -128,6 +128,7 @@ class MysqlWorkflowConcurrencyTest {
     private BusinessDocumentService documentService;
     private long documentId;
     private long warehouseId;
+    private long outboundWarehouseId;
 
     @BeforeAll static void database() throws Exception {
         String url = System.getProperty("tradepass.test.mysql.url");
@@ -190,6 +191,7 @@ class MysqlWorkflowConcurrencyTest {
         long contractId = IDS.incrementAndGet();
         documentId = IDS.incrementAndGet();
         warehouseId = IDS.incrementAndGet();
+        outboundWarehouseId = IDS.incrementAndGet();
         jdbc.update("""
                 INSERT INTO trade_contract(id,company_id,counterparty_company_id,counterparty_name,
                     name,amount,status,initiated_by,direction,contract_no)
@@ -197,10 +199,11 @@ class MysqlWorkflowConcurrencyTest {
                 """, contractId, "HT-FIX-" + contractId);
         jdbc.update("""
                 INSERT INTO business_document(id,company_id,recipient_company_id,contract_id,document_type,
-                    document_no,template_id,template_name,content,created_by,status,supplier_company_id,buyer_company_id)
-                VALUES (?,3,4,?,'SALES_ORDER',?,0,'测试模板','{}',7,'ISSUED',3,4)
-                """, documentId, contractId, "FIX-" + documentId);
+                    document_no,template_id,template_name,content,created_by,status,supplier_company_id,buyer_company_id,outbound_warehouse_id)
+                VALUES (?,3,4,?,'SALES_ORDER',?,0,'测试模板','{}',7,'ISSUED',3,4,?)
+                """, documentId, contractId, "FIX-" + documentId, outboundWarehouseId);
         jdbc.update("INSERT INTO warehouse(id,company_id,name,created_by) VALUES (?,4,?,8)", warehouseId, "仓库-" + warehouseId);
+        jdbc.update("INSERT INTO warehouse(id,company_id,name,created_by) VALUES (?,3,?,7)", outboundWarehouseId, "出库仓-" + outboundWarehouseId);
         item(1, "2");
     }
 
@@ -453,6 +456,57 @@ class MysqlWorkflowConcurrencyTest {
         assertThat(count("reconciliation_entry", "source_id")).isEqualTo(1);
     }
 
+    @Test void salesDeductOnlySelectedWarehouseAndExactModelAllowingNegativeStock() {
+        String name = "负库存型号-" + documentId;
+        long otherModel = IDS.incrementAndGet(), sameModel = IDS.incrementAndGet(), otherWarehouse = IDS.incrementAndGet();
+        item(2, "3");
+        jdbc.update("UPDATE business_document_item SET product_name=?,model='YJV' WHERE document_id=?", name, documentId);
+        jdbc.update("INSERT INTO inventory_product(id,company_id,product_name,model,specification,base_unit) VALUES (?,3,?,'RVVP','A','件'),(?,3,?,'YJV','A','件')", otherModel, name, sameModel, name);
+        jdbc.update("INSERT INTO warehouse(id,company_id,name,created_by) VALUES (?,3,?,7)", otherWarehouse, "不应扣减仓-" + otherWarehouse);
+        jdbc.update("INSERT INTO inventory_balance(id,company_id,warehouse_id,product_id,quantity,unit_price,inventory_amount) VALUES (?,3,?,?,100,2,200),(?,3,?,?,50,2,100)",
+                ApplicationIds.next(), outboundWarehouseId, otherModel, ApplicationIds.next(), otherWarehouse, sameModel);
+
+        asCompany(4, this::receive);
+        asCompany(4, this::receive);
+
+        assertThat(jdbc.queryForObject("SELECT quantity FROM inventory_balance WHERE warehouse_id=? AND product_id=?", BigDecimal.class, outboundWarehouseId, sameModel)).isEqualByComparingTo("-5");
+        assertThat(jdbc.queryForObject("SELECT quantity FROM inventory_balance WHERE warehouse_id=? AND product_id=?", BigDecimal.class, outboundWarehouseId, otherModel)).isEqualByComparingTo("100");
+        assertThat(balance(otherWarehouse)).isEqualByComparingTo("50");
+        assertThat(balance(warehouseId)).isEqualByComparingTo("5");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction WHERE warehouse_id=? AND biz_type='SALES_ORDER_OUTBOUND'", Integer.class, outboundWarehouseId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT inventory_amount FROM inventory_balance WHERE warehouse_id=? AND product_id=?", BigDecimal.class, outboundWarehouseId, sameModel)).isEqualByComparingTo("-10");
+    }
+
+    @Test void buyerAcknowledgingSupplierReturnPostsBothInventorySidesImmediatelyOnce() {
+        long product = IDS.incrementAndGet();
+        String name = "买方确认退货-" + documentId;
+        jdbc.update("UPDATE business_document SET document_type='RETURN_ORDER',outbound_warehouse_id=NULL,inbound_warehouse_id=? WHERE id=?", outboundWarehouseId, documentId);
+        jdbc.update("UPDATE business_document_item SET product_name=?,model='YJV' WHERE document_id=?", name, documentId);
+        jdbc.update("INSERT INTO inventory_product(id,company_id,product_name,model,specification,base_unit) VALUES (?,4,?,'YJV','A','件')", product, name);
+        jdbc.update("INSERT INTO inventory_balance(id,company_id,warehouse_id,product_id,quantity,unit_price,inventory_amount) VALUES (?,4,?,?,10,2,20)", ApplicationIds.next(), warehouseId, product);
+
+        asCompany(4, () -> inventory.receive(documentId, "RECEIVE_ONLY", warehouseId, null, "签名.png", new byte[]{1}));
+        asCompany(4, () -> inventory.receive(documentId, "RECEIVE_ONLY", warehouseId));
+
+        assertThat(status()).isEqualTo("INBOUNDED");
+        assertThat(balance(warehouseId)).isEqualByComparingTo("8");
+        assertThat(balance(outboundWarehouseId)).isEqualByComparingTo("2");
+        assertThat(count("inventory_transfer", "source_document_id")).isEqualTo(1);
+        assertThat(count("inventory_inbound", "source_document_id")).isEqualTo(1);
+    }
+
+    @Test void salesVoidRestoresBothRecordedWarehousesOnce() {
+        String name = "作废双边回滚-" + documentId;
+        jdbc.update("UPDATE business_document_item SET product_name=? WHERE document_id=?", name, documentId);
+        asCompany(4, this::receive);
+        assertThat(balance(outboundWarehouseId)).isEqualByComparingTo("-2");
+        asCompany(3, () -> { inventory.reverseDocumentInventory(documentId, IDS.incrementAndGet(), 7L); return null; });
+        asCompany(3, () -> { inventory.reverseDocumentInventory(documentId, IDS.incrementAndGet(), 7L); return null; });
+        assertThat(balance(outboundWarehouseId)).isEqualByComparingTo("0");
+        assertThat(balance(warehouseId)).isEqualByComparingTo("0");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction WHERE warehouse_id=? AND biz_type='SALES_ORDER_OUTBOUND_VOID'", Integer.class, outboundWarehouseId)).isEqualTo(1);
+    }
+
     @Test void repeatedProductLinesDeductTheirCombinedQuantity() {
         long sourceWarehouse = returnFixture("3", "4");
         asCompany(3, this::receive);
@@ -667,8 +721,10 @@ class MysqlWorkflowConcurrencyTest {
         assertThat(balance(warehouseId)).isEqualByComparingTo("0");
         assertThat(jdbc.queryForObject("SELECT action_request_id FROM reconciliation_entry WHERE source_id = ? AND reversal_of_id IS NOT NULL",
                 Long.class, requestId)).isEqualTo(requestId);
-        assertThat(jdbc.queryForObject("SELECT id FROM approval_result_notification WHERE source_id = ? AND result_type = 'BILATERAL_ACTION'",
+        assertThat(jdbc.queryForObject("SELECT MIN(id) FROM approval_result_notification WHERE source_id = ? AND result_type = 'BILATERAL_ACTION'",
                 Long.class, requestId)).isGreaterThan(9007199254740991L);
+        assertThat(jdbc.queryForList("SELECT recipient_company_id FROM approval_result_notification WHERE source_id = ? AND result_type = 'BILATERAL_ACTION' ORDER BY recipient_company_id",
+                Long.class, requestId)).containsExactly(3L, 4L);
     }
 
     @Test void signingTodoSqlTracksTheActualSignerAndCurrentVersion() {

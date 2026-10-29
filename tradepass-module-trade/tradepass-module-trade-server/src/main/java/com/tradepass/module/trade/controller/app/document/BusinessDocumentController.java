@@ -5,6 +5,8 @@ import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.framework.common.pojo.ApiResponse;
 import com.tradepass.module.trade.dal.dataobject.document.BusinessDocumentDO;
 import com.tradepass.framework.common.pojo.FileDataPayload;
+import com.tradepass.framework.common.pojo.FileChunkDataPayload;
+import com.tradepass.framework.pdf.PdfPagePreview;
 import com.tradepass.module.trade.service.document.BusinessDocumentPdfService;
 import com.tradepass.module.trade.service.document.BusinessDocumentService;
 import org.springframework.http.ContentDisposition;
@@ -28,6 +30,7 @@ import java.util.Map;
 public class BusinessDocumentController {
     private final BusinessDocumentService businessDocumentService;
     private final BusinessDocumentPdfService businessDocumentPdfService;
+    private final PdfPagePreview previews = new PdfPagePreview();
 
     public BusinessDocumentController(BusinessDocumentService businessDocumentService,
                                       BusinessDocumentPdfService businessDocumentPdfService) {
@@ -106,6 +109,22 @@ public class BusinessDocumentController {
         byte[] pdf = businessDocumentPdfService.generate(document);
         return ApiResponse.ok(FileDataPayload.of(
                 businessDocumentPdfService.fileName(document), MediaType.APPLICATION_PDF_VALUE, pdf));
+    }
+
+    @GetMapping("/trade-documents/{id}/preview-manifest")
+    public ApiResponse<PdfPagePreview.Manifest> previewManifest(@PathVariable Long id) {
+        // Always recheck party/role and draft visibility, even when cached.
+        BusinessDocumentDO document = businessDocumentService.getDocument(id);
+        return ApiResponse.ok(previews.manifest(businessDocumentPdfService.previewSource(document)));
+    }
+
+    @GetMapping("/trade-documents/{id}/preview-chunk-data")
+    public ApiResponse<FileChunkDataPayload> previewChunkData(@PathVariable Long id,
+            @RequestParam int page, @RequestParam String previewKey,
+            @RequestParam(defaultValue = "0") long offset,
+            @RequestParam(defaultValue = "655360") int size) {
+        BusinessDocumentDO document = businessDocumentService.getDocument(id);
+        return ApiResponse.ok(previews.chunk(businessDocumentPdfService.previewSource(document), page, previewKey, offset, size));
     }
 
     private Long longValue(Object value) {

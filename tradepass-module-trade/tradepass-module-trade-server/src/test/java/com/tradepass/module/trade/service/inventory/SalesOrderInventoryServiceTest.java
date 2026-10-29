@@ -353,6 +353,8 @@ class SalesOrderInventoryServiceTest {
         verify(signatureService).save(4L, 31L, 60L, "用户8", "签名.png", SIGNATURE);
         verify(approvalService).recordResult(3L, 4L, "SALES_ORDER", 31L, 12L,
                 "APPROVED", "销售单已确认", "对方已确认销售单 XS-31", null);
+        verify(approvalService).recordResult(4L, 3L, "SALES_ORDER", 31L, 12L,
+                "APPROVED", "已同意销售单", "我方已同意销售单 XS-31", null);
 
         assertThatThrownBy(() -> service.receive(31L, "bad", null))
                 .isInstanceOf(BusinessException.class).hasMessage("接收方式不正确");
@@ -379,18 +381,20 @@ class SalesOrderInventoryServiceTest {
                 .containsEntry("rejectedReason", "金额需要核对");
         verify(approvalService).recordResult(3L, 4L, "SALES_ORDER", 31L, 12L,
                 "REJECTED", "销售单已被驳回", "对方已驳回销售单 XS-31", "金额需要核对");
+        verify(approvalService).recordResult(4L, 3L, "SALES_ORDER", 31L, 12L,
+                "REJECTED", "已驳回销售单", "我方已驳回销售单 XS-31", "金额需要核对");
         assertThatThrownBy(() -> service.receive(31L, "REJECT", null, ""))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("当前状态不能驳回");
     }
 
     @Test
-    void receivesAndInboundsEverySalesItemExactlyOnce() {
+    void receivesAndInboundsEverySalesItemExactlyOnce() throws Exception {
         document.setStatus("ISSUED");
         doReturn((Object) null).when(jdbc)
                 .query(anyString(), any(ResultSetExtractor.class), any(Object[].class));
-        doReturn(List.of(item), List.of(), List.of(item)).when(jdbc)
-                .query(anyString(), any(RowMapper.class), any(Object[].class));
+        document.setOutboundWarehouseId(33L);
+        stubStockQueries("0", "0");
         TestIds.use(60L, 70L, 80L);
         when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(1L);
         when(jdbc.queryForObject(anyString(), eq(BigDecimal.class), any(Object[].class)))
@@ -403,6 +407,175 @@ class SalesOrderInventoryServiceTest {
         verify(accessControlService).requirePermission(4L, "inventory_receive");
         verify(jdbc, atLeastOnce()).update(
                 argThat(sql -> sql.contains("inventory_amount")), any(Object[].class));
+        verify(jdbc).update(argThat(sql -> sql.contains("'SALES_ORDER_OUTBOUND'")),
+                anyLong(), eq(3L), eq(33L), eq(501L), anyLong(),
+                eq(new BigDecimal("-2.0000")), eq(new BigDecimal("-2.0000")), eq(8L));
+        verify(jdbc).update(argThat(sql -> sql.contains("UPDATE inventory_balance")),
+                eq(new BigDecimal("-2.0000")), eq(new BigDecimal("-7.00")), eq(new BigDecimal("3.500000")),
+                eq(3L), eq(33L), eq(501L));
+        org.mockito.Mockito.clearInvocations(jdbc);
+        service.receive(31L, "INBOUND", 55L);
+        verify(jdbc, org.mockito.Mockito.never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test
+    void salesOutboundAggregatesRepeatedProductsAndKeepsModelAndWarehouseIdentity() throws Exception {
+        document.setOutboundWarehouseId(33L);
+        item = new java.util.LinkedHashMap<>(item);
+        item.put("model", "YJV");
+        Map<String, Object> second = new java.util.LinkedHashMap<>(item);
+        second.put("id", 42L);
+        second.put("quantity", new BigDecimal("3.0000"));
+        stubStockQueries("4.0000", "8.00");
+        doReturn(List.of(item, second)).when(jdbc).query(argThat(sql -> sql.contains("FROM business_document_item")),
+                any(RowMapper.class), eq(31L));
+        when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(1L);
+        when(jdbc.queryForObject(anyString(), eq(BigDecimal.class), any(Object[].class)))
+                .thenReturn(new BigDecimal("2.0000"));
+
+        service.receive(31L, "INBOUND", 55L, null, "签名.png", SIGNATURE);
+
+        verify(jdbc, org.mockito.Mockito.times(2)).query(argThat(sql -> sql.contains("FROM inventory_product")),
+                any(RowMapper.class), eq(3L), eq("商品A"), eq("YJV"), eq("A-1"), eq("件"));
+        verify(jdbc).update(argThat(sql -> sql.contains("'SALES_ORDER_OUTBOUND'")),
+                anyLong(), eq(3L), eq(33L), eq(501L), anyLong(),
+                eq(new BigDecimal("-5.0000")), eq(new BigDecimal("-1.0000")), eq(8L));
+        verify(jdbc).update(argThat(sql -> sql.contains("UPDATE inventory_balance")),
+                eq(new BigDecimal("-1.0000")), eq(new BigDecimal("-2.00")), eq(new BigDecimal("2.000000")),
+                eq(3L), eq(33L), eq(501L));
+    }
+
+    @Test
+    void ambiguousHistoricalSalesRequireSupplierWarehouseChoice() throws Exception {
+        stubStockQueries("0", "0");
+        doReturn(List.of(33L, 34L)).when(jdbc).query(argThat(sql -> sql.contains("SELECT id FROM warehouse")),
+                any(RowMapper.class), eq(3L));
+        when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(1L);
+
+        assertThatThrownBy(() -> service.receive(31L, "INBOUND", 55L, null, "签名.png", SIGNATURE))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("请供方设置出库仓库");
+        verify(jdbc, org.mockito.Mockito.never()).update(argThat(sql -> sql.contains("INSERT INTO inventory_balance")),
+                any(Object[].class));
+    }
+
+    @Test
+    void salesPublishingRequiresAnExplicitSupplierWarehouse() {
+        document.setSupplierCompanyId(3L);
+        assertThatThrownBy(() -> service.selectSalesWarehouse(document, 3L, null))
+                .isInstanceOf(BusinessException.class).hasMessage("请选择销售出库仓库");
+        assertThatThrownBy(() -> service.selectSalesWarehouse(document, 4L, 55L))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("仅供方");
+        when(jdbc.queryForObject(anyString(), eq(Long.class), eq(33L), eq(3L))).thenReturn(1L);
+        service.selectSalesWarehouse(document, 3L, 33L);
+        assertThat(document.getOutboundWarehouseId()).isEqualTo(33L);
+    }
+
+    @Test
+    void onlySupplierCanSetHistoricalSalesWarehouseBeforeStockIsPosted() {
+        assertThatThrownBy(() -> service.updateSalesOutboundWarehouse(31L, 33L))
+                .isInstanceOf(BusinessException.class).hasMessage("销售单不存在");
+        AuthContext.set(7L, 3L);
+        when(accessControlService.hasPermission(3L, "order_create")).thenReturn(true);
+        when(jdbc.queryForObject(anyString(), eq(Long.class), eq(33L), eq(3L))).thenReturn(1L);
+        assertThat(service.updateSalesOutboundWarehouse(31L, 33L))
+                .containsEntry("outboundWarehouseId", 33L).containsEntry("canSelectOutboundWarehouse", true);
+        document.setStatus("INBOUNDED");
+        assertThatThrownBy(() -> service.updateSalesOutboundWarehouse(31L, 34L))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("当前状态不能调整");
+    }
+
+    @Test
+    void supplierWithReturnConfirmationPermissionCanSelectReturnInboundWithoutInventoryRole() {
+        document.setDocumentType("RETURN_ORDER");
+        document.setSupplierCompanyId(3L);
+        document.setBuyerCompanyId(4L);
+        document.setCompanyId(4L);
+        document.setRecipientCompanyId(3L);
+        AuthContext.set(7L, 3L);
+        when(accessControlService.hasPermission(3L, "contract_sign")).thenReturn(true);
+        when(accessControlService.hasPermission(3L, "inventory_receive")).thenReturn(false);
+        assertThat(service.documentDetail(31L)).containsEntry("canReceive", true).containsEntry("canInbound", true);
+    }
+
+    @Test
+    void buyerConfirmingSupplierReturnMovesBothSidesImmediately() throws Exception {
+        document.setSupplierCompanyId(3L);
+        document.setBuyerCompanyId(4L);
+        document.setDocumentType("RETURN_ORDER");
+        document.setInboundWarehouseId(33L);
+        stubStockQueries("10.0000", "20.00");
+        when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(1L);
+        when(jdbc.queryForObject(anyString(), eq(BigDecimal.class), any(Object[].class)))
+                .thenReturn(new BigDecimal("2.0000"));
+
+        service.receive(31L, "RECEIVE_ONLY", 44L, null, "签名.png", SIGNATURE);
+
+        assertThat(document.getStatus()).isEqualTo("INBOUNDED");
+        assertThat(document.getOutboundWarehouseId()).isEqualTo(44L);
+        verify(jdbc).update(argThat(sql -> sql.contains("'RETURN_ORDER_OUTBOUND'")),
+                anyLong(), eq(4L), eq(44L), eq(501L), anyLong(),
+                eq(new BigDecimal("-2.0000")), eq(new BigDecimal("8.0000")), eq(8L));
+        verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_inbound\n")),
+                anyLong(), eq(3L), eq(33L), eq(31L), anyString(), eq(8L));
+    }
+
+    @Test
+    void salesVoidRestoresTheRecordedSupplierWarehouseEvenWhenStillNegative() throws Exception {
+        document.setStatus("INBOUNDED");
+        document.setSupplierCompanyId(3L);
+        doAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            RowMapper<?> mapper = invocation.getArgument(1);
+            ResultSet rs = mock(ResultSet.class);
+            if (sql.contains("FROM inventory_inbound")) {
+                when(rs.getLong("id")).thenReturn(70L);
+                when(rs.getLong("company_id")).thenReturn(4L);
+                when(rs.getLong("warehouse_id")).thenReturn(55L);
+                when(rs.getString("status")).thenReturn("COMPLETED");
+            } else if (sql.contains("FROM inventory_transaction")) {
+                long cid = invocation.getArgument(2);
+                when(rs.getLong("company_id")).thenReturn(cid);
+                when(rs.getLong("warehouse_id")).thenReturn(cid == 3L ? 33L : 55L);
+                when(rs.getLong("product_id")).thenReturn(501L);
+                when(rs.getBigDecimal("quantity_delta")).thenReturn(new BigDecimal(cid == 3L ? "-2.0000" : "2.0000"));
+            } else if (sql.contains("FROM inventory_balance")) {
+                long cid = invocation.getArgument(2);
+                when(rs.getBigDecimal("quantity")).thenReturn(new BigDecimal(cid == 3L ? "-4.0000" : "2.0000"));
+                when(rs.getBigDecimal("unit_price")).thenReturn(new BigDecimal("3.500000"));
+                when(rs.getBigDecimal("inventory_amount")).thenReturn(new BigDecimal(cid == 3L ? "-14.00" : "7.00"));
+            } else return List.of();
+            return List.of(mapper.mapRow(rs, 0));
+        }).when(jdbc).query(anyString(), any(RowMapper.class), any(Object[].class));
+
+        service.reverseDocumentInventory(31L, 99L, 8L);
+
+        verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_transaction")),
+                anyLong(), eq(3L), eq(33L), eq(501L), eq("SALES_ORDER_OUTBOUND_VOID"), eq(99L),
+                eq(new BigDecimal("2.0000")), eq(new BigDecimal("-2.0000")), eq(8L));
+        verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_transaction")),
+                anyLong(), eq(4L), eq(55L), eq(501L), eq("SALES_ORDER_INBOUND_VOID"), eq(99L),
+                eq(new BigDecimal("-2.0000")), eq(new BigDecimal("0.0000")), eq(8L));
+    }
+
+    private void stubStockQueries(String quantity, String amount) throws Exception {
+        doReturn((Object) null).when(jdbc)
+                .query(anyString(), any(ResultSetExtractor.class), any(Object[].class));
+        doAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            RowMapper<?> mapper = invocation.getArgument(1);
+            if (sql.contains("FROM business_document_item")) return List.of(item);
+            if (sql.contains("SELECT id FROM inventory_product")) return List.of(501L);
+            if (sql.contains("FROM inventory_balance") || sql.contains("JOIN inventory_balance balance")) {
+                ResultSet rs = mock(ResultSet.class);
+                when(rs.getLong("product_id")).thenReturn(501L);
+                when(rs.getBigDecimal("quantity")).thenReturn(new BigDecimal(quantity));
+                when(rs.getBigDecimal("unit_price")).thenReturn(new BigDecimal("2.000000"));
+                if (new BigDecimal(quantity).signum() == 0) when(rs.getBigDecimal("unit_price")).thenReturn(BigDecimal.ZERO);
+                when(rs.getBigDecimal("inventory_amount")).thenReturn(new BigDecimal(amount));
+                return List.of(mapper.mapRow(rs, 0));
+            }
+            return List.of();
+        }).when(jdbc).query(anyString(), any(RowMapper.class), any(Object[].class));
     }
 
     @Test

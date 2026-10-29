@@ -61,6 +61,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
     private final UserIdentityOperations userIdentityService;
     private ApprovalService approvalService;
     private BilateralActionService bilateralActionService;
+    private BusinessDocumentPeopleService documentPeopleService;
 
     @Autowired
     public BusinessDocumentServiceImpl(BusinessDocumentTemplateMapper templateMapper,
@@ -102,6 +103,11 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
     @Autowired
     public void setBilateralActionService(BilateralActionService bilateralActionService) {
         this.bilateralActionService = bilateralActionService;
+    }
+
+    @Autowired
+    public void setDocumentPeopleService(BusinessDocumentPeopleService documentPeopleService) {
+        this.documentPeopleService = documentPeopleService;
     }
 
     public List<Map<String, Object>> listTemplates(String type) {
@@ -221,7 +227,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         document.setTemplateId(template.getId());
         document.setTemplateName(template.getName());
         String preparedByName = userIdentityService == null
-                ? "用户" + AuthContext.userId() : userIdentityService.currentDisplayName();
+                ? "" : userIdentityService.requireCurrentVerifiedName(companyId);
         String snapshot = createSnapshot(type, template, contract, company,
                 recipientCompany == null ? contract.getCounterpartyName() : recipientCompany.getName(),
                 preparedByName);
@@ -285,7 +291,11 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         if (RETURN_ORDER.equals(document.getDocumentType())) {
             if (inventoryService == null) throw new BusinessException("退货库存服务尚未启用");
             inventoryService.selectReturnWarehouse(document, companyId, warehouseId);
+        } else if (SALES_ORDER.equals(document.getDocumentType())) {
+            if (inventoryService == null) throw new BusinessException("销售库存服务尚未启用");
+            inventoryService.selectSalesWarehouse(document, companyId, warehouseId);
         }
+        if (documentPeopleService != null) documentPeopleService.recordReview(document, companyId);
         document.setStatus("ISSUED");
         document.setRejectedReason(null);
         documentMapper.updateById(document);
@@ -306,6 +316,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
                 && !Long.valueOf(companyId).equals(document.getCompanyId())) {
             throw new BusinessException("单据草稿不存在");
         }
+        if (documentPeopleService != null) documentPeopleService.resolveNames(document);
         return document;
     }
 
@@ -421,6 +432,8 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
             snapshot.put("date", LocalDate.now().toString());
             snapshot.put("templateName", template.getName());
             snapshot.put("preparedByName", safe(preparedByName));
+            snapshot.put("preparedByUserId", String.valueOf(AuthContext.userId()));
+            snapshot.put("preparedByVerified", !safe(preparedByName).isBlank());
             snapshot.put("blankRows", Math.max(
                     8,
                     templateContent.path("blankRows").asInt(0)));
@@ -741,6 +754,15 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         view.put("templateId", document.getTemplateId());
         view.put("templateName", document.getTemplateName());
         view.put("createdAt", document.getCreatedAt());
+        if (documentPeopleService != null) documentPeopleService.resolveNames(document);
+        try {
+            JsonNode content = objectMapper.readTree(document.getContent());
+            view.put("preparedByName", content.path("preparedByName").asText(""));
+            view.put("reviewedByName", content.path("reviewedByName").asText(""));
+        } catch (Exception ignored) {
+            view.put("preparedByName", "");
+            view.put("reviewedByName", "");
+        }
         boolean draft = "DRAFT".equals(document.getStatus()) || "REJECTED".equals(document.getStatus());
         boolean contractReadOnly = bilateralActionService != null
                 ? bilateralActionService.isContractReadOnly(contract)

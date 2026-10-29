@@ -4,6 +4,7 @@ import com.tradepass.framework.common.util.FileTypeInspector;
 import com.tradepass.module.file.api.file.ObjectStorageService;
 import com.tradepass.module.identity.api.permission.AccessControlOperations;
 import com.tradepass.framework.audit.core.AuditLogService;
+import com.tradepass.module.trade.api.approval.ApprovalOperations;
 
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.support.TestIds;
@@ -177,6 +178,48 @@ class ContractAttachmentServiceTest {
         assertThatThrownBy(() -> service.decide(8L, "APPROVE", ""))
                 .isInstanceOf(BusinessException.class)
                 .hasMessage("确认转款凭证前请先完成手写签名");
+    }
+
+    @Test
+    void invoiceApprovalRecordsBothUploaderNotificationAndProcessorsHistory() {
+        AuthContext.set(8L, 4L);
+        var notifications = mock(ApprovalOperations.class);
+        ((ContractAttachmentServiceImpl) service).setApprovalService(notifications);
+        stubListRow(8L, "INVOICE", "发票.pdf", "application/pdf", 9L);
+        ContractAttachmentDO row = new ContractAttachmentDO();
+        row.setId(8L); row.setContractId(12L); row.setUploaderCompanyId(3L); row.setRecipientCompanyId(4L);
+        row.setCategory("INVOICE"); row.setStatus("PENDING_CONFIRMATION"); row.setOriginalName("发票.pdf");
+        row.setInvoiceNo("FP-8"); row.setInvoiceDate(LocalDate.of(2026, 10, 28));
+        row.setInvoiceAmount(new BigDecimal("100")); row.setCreatedBy(7L);
+        when(attachmentMapper.selectRecord(8L)).thenReturn(row);
+        when(attachmentMapper.markApproved(eq(8L), eq(8L), any(LocalDateTime.class))).thenReturn(1);
+
+        service.decide(8L, "APPROVE", "");
+
+        verify(notifications).recordResult(3L, 4L, "INVOICE", 8L, 12L, "APPROVED",
+                "发票已通过", "对方已确认发票 发票.pdf", null);
+        verify(notifications).recordResult(4L, 3L, "INVOICE", 8L, 12L, "APPROVED",
+                "已同意发票", "我方已同意发票 发票.pdf", null);
+    }
+
+    @Test
+    void paymentVoucherRejectionAlsoAppearsInProcessorsHistory() {
+        AuthContext.set(8L, 4L);
+        var notifications = mock(ApprovalOperations.class);
+        ((ContractAttachmentServiceImpl) service).setApprovalService(notifications);
+        stubListRow(8L, "PAYMENT_VOUCHER", "凭证.pdf", "application/pdf", 9L);
+        ContractAttachmentDO row = new ContractAttachmentDO();
+        row.setId(8L); row.setContractId(12L); row.setUploaderCompanyId(3L); row.setRecipientCompanyId(4L);
+        row.setCategory("PAYMENT_VOUCHER"); row.setStatus("PENDING_CONFIRMATION"); row.setOriginalName("凭证.pdf");
+        row.setCreatedBy(7L);
+        when(attachmentMapper.selectRecord(8L)).thenReturn(row);
+
+        service.decide(8L, "REJECT", "金额错误");
+
+        verify(notifications).recordResult(3L, 4L, "PAYMENT_VOUCHER", 8L, 12L, "REJECTED",
+                "转款凭证已被驳回", "对方已驳回转款凭证 凭证.pdf", "金额错误");
+        verify(notifications).recordResult(4L, 3L, "PAYMENT_VOUCHER", 8L, 12L, "REJECTED",
+                "已驳回转款凭证", "我方已驳回转款凭证 凭证.pdf", "金额错误");
     }
 
     @Test

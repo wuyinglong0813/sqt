@@ -14,6 +14,9 @@ public class CompanyInviteDO {
     private String code;
     private String type;
     private String relationRole;
+    private String targetPhoneHash;
+    private String targetPhoneMasked;
+    private Long invitedBy;
     private Boolean used;
     private Long usedBy;
     private LocalDateTime expiresAt;
@@ -29,6 +32,12 @@ public class CompanyInviteDO {
     public void setType(String type) { this.type = type; }
     public String getRelationRole() { return relationRole; }
     public void setRelationRole(String relationRole) { this.relationRole = relationRole; }
+    public String getTargetPhoneHash() { return targetPhoneHash; }
+    public void setTargetPhoneHash(String value) { this.targetPhoneHash = value; }
+    public String getTargetPhoneMasked() { return targetPhoneMasked; }
+    public void setTargetPhoneMasked(String value) { this.targetPhoneMasked = value; }
+    public Long getInvitedBy() { return invitedBy; }
+    public void setInvitedBy(Long value) { this.invitedBy = value; }
     public Boolean getUsed() { return used; }
     public void setUsed(Boolean used) { this.used = used; }
     public Long getUsedBy() { return usedBy; }

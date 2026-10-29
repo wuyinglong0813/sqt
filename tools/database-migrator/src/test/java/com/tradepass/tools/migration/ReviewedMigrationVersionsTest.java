@@ -6,9 +6,9 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ReviewedMigrationVersionsTest {
-    @Test void flatSourceRequiresExactlyReviewedV49WithoutFailedMigrations() {
+    @Test void flatSourceRequiresExactlyReviewedV51WithoutFailedMigrations() {
         for (int version = 0; version <= 60; version++) {
-            assertEquals(version == 49, SplitDatabaseMigration.isReviewedSourceVersion(version, 0),
+            assertEquals(version == 51, SplitDatabaseMigration.isReviewedSourceVersion(version, 0),
                     "Unexpected flat source version: " + version);
             assertFalse(SplitDatabaseMigration.isReviewedSourceVersion(version, 1));
         }
@@ -18,7 +18,7 @@ class ReviewedMigrationVersionsTest {
         for (String role : new String[]{"trade", "contract", "settlement", "unknown"}) {
             for (int version = 0; version <= 10; version++) {
                 boolean expected = switch (role) {
-                    case "trade" -> version == 3 || version == 4;
+                    case "trade" -> version == 3 || version == 4 || version == 5;
                     case "contract" -> version == 4 || version == 5 || version == 7 || version == 8;
                     case "settlement" -> version == 1 || version == 2;
                     default -> false;

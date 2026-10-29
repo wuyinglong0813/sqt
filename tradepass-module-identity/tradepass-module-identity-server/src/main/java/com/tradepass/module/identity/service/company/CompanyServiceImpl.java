@@ -52,6 +52,8 @@ import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import com.tradepass.module.identity.dal.mysql.counterparty.CounterpartyRelationMapper;
 import com.tradepass.module.identity.dal.mysql.permission.PermDefMapper;
 import com.tradepass.module.identity.dal.mysql.permission.RoleDefMapper;
+import com.tradepass.module.identity.dal.dataobject.user.SysUserDO;
+import com.tradepass.module.identity.dal.mysql.user.SysUserMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
@@ -64,6 +66,10 @@ import java.util.Map;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 
 @Service
 public class CompanyServiceImpl implements CompanyService {
@@ -86,6 +92,12 @@ public class CompanyServiceImpl implements CompanyService {
     private FadadaPersonalIdentityService personalIdentityService;
     private ApplicationEventPublisher events;
     private CompanyOnboardingAttemptService onboardingAttempts;
+    private SysUserMapper inviteUserMapper;
+
+    @Autowired
+    public void setInviteUserMapper(SysUserMapper inviteUserMapper) {
+        this.inviteUserMapper = inviteUserMapper;
+    }
 
     public CompanyServiceImpl(CompanyMapper companyMapper,
                           CompanyMemberMapper companyMemberMapper,
@@ -366,8 +378,14 @@ public class CompanyServiceImpl implements CompanyService {
     public InviteResult createInvite(InviteReqVO req) {
         long companyId = parseId(req.companyId());
         accessControlService.requireManager(companyId);
+        String targetPhone = normalizeInvitePhone(req.targetPhone());
+        if (targetPhone.isBlank()) throw new BusinessException("请填写受邀人的有效手机号");
+        SysUserDO inviter = currentInviteUser();
+        if (targetPhone.equals(normalizeInvitePhone(inviter.getPhone()))) {
+            throw new BusinessException(46204, "不能向自己发出成员邀请，请填写受邀人的手机号");
+        }
         String code = generateInviteCode();
-        saveInvite(companyId, code, "member", null);
+        saveInvite(companyId, code, "member", null, targetPhone);
         return new InviteResult(code, req.companyId());
     }
 
@@ -376,7 +394,7 @@ public class CompanyServiceImpl implements CompanyService {
         accessControlService.requireLegal(companyId);
         String code = generateInviteCode();
         String relationRole = "supplier".equalsIgnoreCase(req.relationRole()) ? "supplier" : "buyer";
-        saveInvite(companyId, code, "counterparty", relationRole);
+        saveInvite(companyId, code, "counterparty", relationRole, null);
         return new InviteResult(code, req.companyId());
     }
 
@@ -385,12 +403,16 @@ public class CompanyServiceImpl implements CompanyService {
         CompanyInviteDO invite = companyInviteMapper.selectOne(new LambdaQueryWrapper<CompanyInviteDO>()
                 .eq(CompanyInviteDO::getCode, code).last("LIMIT 1"));
         validateInvite(invite);
+        boolean phoneBindingRequired = "member".equals(invite.getType()) && validateInviteRecipient(invite, true);
         CompanyDO company = companyMapper.selectById(invite.getCompanyId());
         if (company == null || company.getName() == null || company.getName().isBlank()) {
             throw new BusinessException("邀请企业不存在，请联系邀请人重新发送邀请");
         }
+        PersonalIdentityRespDTO identity = personalIdentityService == null ? null : personalIdentityService.current();
         return new InvitePreviewRespVO(
-                String.valueOf(company.getId()), company.getName(), invite.getType());
+                String.valueOf(company.getId()), company.getName(), invite.getType(),
+                "member".equals(invite.getType()) && (identity == null || !"VERIFIED".equals(identity.status())),
+                "member".equals(invite.getType()) ? invite.getTargetPhoneMasked() : "", phoneBindingRequired);
     }
 
     private void validateInvite(CompanyInviteDO invite) {
@@ -444,6 +466,8 @@ public class CompanyServiceImpl implements CompanyService {
             return new JoinResult("ACTIVE", "已建立" + relationText);
         }
 
+        validateInviteRecipient(invite, false);
+
         CompanyMemberDO existing = companyMemberMapper.selectOne(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, invite.getCompanyId())
                 .eq(CompanyMemberDO::getUserId, userId)
@@ -456,6 +480,17 @@ public class CompanyServiceImpl implements CompanyService {
                 throw new BusinessException("申请已提交，等待审批");
             }
         }
+
+        // Verify before writing membership or consuming the invitation. A pending
+        // application must identify a real person, even if the client skips its gate.
+        if (personalIdentityService == null) {
+            throw new BusinessException(503, "个人认证服务暂不可用，请稍后重试");
+        }
+        PersonalIdentityRespDTO identity = personalIdentityService.current();
+        if (identity == null || !"VERIFIED".equals(identity.status())) {
+            throw new BusinessException(46103, "请先完成个人实名认证，再申请加入企业");
+        }
+        personalIdentityService.requireCurrentVerified();
 
         CompanyMemberDO member = new CompanyMemberDO();
         member.setCompanyId(invite.getCompanyId());
@@ -701,15 +736,67 @@ public class CompanyServiceImpl implements CompanyService {
         auditLogService.log(role.getCompanyId(), "ROLE", role.getId(), "DELETE", "删除角色 " + role.getCode());
     }
 
-    private void saveInvite(long companyId, String code, String type, String relationRole) {
+    private void saveInvite(long companyId, String code, String type, String relationRole, String targetPhone) {
         CompanyInviteDO invite = new CompanyInviteDO();
         invite.setCompanyId(companyId);
         invite.setCode(code);
         invite.setType(type);
         invite.setRelationRole(relationRole);
+        invite.setInvitedBy(AuthContext.userId());
+        if (targetPhone != null) {
+            invite.setTargetPhoneHash(invitePhoneHash(targetPhone));
+            invite.setTargetPhoneMasked(targetPhone.substring(0, 3) + "****" + targetPhone.substring(7));
+        }
         invite.setUsed(false);
         invite.setExpiresAt(LocalDateTime.now().plusHours(24));
         companyInviteMapper.insert(invite);
+    }
+
+    // Only the server's WeChat-verified account phone establishes the recipient.
+    // Opening a shared link never claims or changes its intended recipient.
+    private boolean validateInviteRecipient(CompanyInviteDO invite, boolean allowPhoneVerification) {
+        if (!"member".equals(invite.getType()) || invite.getTargetPhoneHash() == null
+                || invite.getTargetPhoneHash().isBlank() || invite.getInvitedBy() == null) {
+            throw new BusinessException(46203, "该成员邀请未指定受邀人，请联系邀请人重新发送邀请");
+        }
+        if (Long.valueOf(AuthContext.userId()).equals(invite.getInvitedBy())) {
+            throw new BusinessException(46204, "这是您发出的成员邀请，请发送给指定受邀人使用");
+        }
+        SysUserDO user = currentInviteUser();
+        String phone = normalizeInvitePhone(user.getPhone());
+        if (phone.isBlank() || user.getPhoneVerifiedAt() == null) {
+            if (allowPhoneVerification) return true;
+            throw new BusinessException(46201, "请先通过微信核验本人手机号，再使用成员邀请");
+        }
+        if (!invitePhoneHash(phone).equals(invite.getTargetPhoneHash())) {
+            throw new BusinessException(46202, "该邀请仅限指定受邀人使用，请使用受邀手机号对应的账号打开");
+        }
+        return false;
+    }
+
+    private SysUserDO currentInviteUser() {
+        if (inviteUserMapper == null) throw new BusinessException(503, "账号服务暂不可用，请稍后重试");
+        SysUserDO user = inviteUserMapper.selectById(AuthContext.userId());
+        if (user == null || !"ACTIVE".equals(user.getStatus())) {
+            throw new BusinessException(401, "当前账号不可用，请重新登录");
+        }
+        return user;
+    }
+
+    private String normalizeInvitePhone(String value) {
+        String phone = value == null ? "" : value.replaceAll("[\\s-]", "");
+        if (phone.startsWith("+86")) phone = phone.substring(3);
+        else if (phone.startsWith("0086")) phone = phone.substring(4);
+        return phone.matches("1[3-9][0-9]{9}") ? phone : "";
+    }
+
+    private String invitePhoneHash(String phone) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(phone.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     private void markInviteUsed(CompanyInviteDO invite, long userId) {

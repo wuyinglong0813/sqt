@@ -3,6 +3,8 @@ package com.tradepass.module.identity.dal.dataobject.user;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 
 import java.time.LocalDateTime;
 
@@ -12,6 +14,8 @@ public class SysUserDO {
     private Long id;
     private String openid;
     private String phone;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private LocalDateTime phoneVerifiedAt;
     private String nickname;
     private String status;
     private LocalDateTime createdAt;
@@ -23,6 +27,8 @@ public class SysUserDO {
     public void setOpenid(String openid) { this.openid = openid; }
     public String getPhone() { return phone; }
     public void setPhone(String phone) { this.phone = phone; }
+    public LocalDateTime getPhoneVerifiedAt() { return phoneVerifiedAt; }
+    public void setPhoneVerifiedAt(LocalDateTime value) { this.phoneVerifiedAt = value; }
     public String getNickname() { return nickname; }
     public void setNickname(String nickname) { this.nickname = nickname; }
     public String getStatus() { return status; }

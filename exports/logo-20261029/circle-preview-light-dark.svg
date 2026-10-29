@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
+<rect width="400" height="400" fill="#f4f8fd"/><rect x="400" width="400" height="400" fill="#222332"/>
+<defs><clipPath id="previewCircle"><circle cx="128" cy="128" r="128"/></clipPath></defs>
+<g transform="translate(72 48)" clip-path="url(#previewCircle)"><svg width="256" height="256" viewBox="0 0 48 48">
+  <title>商签通小程序头像 — 满版蓝底</title>
+  <defs>
+    <linearGradient id="brand" x1="8" y1="6" x2="41" y2="43" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#45a8ff"/>
+      <stop offset="1" stop-color="#2478df"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" fill="url(#brand)"/>
+  <g color="#fff">
+    <path d="M9 12a4 4 0 0 1 4-4h14l7 7v8H23a7 7 0 0 0-7 7v5H9V12Z" fill="currentColor"/>
+    <path d="M39 36a4 4 0 0 1-4 4H21l-7-7v-8h11a7 7 0 0 0 7-7v-5h7v23Z" fill="currentColor" opacity=".52"/>
+    <path d="M18 24h12" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="3"/>
+  </g>
+</svg></g>
+<g transform="translate(472 48)" clip-path="url(#previewCircle)"><svg width="256" height="256" viewBox="0 0 48 48">
+  <title>商签通小程序头像 — 满版蓝底</title>
+  <defs>
+    <linearGradient id="brand" x1="8" y1="6" x2="41" y2="43" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#45a8ff"/>
+      <stop offset="1" stop-color="#2478df"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" fill="url(#brand)"/>
+  <g color="#fff">
+    <path d="M9 12a4 4 0 0 1 4-4h14l7 7v8H23a7 7 0 0 0-7 7v5H9V12Z" fill="currentColor"/>
+    <path d="M39 36a4 4 0 0 1-4 4H21l-7-7v-8h11a7 7 0 0 0 7-7v-5h7v23Z" fill="currentColor" opacity=".52"/>
+    <path d="M18 24h12" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="3"/>
+  </g>
+</svg></g>
+<text x="200" y="350" text-anchor="middle" font-family="PingFang SC,sans-serif" font-size="20" fill="#60748c">浅色背景 · 圆形预览</text>
+<text x="600" y="350" text-anchor="middle" font-family="PingFang SC,sans-serif" font-size="20" fill="#cad5e4">深色背景 · 圆形预览</text>
+</svg>

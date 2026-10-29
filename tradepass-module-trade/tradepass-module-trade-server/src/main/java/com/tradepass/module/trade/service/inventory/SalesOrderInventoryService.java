@@ -44,6 +44,8 @@ public interface SalesOrderInventoryService {
     void setApprovalService(ApprovalService approvalService);
     void saveDocumentItems(BusinessDocumentDO document);
     void selectReturnWarehouse(BusinessDocumentDO document, long companyId, Long warehouseId);
+    void selectSalesWarehouse(BusinessDocumentDO document, long companyId, Long warehouseId);
+    Map<String, Object> updateSalesOutboundWarehouse(Long documentId, Long warehouseId);
     Map<String, Object> documentDetail(Long documentId);
     List<Map<String, Object>> listWarehouses();
     Map<String, Object> createWarehouse(String name, String address);

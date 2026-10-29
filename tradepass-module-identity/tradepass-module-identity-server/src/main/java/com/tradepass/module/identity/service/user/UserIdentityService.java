@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 public interface UserIdentityService {
     void setIdentityMapper(FadadaUserIdentityMapper identityMapper);
     String currentDisplayName();
+    String verifiedName(long userId);
     String requireCurrentVerifiedName(long companyId);
     UserIdentityOperations.PaymentIdentity currentPaymentIdentity();
 }

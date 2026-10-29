@@ -13,6 +13,7 @@ import com.tradepass.framework.common.pojo.ApiResponse;
 import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.framework.common.pojo.FileChunkDataPayload;
 import com.tradepass.framework.common.pojo.FileDataPayload;
+import com.tradepass.framework.pdf.PdfPagePreview;
 import com.tradepass.module.settlement.service.attachment.ContractAttachmentService;
 import com.tradepass.module.settlement.service.reconciliation.ReconciliationAccountService;
 import com.tradepass.module.settlement.service.reconciliation.ReconciliationStatementService;
@@ -40,6 +41,7 @@ public class CollaborationController {
     private final ContractAttachmentService attachmentService;
     private final ReconciliationStatementService statementService;
     private final ReconciliationAccountService accountService;
+    private final PdfPagePreview previews = new PdfPagePreview();
 
     public CollaborationController(ContractAttachmentService attachmentService,
                                    ReconciliationStatementService statementService,
@@ -143,6 +145,30 @@ public class CollaborationController {
     public ApiResponse<FileDataPayload> attachmentContentData(@PathVariable Long id) {
         ContractAttachmentOperations.FileRespDTO file = attachmentService.getFile(id);
         return ApiResponse.ok(FileDataPayload.of(file.originalName(), file.contentType(), file.data()));
+    }
+
+    @GetMapping("/contract-attachments/{id}/preview-manifest")
+    public ApiResponse<PdfPagePreview.Manifest> attachmentPreviewManifest(@PathVariable Long id) {
+        return ApiResponse.ok(previews.manifest(attachmentPreviewSource(id)));
+    }
+
+    @GetMapping("/contract-attachments/{id}/preview-chunk-data")
+    public ApiResponse<FileChunkDataPayload> attachmentPreviewChunkData(@PathVariable Long id,
+            @RequestParam int page, @RequestParam String previewKey,
+            @RequestParam(defaultValue = "0") long offset,
+            @RequestParam(defaultValue = "655360") int size) {
+        return ApiResponse.ok(previews.chunk(attachmentPreviewSource(id), page, previewKey, offset, size));
+    }
+
+    private PdfPagePreview.Source attachmentPreviewSource(Long id) {
+        // getFile applies category permissions, party checks and storage integrity
+        // verification on every page/chunk; the cache is not an access token.
+        ContractAttachmentOperations.FileRespDTO file = attachmentService.getFile(id);
+        if (!MediaType.APPLICATION_PDF_VALUE.equalsIgnoreCase(file.contentType())) {
+            throw new BusinessException("仅 PDF 文件支持页面预览");
+        }
+        String version = PdfPagePreview.fingerprint(String.valueOf(id).getBytes(StandardCharsets.UTF_8), file.data());
+        return new PdfPagePreview.Source(version, file::data);
     }
 
     @GetMapping("/contract-attachments/{id}/content-chunk-data")

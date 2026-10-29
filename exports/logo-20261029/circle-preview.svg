@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 48 48"><defs><clipPath id="avatarCrop"><circle cx="24" cy="24" r="24"/></clipPath></defs><g clip-path="url(#avatarCrop)">
+  <title>商签通小程序头像 — 满版蓝底</title>
+  <defs>
+    <linearGradient id="brand" x1="8" y1="6" x2="41" y2="43" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#45a8ff"/>
+      <stop offset="1" stop-color="#2478df"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" fill="url(#brand)"/>
+  <g color="#fff">
+    <path d="M9 12a4 4 0 0 1 4-4h14l7 7v8H23a7 7 0 0 0-7 7v5H9V12Z" fill="currentColor"/>
+    <path d="M39 36a4 4 0 0 1-4 4H21l-7-7v-8h11a7 7 0 0 0 7-7v-5h7v23Z" fill="currentColor" opacity=".52"/>
+    <path d="M18 24h12" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="3"/>
+  </g>
+</g></svg>

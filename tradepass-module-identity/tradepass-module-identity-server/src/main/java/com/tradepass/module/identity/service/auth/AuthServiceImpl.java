@@ -51,6 +51,7 @@ import org.springframework.beans.factory.annotation.Value;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
 
 @Service
 public class AuthServiceImpl implements AuthService {
@@ -97,43 +98,52 @@ public class AuthServiceImpl implements AuthService {
         this.devEnabled = devEnabled;
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
     public LoginSession wechatLogin(WechatLoginReqVO request) {
         return wechatLogin(request, null);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
     public LoginSession wechatLogin(WechatLoginReqVO request, String trustedOpenid) {
         String openid = wechatService.resolveOpenid(request.code(), trustedOpenid);
         if (!devEnabled && request.phone() != null && !request.phone().isBlank()) {
             throw new BusinessException("生产环境不接受未经验证的手机号");
         }
-        String phone = request.phoneCode() != null && !request.phoneCode().isBlank()
+        boolean verifiedPhoneCode = request.phoneCode() != null && !request.phoneCode().isBlank();
+        String phone = normalizePhone(verifiedPhoneCode
                 ? wechatService.resolvePhoneByCode(request.phoneCode())
-                : (devEnabled ? request.phone() : null);
+                : (devEnabled ? request.phone() : null));
 
         SysUserDO user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUserDO>()
                 .eq(SysUserDO::getOpenid, openid)
                 .last("LIMIT 1"));
         if (user == null && phone != null && !phone.isBlank()) {
             user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUserDO>()
-                    .eq(SysUserDO::getPhone, phone)
+                    .in(SysUserDO::getPhone, phoneAliases(phone))
                     .orderByAsc(SysUserDO::getId)
-                    .last("LIMIT 1"));
+                    .last("LIMIT 1 FOR UPDATE"));
         }
         if (user == null) {
             user = new SysUserDO();
             user.setOpenid(openid);
             user.setNickname(request.nickName() != null && !request.nickName().isBlank() ? request.nickName() : "微信用户");
             user.setPhone(phone != null ? phone : "");
+            if (verifiedPhoneCode && phone != null && !phone.isBlank()) user.setPhoneVerifiedAt(LocalDateTime.now());
             user.setStatus("ACTIVE");
             sysUserMapper.insert(user);
         } else {
+            if (verifiedPhoneCode && phone != null && !phone.isBlank()) {
+                SysUserDO other = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUserDO>()
+                        .in(SysUserDO::getPhone, phoneAliases(phone)).ne(SysUserDO::getId, user.getId()).last("LIMIT 1 FOR UPDATE"));
+                if (other != null) throw new BusinessException("该手机号已绑定其他账号，请使用原账号登录或联系管理员处理");
+            }
             if (request.nickName() != null && !request.nickName().isBlank()) {
                 user.setNickname(request.nickName());
             }
             if (phone != null && !phone.isBlank()) {
+                if (!phone.equals(normalizePhone(user.getPhone()))) user.setPhoneVerifiedAt(null);
                 user.setPhone(phone);
+                if (verifiedPhoneCode) user.setPhoneVerifiedAt(LocalDateTime.now());
             }
             sysUserMapper.updateById(user);
         }
@@ -149,7 +159,7 @@ public class AuthServiceImpl implements AuthService {
                 : loadMemberAnyCompany(user.getId());
         String roleCode = member == null || member.roleCode() == null ? "GUEST" : member.roleCode();
         return new LoginSession(tokenFor(user.getId()), new UserProfile(String.valueOf(user.getId()), openid,
-                user.getPhone(), user.getNickname(), currentCompanyId, roleCode));
+                user.getPhone(), user.getNickname(), currentCompanyId, roleCode, phoneVerified(user)));
     }
 
     @Transactional(isolation = Isolation.REPEATABLE_READ)
@@ -157,9 +167,10 @@ public class AuthServiceImpl implements AuthService {
         if (!devEnabled && request.phone() != null && !request.phone().isBlank()) {
             throw new BusinessException("生产环境不接受未经验证的手机号");
         }
-        String phone = request.phoneCode() != null && !request.phoneCode().isBlank()
+        boolean verifiedPhoneCode = request.phoneCode() != null && !request.phoneCode().isBlank();
+        String phone = normalizePhone(verifiedPhoneCode
                 ? wechatService.resolvePhoneByCode(request.phoneCode())
-                : (devEnabled ? request.phone() : null);
+                : (devEnabled ? request.phone() : null));
         if (phone == null || phone.isBlank()) {
             throw new BusinessException("请使用微信手机号验证完成绑定");
         }
@@ -170,22 +181,24 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException("当前账号不可用，请重新登录");
         }
         SysUserDO other = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUserDO>()
-                .eq(SysUserDO::getPhone, phone).ne(SysUserDO::getId, userId).last("LIMIT 1 FOR UPDATE"));
+                .in(SysUserDO::getPhone, phoneAliases(phone)).ne(SysUserDO::getId, userId).last("LIMIT 1 FOR UPDATE"));
         if (other != null) {
             throw new BusinessException("该手机号已绑定其他账号，请使用原账号登录或联系管理员处理");
         }
-        if (user.getPhone() != null && !user.getPhone().isBlank() && !phone.equals(user.getPhone())) {
+        if (user.getPhone() != null && !user.getPhone().isBlank() && !phone.equals(normalizePhone(user.getPhone()))) {
             throw new BusinessException("当前账号已绑定手机号，变更手机号请联系管理员处理");
         }
+        LocalDateTime verifiedAt = verifiedPhoneCode ? LocalDateTime.now() : user.getPhoneVerifiedAt();
         int updated = sysUserMapper.update(new LambdaUpdateWrapper<SysUserDO>().eq(SysUserDO::getId, userId)
                 .and(wrapper -> wrapper.isNull(SysUserDO::getPhone).or().eq(SysUserDO::getPhone, "")
-                        .or().eq(SysUserDO::getPhone, phone))
-                .set(SysUserDO::getPhone, phone));
+                        .or().eq(SysUserDO::getPhone, user.getPhone()))
+                .set(SysUserDO::getPhone, phone)
+                .set(SysUserDO::getPhoneVerifiedAt, verifiedAt));
         if (updated != 1) throw new BusinessException("账号手机号状态已变化，请刷新后重试");
         MemberInfo member = loadMember(userId, companyId == null ? 0L : companyId);
         return new UserProfile(String.valueOf(userId), user.getOpenid(), phone, user.getNickname(),
                 member == null || companyId == null ? null : String.valueOf(companyId),
-                member == null ? "GUEST" : member.roleCode());
+                member == null ? "GUEST" : member.roleCode(), verifiedAt != null);
     }
 
     public MePayload me() {
@@ -375,6 +388,7 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private MePayload buildMe(long userId, Long companyId) {
+        SysUserDO account = sysUserMapper.selectById(userId);
         List<CompanyRole> companies = loadUserCompanies(userId);
         Long effectiveCompanyId = companyId;
         if (effectiveCompanyId == null && !companies.isEmpty()) {
@@ -382,10 +396,10 @@ public class AuthServiceImpl implements AuthService {
         }
         MemberInfo member = loadMember(userId, effectiveCompanyId == null ? 0L : effectiveCompanyId);
         if (member == null || member.roleCode() == null) {
-            SysUserDO user = sysUserMapper.selectById(userId);
+            SysUserDO user = account;
             String nick = user == null ? "微信用户" : user.getNickname();
             String phone = user == null ? "" : user.getPhone();
-            UserProfile profile = new UserProfile(String.valueOf(userId), "demo-openid", phone, nick, null, "GUEST");
+            UserProfile profile = new UserProfile(String.valueOf(userId), "demo-openid", phone, nick, null, "GUEST", phoneVerified(user));
             return new MePayload(profile, fallbackCompany(), null, companies);
         }
         if (onboardingAttempts != null && !"ACTIVE".equals(member.memberStatus())) {
@@ -395,13 +409,30 @@ public class AuthServiceImpl implements AuthService {
                     && onboardingAttempts.hasPendingAttempt(selected.getId(), userId)) {
                 own = onboardingAttempts.profile(selected, onboardingAttempts.requireAttempt(selected.getId(), userId));
             }
-            UserProfile candidateProfile = new UserProfile(String.valueOf(userId), "demo-openid", member.phone(), member.userName(), null, "GUEST");
+            UserProfile candidateProfile = new UserProfile(String.valueOf(userId), "demo-openid", member.phone(), member.userName(), null, "GUEST", phoneVerified(account));
             return new MePayload(candidateProfile, own, member, companies);
         }
         CompanyProfile company = effectiveCompanyId == null ? null : toCompanyProfile(companyMapper.selectById(effectiveCompanyId));
         UserProfile profile = new UserProfile(member.userId(), "demo-openid", member.phone(), member.userName(),
-                effectiveCompanyId == null ? null : String.valueOf(effectiveCompanyId), member.roleCode());
+                effectiveCompanyId == null ? null : String.valueOf(effectiveCompanyId), member.roleCode(), phoneVerified(account));
         return new MePayload(profile, company != null ? company : fallbackCompany(), member, companies);
+    }
+
+    private boolean phoneVerified(SysUserDO user) {
+        return user != null && "ACTIVE".equals(user.getStatus()) && user.getPhone() != null && !user.getPhone().isBlank()
+                && user.getPhoneVerifiedAt() != null;
+    }
+
+    private String normalizePhone(String value) {
+        if (value == null) return null;
+        String phone = value.replaceAll("[\\s-]", "");
+        if (phone.matches("\\+861[3-9][0-9]{9}")) return phone.substring(3);
+        if (phone.matches("00861[3-9][0-9]{9}")) return phone.substring(4);
+        return phone;
+    }
+
+    private List<String> phoneAliases(String phone) {
+        return phone.matches("1[3-9][0-9]{9}") ? List.of(phone, "+86" + phone, "0086" + phone) : List.of(phone);
     }
 
     private MemberInfo toMemberInfo(Map<String, Object> row, Long companyId) {

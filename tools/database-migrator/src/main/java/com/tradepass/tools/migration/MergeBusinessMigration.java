@@ -46,7 +46,7 @@ public final class MergeBusinessMigration {
                 try (var statement = source.createStatement(); var rows = statement.executeQuery(
                         "SELECT COUNT(*), MAX(CAST(version AS UNSIGNED)), SUM(success = 0) FROM flyway_schema_history WHERE version IS NOT NULL")) {
                     if (!rows.next() || !isReviewedOwnedHistory(role, rows.getInt(1), rows.getInt(2), rows.getInt(3))) {
-                        throw new IllegalStateException("Source must match reviewed owned migrations (trade V3 or V4; contract V4, V5, V7 or V8; settlement V1 or V2): " + role);
+                        throw new IllegalStateException("Source must match reviewed owned migrations (trade V3, V4 or V5; contract V4, V5, V7 or V8; settlement V1 or V2): " + role);
                     }
                     latest = rows.getInt(2);
                 }
@@ -91,7 +91,7 @@ public final class MergeBusinessMigration {
     static boolean isReviewedOwnedHistory(String role, int count, int latest, int failures) {
         if (failures != 0 || count != latest) return false;
         return switch (role) {
-            case "trade" -> latest == 3 || latest == 4;
+            case "trade" -> latest == 3 || latest == 4 || latest == 5;
             case "contract" -> latest == 4 || latest == 5 || latest == 7 || latest == 8;
             case "settlement" -> latest == 1 || latest == 2;
             default -> false;

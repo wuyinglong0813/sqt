@@ -124,6 +124,7 @@ class AuthServiceTest {
         assertThat(result.user().id()).isEqualTo("21");
         assertThat(result.user().currentRole()).isEqualTo("GUEST");
         assertThat(result.user().phone()).isEqualTo("13800000000");
+        assertThat(result.user().phoneVerified()).isFalse();
     }
 
     @Test
@@ -164,6 +165,7 @@ class AuthServiceTest {
 
         assertThat(profile.currentCompanyId()).isEqualTo("3");
         assertThat(profile.currentRole()).isEqualTo("FINANCE");
+        assertThat(profile.phoneVerified()).isFalse();
         verify(userMapper).update(any(Wrapper.class));
     }
 
@@ -181,6 +183,7 @@ class AuthServiceTest {
         assertThat(result.phone()).isEqualTo("13800000000");
         assertThat(result.currentCompanyId()).isNull();
         assertThat(result.currentRole()).isEqualTo("GUEST");
+        assertThat(result.phoneVerified()).isTrue();
         verify(wechatService).resolvePhoneByCode("trusted-code");
         verify(userMapper).update(any(Wrapper.class));
     }
@@ -231,6 +234,52 @@ class AuthServiceTest {
         assertThatThrownBy(() -> service(false).bindPhone(new BindPhoneReqVO(null, "trusted-code")))
                 .hasMessageContaining("变更手机号请联系管理员");
         verify(userMapper, never()).update(any(Wrapper.class));
+    }
+
+    @Test
+    void existingPhoneRequiresFreshVerificationAndMeUsesOnlyTheServerMarker() {
+        AuthContext.set(7L, null);
+        SysUserDO user = phoneBindingUser();
+        user.setPhone("13800000000");
+        when(userMapper.selectById(7L)).thenReturn(user);
+        assertThat(service(false).me().user().phoneVerified()).isFalse();
+        when(wechatService.resolvePhoneByCode("trusted-code")).thenReturn("13800000000");
+        assertThat(service(false).bindPhone(new BindPhoneReqVO(null, "trusted-code")).phoneVerified()).isTrue();
+        user.setPhoneVerifiedAt(java.time.LocalDateTime.now());
+        assertThat(service(false).me().user().phoneVerified()).isTrue();
+        assertThat(new UserProfile("7", "openid", "13800000000", "用户", null, "GUEST").phoneVerified()).isFalse();
+    }
+
+    @Test
+    void trustedLoginCannotVerifyASecondHistoricalAccountForTheSamePhone() {
+        SysUserDO user = phoneBindingUser();
+        user.setPhone("13800000000");
+        SysUserDO other = phoneBindingUser();
+        other.setId(8L);
+        when(wechatService.resolveOpenid("login", null)).thenReturn("real-openid");
+        when(wechatService.resolvePhoneByCode("trusted-code")).thenReturn("13800000000");
+        when(userMapper.selectOne(any(Wrapper.class))).thenReturn(user, other);
+        assertThatThrownBy(() -> service(false).wechatLogin(new WechatLoginReqVO("login", null, null, null, "trusted-code")))
+                .hasMessageContaining("已绑定其他账号");
+        assertThat(user.getPhoneVerifiedAt()).isNull();
+        verify(userMapper, never()).updateById(any(SysUserDO.class));
+    }
+
+    @Test
+    void rawDevelopmentPhoneChangeClearsPreviousVerificationAndInactiveAccountsDoNotReportTrust() {
+        SysUserDO user = phoneBindingUser();
+        user.setPhone("13800000000");
+        user.setPhoneVerifiedAt(java.time.LocalDateTime.now());
+        when(wechatService.resolveOpenid("dev-login", null)).thenReturn("real-openid");
+        when(userMapper.selectOne(any(Wrapper.class))).thenReturn(user);
+        LoginSession changed = service(true).wechatLogin(new WechatLoginReqVO("dev-login", null, null, "13900000000", null));
+        assertThat(changed.user().phoneVerified()).isFalse();
+        assertThat(user.getPhoneVerifiedAt()).isNull();
+        user.setPhoneVerifiedAt(java.time.LocalDateTime.now());
+        user.setStatus("DISABLED");
+        when(userMapper.selectById(7L)).thenReturn(user);
+        AuthContext.set(7L, null);
+        assertThat(service(false).me().user().phoneVerified()).isFalse();
     }
 
     private SysUserDO phoneBindingUser() {

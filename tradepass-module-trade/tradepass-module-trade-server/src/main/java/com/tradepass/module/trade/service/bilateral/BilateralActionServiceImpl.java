@@ -444,6 +444,10 @@ public class BilateralActionServiceImpl implements BilateralActionService {
                 "BILATERAL_ACTION", action.id(), action.contractId(), resultStatus,
                 actionLabel(action.actionType()) + "申请" + resultText,
                 "对方" + resultText + actionLabel(action.actionType()) + "申请", reason);
+        approvalService.recordResult(sourceCompanyId, action.requesterCompanyId(),
+                "BILATERAL_ACTION", action.id(), action.contractId(), resultStatus,
+                resultText + actionLabel(action.actionType()) + "申请",
+                "我方" + resultText + actionLabel(action.actionType()) + "申请", reason);
     }
 
     private void requirePermission(long companyId, String bizType) {

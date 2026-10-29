@@ -18,6 +18,7 @@ import com.lowagie.text.pdf.PdfPCell;
 import com.lowagie.text.pdf.PdfPTable;
 import com.lowagie.text.pdf.PdfWriter;
 import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.framework.pdf.PdfPagePreview;
 import com.tradepass.module.trade.dal.dataobject.document.BusinessDocumentDO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -30,6 +31,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.time.format.DateTimeFormatter;
+import java.nio.charset.StandardCharsets;
 
 @Service
 public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfService {
@@ -52,6 +54,38 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
     }
 
     public byte[] generate(BusinessDocumentDO businessDocument) {
+        return generate(businessDocument, confirmation(businessDocument));
+    }
+
+    public PdfPagePreview.Source previewSource(BusinessDocumentDO source) {
+        // Capture both parts together. OpenPDF's creation timestamp must not
+        // become a version, and the signature rendered must match the version.
+        BusinessDocumentDO snapshot = new BusinessDocumentDO();
+        snapshot.setId(source.getId());
+        snapshot.setDocumentNo(source.getDocumentNo());
+        snapshot.setDocumentType(source.getDocumentType());
+        snapshot.setSourceType(source.getSourceType());
+        snapshot.setStatus(source.getStatus());
+        snapshot.setContent(source.getContent());
+        SalesOrderSignatureService.Confirmation confirmation = confirmation(snapshot);
+        String[] fields = { String.valueOf(source.getId()), source.getDocumentNo(), source.getDocumentType(),
+                source.getSourceType(), source.getStatus(), source.getContent(),
+                confirmation == null ? "" : confirmation.signerName(),
+                confirmation == null ? "" : String.valueOf(confirmation.signedAt()) };
+        byte[][] parts = new byte[fields.length + 1][];
+        for (int index = 0; index < fields.length; index++) {
+            parts[index] = String.valueOf(fields[index]).getBytes(StandardCharsets.UTF_8);
+        }
+        parts[fields.length] = confirmation == null ? null : confirmation.data();
+        return new PdfPagePreview.Source(PdfPagePreview.fingerprint(parts), () -> generate(snapshot, confirmation));
+    }
+
+    private SalesOrderSignatureService.Confirmation confirmation(BusinessDocumentDO source) {
+        return signatureService == null || "RETAIL".equals(source.getSourceType())
+                ? null : signatureService.find(source.getId());
+    }
+
+    private byte[] generate(BusinessDocumentDO businessDocument, SalesOrderSignatureService.Confirmation confirmation) {
         Snapshot snapshot = parseSnapshot(businessDocument);
         try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             Document document = new Document(PageSize.A4, 48, 48, 54, 48);
@@ -91,8 +125,6 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
                         + "\n备注：" + content.path("remark").asText(""), bodyFont));
             }
             addProductTable(document, snapshot, headerFont, bodyFont);
-            SalesOrderSignatureService.Confirmation confirmation = signatureService == null || "RETAIL".equals(businessDocument.getSourceType())
-                    ? null : signatureService.find(businessDocument.getId());
             addFooter(document, businessDocument.getDocumentType(), snapshot, footerFont, confirmation);
 
             document.close();
@@ -167,7 +199,7 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
         signatures.setWidthPercentage(100);
         signatures.setSpacingBefore(28);
         signatures.addCell(borderlessCell("制单人：" + snapshot.preparedByName(), font, Element.ALIGN_LEFT));
-        signatures.addCell(borderlessCell("审核人：", font, Element.ALIGN_CENTER));
+        signatures.addCell(borderlessCell("审核人：" + snapshot.reviewedByName(), font, Element.ALIGN_CENTER));
         signatures.addCell(customerSignatureCell(confirmation, font));
         document.add(signatures);
     }
@@ -222,6 +254,7 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
                     root.path("date").asText(""),
                     root.path("totalAmount").asText("0"),
                     root.path("preparedByName").asText(""),
+                    root.path("reviewedByName").asText(""),
                     Math.max(1, root.path("blankRows").asInt(10)),
                     columns,
                     rows);
@@ -295,7 +328,7 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
 
     private record Snapshot(String title, String companyName, String counterpartyName,
                             String contractNo, String date, String totalAmount,
-                            String preparedByName, int blankRows,
+                            String preparedByName, String reviewedByName, int blankRows,
                             List<String> columns, List<List<String>> rows) {
     }
 }

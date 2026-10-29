@@ -29,6 +29,7 @@ import com.tradepass.module.identity.controller.app.company.vo.SealReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.VerificationReqVO;
 import com.tradepass.module.identity.api.company.dto.InviteResult;
 import com.tradepass.module.identity.api.company.dto.JoinResult;
+import com.tradepass.module.identity.api.fadada.dto.PersonalIdentityRespDTO;
 import com.tradepass.module.identity.dal.dataobject.certification.CompanyCertificationApplicationDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyOnboardingAttemptDO;
@@ -45,6 +46,9 @@ import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import com.tradepass.module.identity.dal.mysql.counterparty.CounterpartyRelationMapper;
 import com.tradepass.module.identity.dal.mysql.permission.RoleDefMapper;
 import com.tradepass.module.identity.dal.mysql.permission.PermDefMapper;
+import com.tradepass.module.identity.dal.mysql.user.SysUserMapper;
+import com.tradepass.module.identity.dal.dataobject.user.SysUserDO;
+import com.tradepass.framework.common.util.FileTypeInspector;
 import com.tradepass.module.identity.dal.dataobject.permission.PermDefDO;
 import com.tradepass.module.identity.api.permission.dto.RoleRespDTO;
 import com.tradepass.support.MybatisTestSupport;
@@ -71,6 +75,7 @@ class CompanyServiceTest {
     private CompanyMapper companyMapper;
     private CompanyMemberMapper memberMapper;
     private CompanyInviteMapper inviteMapper;
+    private SysUserMapper inviteUserMapper;
     private CounterpartyRelationMapper relationMapper;
     private RoleDefMapper roleMapper;
     private PermDefMapper permMapper;
@@ -85,10 +90,11 @@ class CompanyServiceTest {
     @BeforeEach
     void setUp() {
         MybatisTestSupport.initialize(CompanyDO.class, CompanyMemberDO.class, RoleDefDO.class, CompanyInviteDO.class,
-                FadadaCorpIdentityDO.class, CompanyCertificationApplicationDO.class);
+                FadadaCorpIdentityDO.class, CompanyCertificationApplicationDO.class, SysUserDO.class);
         companyMapper = mock(CompanyMapper.class);
         memberMapper = mock(CompanyMemberMapper.class);
         inviteMapper = mock(CompanyInviteMapper.class);
+        inviteUserMapper = mock(SysUserMapper.class);
         relationMapper = mock(CounterpartyRelationMapper.class);
         roleMapper = mock(RoleDefMapper.class);
         permMapper = mock(PermDefMapper.class);
@@ -101,6 +107,8 @@ class CompanyServiceTest {
         service = new CompanyServiceImpl(companyMapper, memberMapper, inviteMapper, relationMapper,
                 roleMapper, permMapper, accessControl, searchRateLimiter, new RolePermissionServiceImpl(),
                 auditLogService, removalNoticeService, corpIdentityMapper, applicationMapper, true);
+        ((CompanyServiceImpl) service).setInviteUserMapper(inviteUserMapper);
+        when(inviteUserMapper.selectById(7L)).thenReturn(inviteRecipient());
         when(accessControl.requireCompanyProfileAccess(anyLong()))
                 .thenReturn(AccessControlOperations.CompanyProfileAccess.SENSITIVE_OWNER);
         when(accessControl.hasPermission(anyLong(), any())).thenReturn(true);
@@ -444,7 +452,7 @@ class CompanyServiceTest {
 
     @Test
     void createsSingleUseMemberAndCounterpartyInvites() {
-        InviteResult memberInvite = service.createInvite(new InviteReqVO("3", null));
+        InviteResult memberInvite = service.createInvite(new InviteReqVO("3", null, "13800000000"));
         assertThat(memberInvite.code()).hasSize(8);
         verify(accessControl).requireManager(3L);
 
@@ -456,6 +464,10 @@ class CompanyServiceTest {
         verify(inviteMapper, org.mockito.Mockito.times(2)).insert(captor.capture());
         assertThat(captor.getAllValues()).extracting(CompanyInviteDO::getType)
                 .containsExactly("member", "counterparty");
+        assertThat(captor.getAllValues().get(0).getTargetPhoneHash()).isEqualTo(phoneHash("13800000000"));
+        assertThat(captor.getAllValues().get(0).getTargetPhoneMasked()).isEqualTo("138****0000");
+        assertThat(captor.getAllValues().get(0).getInvitedBy()).isEqualTo(7L);
+        assertThat(captor.getAllValues().get(1).getTargetPhoneHash()).isNull();
         assertThat(captor.getAllValues()).allSatisfy(invite -> {
             assertThat(invite.getUsed()).isFalse();
             assertThat(invite.getExpiresAt()).isAfter(LocalDateTime.now());
@@ -489,6 +501,9 @@ class CompanyServiceTest {
         assertThat(preview.companyId()).isEqualTo("3");
         assertThat(preview.companyName()).isEqualTo("邀请方完整企业名称");
         assertThat(preview.type()).isEqualTo("member");
+        assertThat(preview.personalIdentityRequired()).isTrue();
+        assertThat(preview.targetPhoneMasked()).isEqualTo("139****0000");
+        assertThat(preview.phoneBindingRequired()).isFalse();
         verify(inviteMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
         verify(memberMapper, org.mockito.Mockito.never()).insert(any(CompanyMemberDO.class));
         verify(accessControl, org.mockito.Mockito.never()).requireManager(anyLong());
@@ -502,8 +517,66 @@ class CompanyServiceTest {
     }
 
     @Test
+    void requiresExplicitOtherRecipientWhenCreatingMemberInvitation() {
+        assertThatThrownBy(() -> service.createInvite(new InviteReqVO("3", null)))
+                .hasMessageContaining("受邀人的有效手机号");
+        assertThatThrownBy(() -> service.createInvite(new InviteReqVO("3", null, "abc")))
+                .hasMessageContaining("受邀人的有效手机号");
+        assertThatThrownBy(() -> service.createInvite(new InviteReqVO("3", null, "13900000000")))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46204));
+        verify(inviteMapper, org.mockito.Mockito.never()).insert(any(CompanyInviteDO.class));
+    }
+
+    @Test
+    void forwardedAndSenderOpenedInvitationsCannotCreateMembershipOrConsumeTheCode() {
+        CompanyInviteDO invitation = invite(false);
+        when(inviteMapper.selectOne(any(Wrapper.class))).thenReturn(invitation);
+        SysUserDO wrongPerson = inviteRecipient();
+        wrongPerson.setPhone("13800000000");
+        when(inviteUserMapper.selectById(7L)).thenReturn(wrongPerson);
+        assertThatThrownBy(() -> service.previewInvite("JOIN1234"))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46202));
+        assertThatThrownBy(() -> service.joinCompany(new JoinReqVO("JOIN1234")))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46202));
+        invitation.setInvitedBy(7L);
+        assertThatThrownBy(() -> service.joinCompany(new JoinReqVO("JOIN1234")))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46204));
+        assertThat(invitation.getUsed()).isFalse();
+        verify(inviteMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        verify(memberMapper, org.mockito.Mockito.never()).insert(any(CompanyMemberDO.class));
+    }
+
+    @Test
+    void historicalPhoneStringsAndLegacyUntargetedInvitesAreNotTrusted() {
+        CompanyInviteDO invitation = invite(false);
+        when(inviteMapper.selectOne(any(Wrapper.class))).thenReturn(invitation);
+        when(companyMapper.selectById(3L)).thenReturn(company(3L, "指定企业"));
+        SysUserDO unverified = inviteRecipient();
+        unverified.setPhoneVerifiedAt(null);
+        when(inviteUserMapper.selectById(7L)).thenReturn(unverified);
+        assertThat(service.previewInvite("JOIN1234").phoneBindingRequired()).isTrue();
+        assertThatThrownBy(() -> service.joinCompany(new JoinReqVO("JOIN1234")))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46201));
+        unverified.setPhone("");
+        assertThatThrownBy(() -> service.joinCompany(new JoinReqVO("JOIN1234")))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46201));
+        invitation.setTargetPhoneHash(null);
+        assertThatThrownBy(() -> service.previewInvite("JOIN1234"))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46203));
+        assertThatThrownBy(() -> service.joinCompany(new JoinReqVO("JOIN1234")))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46203));
+        assertThat(invitation.getUsed()).isFalse();
+        verify(inviteMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+        verify(memberMapper, org.mockito.Mockito.never()).insert(any(CompanyMemberDO.class));
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void submitsMemberJoinForApprovalAndConsumesInvite() {
+        FadadaPersonalIdentityService identity = mock(FadadaPersonalIdentityService.class);
+        when(identity.current()).thenReturn(verifiedPerson());
+        when(identity.requireCurrentVerified()).thenReturn(verifiedPerson());
+        service.setPersonalIdentityService(identity);
         CompanyInviteDO invite = invite(false);
         when(inviteMapper.selectOne(any(Wrapper.class))).thenReturn(invite);
         when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(null);
@@ -519,6 +592,34 @@ class CompanyServiceTest {
         assertThat(invite.getUsed()).isTrue();
         assertThat(invite.getUsedBy()).isEqualTo(7L);
         verify(inviteMapper).update(any(Wrapper.class));
+        verify(identity).requireCurrentVerified();
+    }
+
+    @Test
+    void memberJoinRequiresPersonalIdentityWithoutConsumingTheInvitation() {
+        FadadaPersonalIdentityService identity = mock(FadadaPersonalIdentityService.class);
+        service.setPersonalIdentityService(identity);
+        CompanyInviteDO invitation = invite(false);
+        when(inviteMapper.selectOne(any(Wrapper.class))).thenReturn(invitation);
+        assertThatThrownBy(() -> service.joinCompany(new JoinReqVO("JOIN1234")))
+                .isInstanceOfSatisfying(BusinessException.class, error -> assertThat(error.getCode()).isEqualTo(46103))
+                .hasMessageContaining("个人实名认证");
+        assertThat(invitation.getUsed()).isFalse();
+        verify(memberMapper, org.mockito.Mockito.never()).insert(any(CompanyMemberDO.class));
+        verify(inviteMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+
+        // Returning from authentication does not trust the callback: the server
+        // must still see the verified identity before accepting the request.
+        when(identity.current()).thenReturn(verifiedPerson());
+        when(identity.requireCurrentVerified()).thenThrow(new BusinessException("实名状态已失效"));
+        assertThatThrownBy(() -> service.joinCompany(new JoinReqVO("JOIN1234"))).hasMessage("实名状态已失效");
+        verify(memberMapper, org.mockito.Mockito.never()).insert(any(CompanyMemberDO.class));
+        verify(inviteMapper, org.mockito.Mockito.never()).update(any(Wrapper.class));
+    }
+
+    private PersonalIdentityRespDTO verifiedPerson() {
+        return new PersonalIdentityRespDTO(true, "VERIFIED", "已认证", null, null, null,
+                "真实姓名", null, null, null, null, null);
     }
 
     @Test
@@ -1007,8 +1108,26 @@ class CompanyServiceTest {
         invite.setCompanyId(3L);
         invite.setCode("JOIN1234");
         invite.setType(counterparty ? "counterparty" : "member");
+        if (!counterparty) {
+            invite.setTargetPhoneHash(phoneHash("13900000000"));
+            invite.setTargetPhoneMasked("139****0000");
+            invite.setInvitedBy(8L);
+        }
         invite.setUsed(false);
         invite.setExpiresAt(LocalDateTime.now().plusHours(1));
         return invite;
+    }
+
+    private String phoneHash(String phone) {
+        return FileTypeInspector.sha256(phone.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private SysUserDO inviteRecipient() {
+        SysUserDO user = new SysUserDO();
+        user.setId(7L);
+        user.setStatus("ACTIVE");
+        user.setPhone("13900000000");
+        user.setPhoneVerifiedAt(LocalDateTime.now());
+        return user;
     }
 }

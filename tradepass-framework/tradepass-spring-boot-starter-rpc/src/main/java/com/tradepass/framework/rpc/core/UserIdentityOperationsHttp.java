@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 @Import(UserIdentityOperationsHttp.Endpoint.class)
 public class UserIdentityOperationsHttp {
     public record CurrentDisplayName0Request() {}
+    public record VerifiedName1Request(long userId) {}
     public record RequireCurrentVerifiedName1Request(long companyId) {}
     public record CurrentPaymentIdentity0Request() {}
 
@@ -23,6 +24,8 @@ public class UserIdentityOperationsHttp {
     public interface Client {
         @PostMapping("/internal/domain/UserIdentityOperations/currentDisplayName0")
         String currentDisplayName0(@RequestBody CurrentDisplayName0Request request);
+        @PostMapping("/internal/domain/UserIdentityOperations/verifiedName1")
+        String verifiedName1(@RequestBody VerifiedName1Request request);
         @PostMapping("/internal/domain/UserIdentityOperations/requireCurrentVerifiedName1")
         String requireCurrentVerifiedName1(@RequestBody RequireCurrentVerifiedName1Request request);
         @PostMapping("/internal/domain/UserIdentityOperations/currentPaymentIdentity0")
@@ -34,6 +37,7 @@ public class UserIdentityOperationsHttp {
     UserIdentityOperations remoteUserIdentityOperations(Client client) {
         return new UserIdentityOperations() {
             @Override public String currentDisplayName() { return client.currentDisplayName0(new CurrentDisplayName0Request()); }
+            @Override public String verifiedName(long userId) { return client.verifiedName1(new VerifiedName1Request(userId)); }
             @Override public String requireCurrentVerifiedName(long companyId) { return client.requireCurrentVerifiedName1(new RequireCurrentVerifiedName1Request(companyId)); }
             @Override public PaymentIdentity currentPaymentIdentity() { return client.currentPaymentIdentity0(new CurrentPaymentIdentity0Request()); }
         };
@@ -46,6 +50,8 @@ public class UserIdentityOperationsHttp {
         public Endpoint(UserIdentityOperations operations) { this.operations = operations; }
         @PostMapping("/internal/domain/UserIdentityOperations/currentDisplayName0")
         public String currentDisplayName0(@RequestBody CurrentDisplayName0Request request) { return operations.currentDisplayName(); }
+        @PostMapping("/internal/domain/UserIdentityOperations/verifiedName1")
+        public String verifiedName1(@RequestBody VerifiedName1Request request) { return operations.verifiedName(request.userId()); }
         @PostMapping("/internal/domain/UserIdentityOperations/requireCurrentVerifiedName1")
         public String requireCurrentVerifiedName1(@RequestBody RequireCurrentVerifiedName1Request request) { return operations.requireCurrentVerifiedName(request.companyId()); }
         @PostMapping("/internal/domain/UserIdentityOperations/currentPaymentIdentity0")

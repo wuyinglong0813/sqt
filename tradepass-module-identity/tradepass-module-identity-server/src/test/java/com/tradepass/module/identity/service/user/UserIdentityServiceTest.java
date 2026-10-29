@@ -57,4 +57,28 @@ class UserIdentityServiceTest {
                 .isInstanceOf(BusinessException.class)
                 .hasMessage("请先完成个人认证，再确认业务单据");
     }
+
+    @Test
+    void historicalNamesOnlyUseVerifiedPersonalIdentity() {
+        assertThat(service.verifiedName(99L)).isEmpty();
+        FadadaUserIdentityDO identity = new FadadaUserIdentityDO();
+        identity.setUserId(99L);
+        identity.setVerifiedName("  制单实名  ");
+        identity.setLocalStatus("IN_PROGRESS");
+        when(identityMapper.selectOne(org.mockito.ArgumentMatchers.any())).thenReturn(identity);
+        assertThat(service.verifiedName(99L)).isEmpty();
+        identity.setLocalStatus("VERIFIED");
+        assertThat(service.verifiedName(99L)).isEqualTo("制单实名");
+        identity.setVerifiedName(" ");
+        assertThat(service.verifiedName(99L)).isEmpty();
+        org.mockito.Mockito.verifyNoInteractions(userMapper);
+    }
+
+    @Test
+    void missingIdentityDependencyNeverFallsBackToWechatNickname() {
+        service.setIdentityMapper(null);
+        assertThat(service.verifiedName(99L)).isEmpty();
+        assertThatThrownBy(() -> service.requireCurrentVerifiedName(4L)).isInstanceOf(BusinessException.class);
+        org.mockito.Mockito.verifyNoInteractions(userMapper);
+    }
 }

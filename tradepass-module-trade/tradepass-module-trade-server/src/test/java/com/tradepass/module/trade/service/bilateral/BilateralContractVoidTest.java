@@ -43,6 +43,8 @@ class BilateralContractVoidTest {
         verify(f.access).requirePermission(4L, "contract_sign");
         verify(f.approvals).recordResult(3L, 4L, "BILATERAL_ACTION", 21L, 12L,
                 "APPROVED", "作废申请已同意", "对方已同意作废申请", null);
+        verify(f.approvals).recordResult(4L, 3L, "BILATERAL_ACTION", 21L, 12L,
+                "APPROVED", "已同意作废申请", "我方已同意作废申请", null);
         verify(f.audit).log(4L, "BILATERAL_ACTION", 21L, "APPROVE", "同意作废申请");
         assertThat(f.service.isContractReadOnly(f.contract)).isTrue();
         assertThatThrownBy(() -> f.service.requireContractMutable(f.contract)).hasMessageContaining("合同已结束或作废");

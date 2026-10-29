@@ -428,6 +428,13 @@ private SignatureEvidence prepareSignature(long companyId, Long contractId, Long
         approvalService.recordResult(attachment.uploaderCompanyId(), sourceCompanyId,
                 attachment.category(), attachment.id(), attachment.contractId(), resultStatus,
                 title, detail, rejectedReason);
+        if (attachment.uploaderCompanyId() != sourceCompanyId) {
+            String action = "REJECTED".equals(resultStatus) ? "驳回" : "同意";
+            String label = categoryLabel(attachment.category());
+            approvalService.recordResult(sourceCompanyId, attachment.uploaderCompanyId(),
+                    attachment.category(), attachment.id(), attachment.contractId(), resultStatus,
+                    "已" + action + label, "我方已" + action + label + " " + attachment.originalName(), rejectedReason);
+        }
     }
 
     public FileRespDTO getFile(Long id) {

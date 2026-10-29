@@ -1,6 +1,8 @@
 package com.tradepass.module.trade.service.document;
 
 import com.tradepass.module.identity.api.permission.AccessControlOperations;
+import com.tradepass.module.identity.api.user.UserIdentityOperations;
+import com.tradepass.module.trade.service.inventory.SalesOrderInventoryService;
 import com.tradepass.framework.audit.core.AuditLogService;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -31,6 +33,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 class BusinessDocumentServiceTest {
     private BusinessDocumentTemplateMapper templateMapper;
@@ -39,6 +42,8 @@ class BusinessDocumentServiceTest {
     private CompanyReader companyMapper;
     private BusinessDocumentService service;
     private ObjectMapper objectMapper;
+    private UserIdentityOperations identities;
+    private SalesOrderInventoryService inventory;
 
     @BeforeEach
     void setUp() {
@@ -51,6 +56,11 @@ class BusinessDocumentServiceTest {
         contractMapper = mock(ContractReader.class);
         companyMapper = mock(CompanyReader.class);
         objectMapper = new ObjectMapper();
+        identities = mock(UserIdentityOperations.class);
+        inventory = mock(SalesOrderInventoryService.class);
+        when(identities.requireCurrentVerifiedName(3L)).thenReturn("李制单");
+        when(identities.requireCurrentVerifiedName(4L)).thenReturn("李制单");
+        when(identities.verifiedName(7L)).thenReturn("李制单");
         service = new BusinessDocumentServiceImpl(
                 templateMapper,
                 documentMapper,
@@ -58,8 +68,9 @@ class BusinessDocumentServiceTest {
                 companyMapper,
                 mock(AccessControlOperations.class),
                 mock(AuditLogService.class),
-                objectMapper
+                objectMapper, inventory, identities
         );
+        ((BusinessDocumentServiceImpl) service).setDocumentPeopleService(new BusinessDocumentPeopleService(objectMapper, identities));
         AuthContext.set(7L, 3L);
     }
 
@@ -136,7 +147,8 @@ class BusinessDocumentServiceTest {
         assertThat(content.path("rows").get(0).get(1).asText()).isEqualTo("测试商品");
         assertThat(content.path("totalAmount").asText()).isEqualTo("88.5");
         assertThat(content.path("templateName").asText()).isEqualTo("标准销售单");
-        assertThat(content.path("preparedByName").asText()).isEqualTo("用户7");
+        assertThat(content.path("preparedByName").asText()).isEqualTo("李制单");
+        assertThat(content.path("preparedByUserId").asText()).isEqualTo("7");
     }
 
     @Test
@@ -204,6 +216,7 @@ class BusinessDocumentServiceTest {
 
         BusinessDocumentDO draft = new BusinessDocumentDO();
         draft.setId(33L);
+        draft.setCreatedBy(7L);
         draft.setCompanyId(3L);
         draft.setRecipientCompanyId(4L);
         draft.setContractId(23L);
@@ -229,7 +242,13 @@ class BusinessDocumentServiceTest {
         assertThat(draft.getStatus()).isEqualTo("DRAFT");
         assertThat(draft.getRejectedReason()).isNull();
 
-        Map<String, Object> published = service.publishDraft(33L);
+        AuthContext.set(9L, 3L);
+        when(identities.requireCurrentVerifiedName(3L)).thenReturn("张审核");
+        Map<String, Object> published = service.publishDraft(33L, 61L);
+        verify(inventory).selectSalesWarehouse(draft, 3L, 61L);
+        assertThat(draft.getCreatedBy()).isEqualTo(7L);
+        assertThat(objectMapper.readTree(draft.getContent()).path("preparedByName").asText()).isEqualTo("李制单");
+        assertThat(objectMapper.readTree(draft.getContent()).path("reviewedByName").asText()).isEqualTo("张审核");
         assertThat(draft.getStatus()).isEqualTo("ISSUED");
         assertThat(published).containsEntry("statusText", "待对方确认")
                 .containsEntry("canPublish", false);

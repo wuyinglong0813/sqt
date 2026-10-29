@@ -7,7 +7,11 @@ public final class TradePassDtos {
     private TradePassDtos() {
     }
 
-    public record UserProfile(String id, String openid, String phone, String nickname, String currentCompanyId, String currentRole) {
+    public record UserProfile(String id, String openid, String phone, String nickname, String currentCompanyId,
+                              String currentRole, boolean phoneVerified) {
+        public UserProfile(String id, String openid, String phone, String nickname, String currentCompanyId, String currentRole) {
+            this(id, openid, phone, nickname, currentCompanyId, currentRole, false);
+        }
     }
 
     public record CompanyProfile(

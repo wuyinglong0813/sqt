@@ -15,6 +15,8 @@
 {GET [/api/contract-attachments/{id}/content-chunk-data]}
 {GET [/api/contract-attachments/{id}/content-data]}
 {GET [/api/contract-attachments/{id}/content]}
+{GET [/api/contract-attachments/{id}/preview-chunk-data]}
+{GET [/api/contract-attachments/{id}/preview-manifest]}
 {GET [/api/contract-template-categories]}
 {GET [/api/contract-templates/{id}]}
 {GET [/api/contract-templates]}
@@ -88,6 +90,8 @@
 {GET [/api/trade-documents/{id}/memo]}
 {GET [/api/trade-documents/{id}/pdf-data]}
 {GET [/api/trade-documents/{id}/pdf], produces [application/pdf]}
+{GET [/api/trade-documents/{id}/preview-chunk-data]}
+{GET [/api/trade-documents/{id}/preview-manifest]}
 {GET [/api/trade-documents/{id}]}
 {GET [/api/warehouses]}
 {GET [/tcb_probe]}
@@ -179,6 +183,7 @@
 {POST [/api/trade-documents/{id}/delete]}
 {POST [/api/trade-documents/{id}/draft]}
 {POST [/api/trade-documents/{id}/memo]}
+{POST [/api/trade-documents/{id}/outbound-warehouse]}
 {POST [/api/trade-documents/{id}/publish]}
 {POST [/api/trade-documents/{id}/receive], consumes [application/json]}
 {POST [/api/trade-documents/{id}/receive], consumes [multipart/form-data]}

@@ -30,6 +30,12 @@ public class InventoryController {
         return ApiResponse.ok(inventoryService.documentDetail(id));
     }
 
+    @PostMapping("/trade-documents/{id}/outbound-warehouse")
+    public ApiResponse<Map<String, Object>> updateOutboundWarehouse(@PathVariable Long id,
+                                                                   @RequestBody Map<String, Object> body) {
+        return ApiResponse.ok(inventoryService.updateSalesOutboundWarehouse(id, longValue(body.get("warehouseId"))));
+    }
+
     @PostMapping(value = "/sales-orders/{id}/receive", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ApiResponse<Map<String, Object>> receive(@PathVariable Long id,
                                                     @RequestBody Map<String, Object> body) {

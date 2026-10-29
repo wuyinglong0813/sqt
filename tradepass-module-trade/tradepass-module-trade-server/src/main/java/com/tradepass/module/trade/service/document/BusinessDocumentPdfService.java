@@ -32,4 +32,5 @@ import java.time.format.DateTimeFormatter;
 public interface BusinessDocumentPdfService {
     byte[] generate(BusinessDocumentDO businessDocument);
     String fileName(BusinessDocumentDO document);
+    com.tradepass.framework.pdf.PdfPagePreview.Source previewSource(BusinessDocumentDO document);
 }

@@ -1,0 +1,84 @@
+{
+  "source": "sqt-front/miniprogram/images/brand-logo.svg",
+  "original_logo": {
+    "size": [
+      512,
+      512
+    ],
+    "nontransparent_bounds": [
+      21,
+      21,
+      491,
+      491
+    ],
+    "transparent_pixels": 57615
+  },
+  "changes": [
+    "Full-bleed square blue gradient background",
+    "No pre-rounded corners",
+    "Original foreground paths, positions and opacity preserved"
+  ],
+  "checks": [
+    {
+      "file": "shangqiantong-logo-upload-1024.png",
+      "size": [
+        1024,
+        1024
+      ],
+      "bytes": 173602,
+      "alpha_min": 255,
+      "alpha_max": 255,
+      "edge_transparent_pixels": 0,
+      "edge_white_pixels": 0,
+      "foreground_circle_radius_ratio": 0.8451,
+      "sha256": "4a11f1656a84cd5af61a0f4e9caba67006a6be0fb424d99d17a291993f300ffc"
+    },
+    {
+      "file": "shangqiantong-logo-upload-144.png",
+      "size": [
+        144,
+        144
+      ],
+      "bytes": 7471,
+      "alpha_min": 255,
+      "alpha_max": 255,
+      "edge_transparent_pixels": 0,
+      "edge_white_pixels": 0,
+      "foreground_circle_radius_ratio": 0.8474,
+      "sha256": "384e6c6544ecaf76a384dcce9c0a3f3f170b390a84451b76056e17cc90a76995"
+    },
+    {
+      "file": "shangqiantong-logo-upload-240.png",
+      "size": [
+        240,
+        240
+      ],
+      "bytes": 19171,
+      "alpha_min": 255,
+      "alpha_max": 255,
+      "edge_transparent_pixels": 0,
+      "edge_white_pixels": 0,
+      "foreground_circle_radius_ratio": 0.8447,
+      "sha256": "8d9086f2648526bd7468afebc050c834bf99d0660fa11f6f6ce2c0879a99e597"
+    },
+    {
+      "file": "shangqiantong-logo-upload-512.png",
+      "size": [
+        512,
+        512
+      ],
+      "bytes": 65262,
+      "alpha_min": 255,
+      "alpha_max": 255,
+      "edge_transparent_pixels": 0,
+      "edge_white_pixels": 0,
+      "foreground_circle_radius_ratio": 0.846,
+      "sha256": "63fe905d1d2877ce15a38ca970c46dcd42049dad2802f180b2d9a63fee034615"
+    }
+  ],
+  "previews": [
+    "circle-preview-512.png",
+    "circle-preview-light-dark.png"
+  ],
+  "official_upload_constraints_verified": false
+}
