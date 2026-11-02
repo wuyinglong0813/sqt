@@ -11,7 +11,8 @@ services:
         max-size: 10m
         max-file: '3'
     image: mysql:8.4
-    mem_limit: 640m
+    # 640 MiB caused repeated container OOM kills despite free host memory.
+    mem_limit: 1g
     stop_grace_period: 90s
     environment:
       TZ: Asia/Shanghai

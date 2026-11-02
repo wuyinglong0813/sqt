@@ -4,6 +4,9 @@ name: tradepass-core
 services:
   identity:
     pull_policy: never
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
     restart: 'no'
     mem_limit: 416m
     user: 0:0
@@ -40,6 +43,9 @@ services:
       SPRING_CONFIG_ADDITIONAL_LOCATION: file:/app/nacos-bootstrap.yml
   business:
     pull_policy: never
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
     restart: 'no'
     mem_limit: 704m
     user: 0:0
@@ -79,6 +85,9 @@ services:
       SPRING_CONFIG_ADDITIONAL_LOCATION: file:/app/nacos-bootstrap.yml
   gateway:
     pull_policy: never
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
     restart: 'no'
     mem_limit: 320m
     user: 0:0

@@ -297,6 +297,29 @@ class RuntimeSnapshotTest(unittest.TestCase):
         self.assertTrue(service["volumes"][1]["read_only"])
         self.assertFalse(service["volumes"][1]["bind"]["create_host_path"])
 
+    def test_unbounded_json_logs_gain_native_rotation_without_mutating_snapshot(self):
+        data = self.fixture()
+        data["HostConfig"]["LogConfig"]["Config"] = {}
+        service = apply.snapshot_service("business", data)
+        self.assertEqual({"max-size": "10m", "max-file": "3"}, service["logging"]["options"])
+        self.assertEqual({}, data["HostConfig"]["LogConfig"]["Config"])
+
+    def test_log_rotation_preserves_explicit_options_and_other_drivers(self):
+        for driver, options, expected in [
+            ("json-file", {"max-size": "25m", "max-file": "7", "labels": "service"},
+             {"max-size": "25m", "max-file": "7", "labels": "service"}),
+            ("json-file", {"max-size": "25m"}, {"max-size": "25m", "max-file": "3"}),
+            ("local", {}, {}),
+            ("syslog", {"syslog-address": "udp://127.0.0.1:514"},
+             {"syslog-address": "udp://127.0.0.1:514"}),
+        ]:
+            with self.subTest(driver=driver, options=options):
+                data = self.fixture()
+                data["HostConfig"]["LogConfig"] = {"Type": driver, "Config": options}
+                service = apply.snapshot_service("business", data)
+                self.assertEqual({"driver": driver, "options": expected}, service["logging"])
+                self.assertEqual(options, data["HostConfig"]["LogConfig"]["Config"])
+
     def test_special_layouts_are_rejected_instead_of_silently_losing_configuration(self):
         for field, value in [("NetworkMode", "bridge"), ("Privileged", True), ("PidMode", "host"),
                              ("Tmpfs", {"/tmp": "rw"}), ("Devices", [{"PathOnHost": "/dev/sda"}])]:

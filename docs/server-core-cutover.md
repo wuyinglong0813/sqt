@@ -97,7 +97,16 @@ ssh -N -L 18848:127.0.0.1:8848 root@124.221.190.63
 
 ## 8G 内存与中间件 OOM
 
-应用及常驻基础容器上限合计 4032 MiB，含 Nginx 为 4096 MiB；建议至少 8 GiB 宿主机，为操作系统、Jenkins 和构建预留空间。以 `free -m` 实际总内存为准，并单独计算 CI 和构建进程的峰值。当前配置在 4 GiB 机器上已没有系统余量，不再适合原来的 4G 部署。低并发测试文件处理、PDF、签署和 MQ 积压；持续内存不足时需扩容或移出中间件。
+应用及常驻基础容器上限合计 4416 MiB，含 Nginx 为 4480 MiB；建议至少 8 GiB 宿主机，理论剩余 3712 MiB，供操作系统、Jenkins 和构建使用。以 `free -m` 实际总内存为准，并单独计算 CI 和构建进程的峰值。当前配置在 4 GiB 机器上已没有系统余量，不再适合原来的 4G 部署。低并发测试文件处理、PDF、签署和 MQ 积压；持续内存不足时需扩容或移出中间件。
+
+2026-11-02 排查小程序无法刷新数据时，MySQL 已于 11 月 1 日 04:44（北京时间）因触及 640 MiB 容器限额被 OOM 杀死，退出码为 137、`OOMKilled=true`；`on-failure:2` 的两次重试已用尽，identity 和 business 随之不健康。现场宿主机总内存约 7.5 GiB，排查时仍有约 3.2 GiB 可用，属于容器限额不足。已将原容器内存上限提升至 1 GiB 后启动，保留原数据卷和重启策略；数据库及应用恢复健康，无需重启应用，小程序刷新已恢复。
+
+```bash
+docker update --memory=1g tradepass-infra-static-mysql-1
+docker start tradepass-infra-static-mysql-1
+```
+
+MySQL 模板的 `mem_limit` 已同步为 `1g`。现有容器直接更新即可，无需重建；使用生成的私有 `.runtime/infra.compose.yml` 时也应同步该服务的内存限额，避免以后重建恢复旧限制。现场未配置 swap，本次未调整 swap 或自动重启策略；后续仍需观察数据库内存峰值。
 
 2026-10-12 现场 Nacos 的 576 MiB 容器退出码为 137、`OOMKilled=true`，宿主机排查时仍有约 3.5 GiB 可用内存。模板现将 Nacos 的 `mem_limit` 和 `memswap_limit` 都设为 `1g`，与现场已执行的 Docker 更新一致，Java 堆仍为 256 MiB。单次 OOM 记录不能证明长期稳定性，后续应观察内存占用和健康状态。
 
@@ -171,4 +180,4 @@ MySQL DDL 不可随数据事务回滚：复制失败后，新目标可能保留�
 
 ## 验证范围
 
-`bash scripts/ci/verify-core.sh` 是原三进程的完整业务兼容性验证入口。Nacos 原生配置的加载优先级另由 `NacosApplicationConfigTest` 检查，导入与发布逻辑由 `test_core_nacos.py` 检查。真实 Nacos 服务、外部密钥及 4G 长时间负载仍需在部署环境验收。
+`bash scripts/ci/verify-core.sh` 是原三进程的完整业务兼容性验证入口。Nacos 原生配置的加载优先级另由 `NacosApplicationConfigTest` 检查，导入与发布逻辑由 `test_core_nacos.py` 检查。真实 Nacos 服务、外部密钥及至少 8 GiB 部署环境的长时间负载仍需在部署环境验收。

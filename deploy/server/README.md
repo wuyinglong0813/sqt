@@ -4,6 +4,8 @@
 
 现有容器的单服务/全部启停与检查使用 `scripts/server/all.sh` 和各个 `服务名.sh`，例如 `./all.sh start`、`./business.sh restart`。命令示例和密码位置见 [日常运维说明](../../docs/server-operations.md)。
 
+历史镜像、构建缓存和日志的自动维护使用 `scripts/server/install-maintenance.sh` 安装；保留当前及回滚镜像，不重启运行服务，规则和核查方法见 [服务器保留策略](../../docs/server-maintenance.md)。
+
 gateway / identity / business 已改为从 Nacos 读取应用配置，不再使用 `.env.core` 运行应用。已有服务器先执行 `python3 scripts/server/configure-core-nacos.py --publish` 完成一次导入，之后使用 `docker compose -f .runtime/core.compose.yml up -d`。完整步骤见 [三进程 Nacos 部署手册](../../docs/server-core-cutover.md)。以下内容用于原部署通道。
 
 # 服务器 Compose 部署
@@ -68,7 +70,7 @@ docker compose --env-file .env -f yudao.compose.yml up -d --no-build --wait --wa
 
 推荐使用 `yudao.core.compose.yml`（gateway、identity、business）和 `infra.core.compose.yml`（MySQL、Redis、Nacos、RocketMQ）。Seata、XXL-JOB、ELK、SkyWalking 不启动。business 复用合同、交易、结算、文件模块，核心数据库合并为新的 `_business` 库，通过本地事务保持核心写入一致性；identity 保留原库。
 
-Nacos 容器上限已从 576 MiB 调到 1 GiB，Java 堆保持 256 MiB。应用、中间件及 Nginx 的容器上限合计为 4 GiB，宿主机需另外为操作系统、Jenkins 和构建留出内存；当前模板建议至少 8 GiB。现场 OOM 处理与已有容器更新步骤见切换手册的内存章节。
+MySQL 和 Nacos 容器上限均为 1 GiB；Nacos 的 Java 堆保持 256 MiB。应用、中间件及 Nginx 的容器上限合计为 4480 MiB，8 GiB 宿主机理论剩余 3712 MiB，供操作系统、Jenkins 和构建使用；当前模板建议至少 8 GiB，并以实际可用内存核算构建峰值。现场 OOM 处理与已有容器更新步骤见切换手册的内存章节。
 
 **不能把旧的三个业务库直接填进新 business 配置。** 新环境及已有服务器的迁移、构建、Nacos 初始化、启动顺序和回退限制见 [三进程切换手册](../../docs/server-core-cutover.md)。使用单独的 `.env.core`；不要混用六进程的 profiles 或同时启动两套业务。
 

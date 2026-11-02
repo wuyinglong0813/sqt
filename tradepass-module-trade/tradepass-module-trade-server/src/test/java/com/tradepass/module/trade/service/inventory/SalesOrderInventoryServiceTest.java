@@ -127,7 +127,7 @@ class SalesOrderInventoryServiceTest {
     @Test
     void manualInboundRejectsInvalidQuantityAndForeignWarehouse() {
         assertThatThrownBy(() -> service.manualInbound(9L, "manual-request-123", "商品", "", "件",
-                BigDecimal.ZERO, BigDecimal.ONE, "")) .isInstanceOf(BusinessException.class);
+                BigDecimal.ONE.negate(), BigDecimal.ONE, "")) .isInstanceOf(BusinessException.class);
         when(jdbc.queryForObject(anyString(), eq(Long.class), eq(9L), eq(4L))).thenReturn(0L);
         assertThatThrownBy(() -> service.manualInbound(9L, "manual-request-123", "商品", "", "件",
                 BigDecimal.ONE, BigDecimal.ONE, "")).hasMessage("仓库不存在");
@@ -155,6 +155,24 @@ class SalesOrderInventoryServiceTest {
                 eq(new BigDecimal("3.5")), eq(new BigDecimal("7.00")), eq("期初库存"), eq(8L));
         verify(jdbc).update(argThat(sql -> sql.contains("MANUAL_INBOUND")), anyLong(), eq(4L), eq(9L), eq(77L),
                 anyLong(), eq(new BigDecimal("2")), eq(new BigDecimal("2")), eq(8L));
+    }
+
+    @Test
+    void manualInboundRecordsZeroQuantityAndZeroValueWithoutChangingExistingStock() {
+        when(jdbc.queryForObject(anyString(), eq(Long.class), eq(9L), eq(4L))).thenReturn(1L);
+        doReturn(List.of(77L)).when(jdbc).query(argThat(sql -> sql.contains("FROM inventory_product")),
+                any(RowMapper.class), eq(4L), eq("商品"), eq(""), eq(""), eq("件"));
+        when(jdbc.queryForObject(anyString(), eq(BigDecimal.class), eq(4L), eq(9L), eq(77L)))
+                .thenReturn(BigDecimal.ZERO);
+
+        service.manualInbound(9L, "manual-zero-quantity", "商品", "", "件",
+                BigDecimal.ZERO, BigDecimal.ZERO, "待补货");
+
+        verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_manual_entry")),
+                anyLong(), eq(4L), eq("manual-zero-quantity"), eq(9L), eq(77L), eq(BigDecimal.ZERO),
+                eq(BigDecimal.ZERO), eq(new BigDecimal("0.00")), eq("待补货"), eq(8L));
+        verify(jdbc).update(argThat(sql -> sql.contains("MANUAL_INBOUND")), anyLong(), eq(4L), eq(9L), eq(77L),
+                anyLong(), eq(BigDecimal.ZERO), eq(BigDecimal.ZERO), eq(8L));
     }
 
     @Test

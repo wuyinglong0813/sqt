@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly TradePass archived log cleanup
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=tradepass-log-cleanup.service
+
+[Install]
+WantedBy=timers.target

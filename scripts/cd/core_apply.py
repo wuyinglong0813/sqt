@@ -131,7 +131,13 @@ def snapshot_service(role, info):
     if host.get("Ulimits"):
         service["ulimits"] = {item["Name"]: {"soft": item["Soft"], "hard": item["Hard"]} for item in host["Ulimits"]}
     if host.get("LogConfig", {}).get("Type"):
-        service["logging"] = {"driver": host["LogConfig"]["Type"], "options": host["LogConfig"].get("Config") or {}}
+        options = copy.deepcopy(host["LogConfig"].get("Config") or {})
+        if host["LogConfig"]["Type"] == "json-file":
+            # Adopt bounded native rotation at the next normal recreation. Keep
+            # explicit operator choices and other logging drivers unchanged.
+            options.setdefault("max-size", "10m")
+            options.setdefault("max-file", "3")
+        service["logging"] = {"driver": host["LogConfig"]["Type"], "options": options}
     health = config.get("Healthcheck") or {}
     if not health.get("Test") or health["Test"] == ["NONE"]:
         raise ValueError(role + " 缺少容器健康检查，停止发布")

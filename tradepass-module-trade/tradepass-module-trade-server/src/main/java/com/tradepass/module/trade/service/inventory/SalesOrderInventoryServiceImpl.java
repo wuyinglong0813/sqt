@@ -328,7 +328,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                             AND latest_remark.warehouse_id = balance.warehouse_id
                             AND latest_remark.product_id = balance.product_id
                             AND latest_remark.remark_rank = 1
-                        WHERE balance.company_id = ? AND balance.quantity <> 0
+                        WHERE balance.company_id = ?
                         ORDER BY warehouse.name, product.product_name, product.model, product.specification
                         """, (rs, rowNum) -> {
                     Map<String, Object> view = new LinkedHashMap<>();
@@ -374,11 +374,11 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         if (name.isBlank() || name.length() > 128 || unit.isBlank() || unit.length() > 32
                 || model.length() > 128 || specification.length() > 256 || remark.length() > 500)
             throw new BusinessException("请填写商品名称、单位，并检查内容长度");
-        if (quantity == null || quantity.signum() <= 0 || quantity.scale() > 4
+        if (quantity == null || quantity.signum() < 0 || quantity.scale() > 4
                 || quantity.compareTo(new BigDecimal("99999999999999")) > 0
                 || price == null || price.signum() < 0 || price.scale() > 4
                 || price.compareTo(new BigDecimal("99999999999999")) > 0)
-            throw new BusinessException("数量须大于零，单价不能为负，最多四位小数");
+            throw new BusinessException("数量和单价不能为负，最多四位小数");
         BigDecimal amount = quantity.multiply(price).setScale(2, RoundingMode.HALF_UP);
         if (amount.precision() > 18) throw new BusinessException("入库金额过大");
         requireWarehouse(companyId, warehouseId);
@@ -400,7 +400,11 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                 (id, company_id, warehouse_id, product_id, quantity, unit_price, inventory_amount)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
-                    unit_price = (inventory_amount + VALUES(inventory_amount)) / (quantity + VALUES(quantity)),
+                    unit_price = CASE
+                        WHEN VALUES(quantity) = 0 THEN unit_price
+                        WHEN quantity + VALUES(quantity) = 0 THEN 0
+                        ELSE (inventory_amount + VALUES(inventory_amount)) / (quantity + VALUES(quantity))
+                    END,
                     inventory_amount = inventory_amount + VALUES(inventory_amount),
                     quantity = quantity + VALUES(quantity), updated_at = CURRENT_TIMESTAMP
                 """, ApplicationIds.next(), companyId, warehouseId, productId, quantity, price, amount);

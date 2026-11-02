@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily TradePass retained-image and build-cache maintenance
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Shanghai
+RandomizedDelaySec=15min
+Persistent=true
+Unit=tradepass-maintenance.service
+
+[Install]
+WantedBy=timers.target

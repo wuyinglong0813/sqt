@@ -77,8 +77,8 @@ class CoreDeploymentTest(unittest.TestCase):
                 units = {"m": 1, "g": 1024}
                 self.assertIn(limit[-1], units)
                 total += int(limit[:-1]) * units[limit[-1]]
-        # On the 8 GiB deployment, leave at least 4 GiB for the OS, Jenkins and builds.
-        self.assertLessEqual(total, 4096)
+        # On an 8 GiB host, leave at least 3712 MiB (>3.5 GiB) for the OS, Jenkins and builds.
+        self.assertLessEqual(total, 4480)
 
 
 if __name__ == "__main__":

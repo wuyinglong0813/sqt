@@ -1,0 +1,17 @@
+[Unit]
+Description=TradePass archived application and system journal log cleanup
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+Environment=TZ=Asia/Shanghai
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=10min
+ExecStart=/usr/bin/python3 /usr/local/lib/tradepass-maintenance/cleanup_logs.py --directory /docker/tradepass/logs --retention-days 30 --archive-cap-mib 1024 --apply
+ExecStart=/usr/bin/journalctl --vacuum-time=30d --vacuum-size=512M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tradepass-log-cleanup
