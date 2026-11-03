@@ -74,6 +74,7 @@ public class RankingServiceImpl implements RankingService {
         stats.put("totalAmount", partnerAmount.add(retailAmount)); stats.put("partnerAmount", partnerAmount);
         stats.put("retailAmount", retailAmount); stats.put("returnAmount", returned);
         stats.put("netSalesAmount", partnerAmount.add(retailAmount).subtract(returned));
+        stats.put("partnerNetSales", tradeOrderMapper.selectPartnerNetSales(cid, direction, normalized));
         stats.put("totalOrders", ranking.stream().mapToInt(RankingItem::orderCount).sum()
                 + Integer.parseInt(String.valueOf(retailTotals.getOrDefault("salesOrderCount", 0))));
         stats.put("retailCustomerCount", retailTotals.getOrDefault("customerCount", 0));

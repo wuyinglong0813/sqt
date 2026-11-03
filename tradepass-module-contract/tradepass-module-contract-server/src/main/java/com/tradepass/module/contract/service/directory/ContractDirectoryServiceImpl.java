@@ -49,14 +49,8 @@ public class ContractDirectoryServiceImpl implements ContractDirectoryService {
     }
     public List<TradeContractDO> partyContracts(long companyId, String name, String status, String viewerDirection, int limit, long offset) {
         if (limit < 1 || limit > 1000 || offset < 0) throw new IllegalArgumentException("Invalid contract page");
-        var candidates = new java.util.ArrayList<>(contracts.selectList(partyQuery(companyId, name, status, viewerDirection)
-                .orderByDesc(TradeContractDO::getCreatedAt).orderByDesc(TradeContractDO::getId)));
-        var amounts = sales == null ? java.util.Map.<String, com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales>of()
-                : sales.contractSales(companyId);
-        candidates.sort(java.util.Comparator.comparing((TradeContractDO contract) -> {
-            var value = amounts.get(String.valueOf(contract.getId()));
-            return value == null ? BigDecimal.ZERO : value.salesAmount();
-        }).reversed());
+        var candidates = contracts.selectList(partyQuery(companyId, name, status, viewerDirection)
+                .last("ORDER BY COALESCE(approved_at, created_at) DESC, id DESC"));
         int from = (int) Math.min(offset, candidates.size());
         return candidates.subList(from, (int) Math.min((long) from + limit, candidates.size()));
     }

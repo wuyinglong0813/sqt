@@ -119,6 +119,29 @@ class MysqlZeroInventoryTest {
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_product", Long.class)).isEqualTo(2);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction WHERE biz_type='SALES_ORDER_OUTBOUND'", Long.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction WHERE biz_type='RETURN_ORDER_OUTBOUND'", Long.class)).isEqualTo(1);
+
+            // Removing a zero balance preserves the SKU and its audit history, and is tenant scoped.
+            long movementCount = jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction", Long.class);
+            assertThatThrownBy(() -> tx.executeWithoutResult(status -> service.deleteInventoryBalance(balanceId)))
+                    .isInstanceOf(BusinessException.class);
+            AuthContext.set(7L, 3L);
+            tx.executeWithoutResult(status -> service.deleteInventoryBalance(balanceId));
+            assertThat(service.inventoryOverview().get("productCount")).isEqualTo(0);
+            assertThat(service.searchProducts("YJV", 20)).isEmpty();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_product", Long.class)).isEqualTo(2);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction", Long.class)).isEqualTo(movementCount);
+
+            // A later inbound restores the same product; a nonzero balance cannot be removed.
+            tx.executeWithoutResult(status -> service.manualInbound(9L, "manual-after-delete", "电缆", "YJV", "3×25", "米",
+                    BigDecimal.ONE, BigDecimal.TEN, "再次补货"));
+            long restoredBalanceId = jdbc.queryForObject("SELECT id FROM inventory_balance WHERE product_id=?", Long.class, productId);
+            assertThat(restoredBalanceId).isNotEqualTo(balanceId);
+            assertBalance(service, restoredBalanceId, productId, "1", "10", "10");
+            assertThatThrownBy(() -> tx.executeWithoutResult(status -> service.deleteInventoryBalance(restoredBalanceId)))
+                    .isInstanceOf(BusinessException.class);
+            jdbc.update("UPDATE inventory_balance SET quantity=0 WHERE id=?", restoredBalanceId);
+            assertThatThrownBy(() -> tx.executeWithoutResult(status -> service.deleteInventoryBalance(restoredBalanceId)))
+                    .isInstanceOf(BusinessException.class);
         } finally {
             AuthContext.clear();
             TestIds.reset();

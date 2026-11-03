@@ -90,7 +90,7 @@ public interface TradeContractMapper extends BaseMapper<TradeContractDO> {
                (t.counterparty_company_id = #{companyId} AND initiator.name = #{counterpartyName}))
           AND (#{status} IS NULL OR #{status} = '' OR t.status = #{status})
         """ + ContractViewerDirectionSql.FILTER + """
-        ORDER BY t.created_at DESC, t.id DESC
+        ORDER BY COALESCE(t.approved_at, t.created_at) DESC, t.id DESC
         LIMIT #{limit} OFFSET #{offset}
         """)
     List<TradeContractDO> selectPartyContracts(@Param("companyId") Long companyId,

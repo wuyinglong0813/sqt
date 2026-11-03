@@ -29,6 +29,13 @@ class BusinessDocumentPdfServiceTest {
         BusinessDocumentDO source = example("SALES_ORDER", 3);
         var before = service.previewSource(source);
         assertThat(service.previewSource(source).version()).isEqualTo(before.version());
+        String[] legacyFields = { String.valueOf(source.getId()), source.getDocumentNo(), source.getDocumentType(),
+                source.getSourceType(), source.getStatus(), source.getContent(), "", "" };
+        byte[][] legacyParts = new byte[legacyFields.length + 1][];
+        for (int index = 0; index < legacyFields.length; index++) {
+            legacyParts[index] = legacyFields[index].getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        }
+        assertThat(before.version()).isNotEqualTo(PdfPagePreview.fingerprint(legacyParts));
         source.setContent(source.getContent().replace("李制单", "刘制单"));
         var revised = service.previewSource(source);
         assertThat(revised.version()).isNotEqualTo(before.version());
@@ -55,7 +62,7 @@ class BusinessDocumentPdfServiceTest {
             PdfReader reader = new PdfReader(pdf);
             StringBuilder text = new StringBuilder();
             for (int page = 1; page <= reader.getNumberOfPages(); page++) text.append(new PdfTextExtractor(reader).getTextFromPage(page));
-            assertThat(text).contains("RVVP", "2x1.5", "运输费", "制单人：李制单", "审核人：王审核", "张采购");
+            assertThat(text).contains("RVVP", "2x1.5", "运输费", "制单人：李制单", "审核人：王审核", "客户确认：张采购", "客户签字：");
             if (label.endsWith("multipage")) assertThat(reader.getNumberOfPages()).isGreaterThan(1);
             PdfPagePreview previews = new PdfPagePreview();
             var manifest = previews.manifest(source);
@@ -130,8 +137,17 @@ class BusinessDocumentPdfServiceTest {
         PdfReader reader = new PdfReader(pdf);
         String text = new PdfTextExtractor(reader).getTextFromPage(1);
         reader.close();
-        assertThat(text).contains("制单人：李制单", "审核人：王审核", "客户确认：", "张采购", "2026-08-16 14:30");
+        assertThat(text).contains("制单人：李制单", "审核人：王审核", "客户确认：张采购", "客户签字：", "2026-08-16 14:30");
         verify(signatureService).find(31L);
+    }
+
+    @Test
+    void unsignedDocumentKeepsSeparateBlankConfirmationAndSignatureFields() throws Exception {
+        BusinessDocumentPdfService service = new BusinessDocumentPdfServiceImpl(new ObjectMapper());
+        PdfReader reader = new PdfReader(service.generate(example("RETURN_ORDER", 3)));
+        String text = new PdfTextExtractor(reader).getTextFromPage(1);
+        reader.close();
+        assertThat(text).contains("客户确认：", "客户签字：").doesNotContain("张采购");
     }
 
     private byte[] png() throws Exception {

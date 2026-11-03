@@ -36,6 +36,7 @@ import java.nio.charset.StandardCharsets;
 @Service
 public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfService {
     private static final String FONT_RESOURCE = "/fonts/ttf/NotoSansSC/NotoSansSC-Regular.ttf";
+    private static final String TEMPLATE_VERSION = "business-document-four-signature-fields-v2";
     private static final Color BORDER_COLOR = new Color(25, 25, 25);
 
     private final ObjectMapper objectMapper;
@@ -68,7 +69,7 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
         snapshot.setStatus(source.getStatus());
         snapshot.setContent(source.getContent());
         SalesOrderSignatureService.Confirmation confirmation = confirmation(snapshot);
-        String[] fields = { String.valueOf(source.getId()), source.getDocumentNo(), source.getDocumentType(),
+        String[] fields = { TEMPLATE_VERSION, String.valueOf(source.getId()), source.getDocumentNo(), source.getDocumentType(),
                 source.getSourceType(), source.getStatus(), source.getContent(),
                 confirmation == null ? "" : confirmation.signerName(),
                 confirmation == null ? "" : String.valueOf(confirmation.signedAt()) };
@@ -195,39 +196,51 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
         total.setAlignment(Element.ALIGN_RIGHT);
         total.setSpacingBefore(8);
         document.add(total);
-        PdfPTable signatures = new PdfPTable(3);
+        PdfPTable signatures = new PdfPTable(4);
         signatures.setWidthPercentage(100);
+        signatures.setWidths(new float[]{22, 22, 28, 28});
         signatures.setSpacingBefore(28);
+        signatures.setKeepTogether(true);
         signatures.addCell(borderlessCell("制单人：" + snapshot.preparedByName(), font, Element.ALIGN_LEFT));
-        signatures.addCell(borderlessCell("审核人：" + snapshot.reviewedByName(), font, Element.ALIGN_CENTER));
+        signatures.addCell(borderlessCell("审核人：" + snapshot.reviewedByName(), font, Element.ALIGN_LEFT));
+        signatures.addCell(borderlessCell("客户确认：" + (confirmation == null ? "" : confirmation.signerName()),
+                font, Element.ALIGN_LEFT));
         signatures.addCell(customerSignatureCell(confirmation, font));
         document.add(signatures);
     }
 
     private PdfPCell customerSignatureCell(SalesOrderSignatureService.Confirmation confirmation,
-                                            Font font) {
+                                            Font font) throws DocumentException {
         PdfPCell cell = new PdfPCell();
         cell.setBorder(Rectangle.NO_BORDER);
-        cell.setHorizontalAlignment(Element.ALIGN_RIGHT);
+        cell.setHorizontalAlignment(Element.ALIGN_LEFT);
+        cell.setVerticalAlignment(Element.ALIGN_TOP);
         cell.setPadding(1);
-        Paragraph label = new Paragraph("客户确认：", font);
-        label.setAlignment(Element.ALIGN_RIGHT);
-        cell.addElement(label);
+        PdfPTable signatureLine = new PdfPTable(2);
+        signatureLine.setWidthPercentage(100);
+        signatureLine.setWidths(new float[]{48, 72});
+        signatureLine.addCell(borderlessCell("客户签字：", font, Element.ALIGN_LEFT));
+        PdfPCell imageCell = new PdfPCell();
+        imageCell.setBorder(Rectangle.NO_BORDER);
+        imageCell.setPadding(0);
         if (confirmation == null || confirmation.data() == null || confirmation.data().length == 0) {
+            signatureLine.addCell(imageCell);
+            cell.addElement(signatureLine);
             return cell;
         }
         try {
             Image signature = Image.getInstance(confirmation.data());
-            signature.scaleToFit(82, 34);
-            signature.setAlignment(Element.ALIGN_RIGHT);
-            cell.addElement(signature);
+            signature.scaleToFit(68, 30);
+            imageCell.addElement(signature);
+            signatureLine.addCell(imageCell);
+            cell.addElement(signatureLine);
             String time = confirmation.signedAt() == null ? ""
                     : confirmation.signedAt().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
-            Paragraph signer = new Paragraph(confirmation.signerName() + "  " + time, font);
-            signer.setAlignment(Element.ALIGN_RIGHT);
-            cell.addElement(signer);
+            Paragraph signedAt = new Paragraph(time, new Font(font.getBaseFont(), 8, Font.NORMAL, Color.BLACK));
+            signedAt.setAlignment(Element.ALIGN_RIGHT);
+            cell.addElement(signedAt);
         } catch (Exception exception) {
-            throw new BusinessException("销售单签名图片损坏，无法生成 PDF");
+            throw new BusinessException("单据签名图片损坏，无法生成 PDF");
         }
         return cell;
     }

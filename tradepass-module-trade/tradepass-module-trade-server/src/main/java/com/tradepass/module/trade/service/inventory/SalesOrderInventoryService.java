@@ -50,6 +50,7 @@ public interface SalesOrderInventoryService {
     List<Map<String, Object>> listWarehouses();
     Map<String, Object> createWarehouse(String name, String address);
     Map<String, Object> inventoryOverview();
+    void deleteInventoryBalance(Long balanceId);
     default Map<String, Object> manualInbound(Long warehouseId, String requestId, String name, String specification, String unit, BigDecimal quantity, BigDecimal price, String remark) {
         return manualInbound(warehouseId, requestId, name, "", specification, unit, quantity, price, remark);
     }

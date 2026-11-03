@@ -9,6 +9,13 @@ import static org.mockito.Mockito.*;
 
 class InventoryControllerTest {
     @Test
+    void deleteStockDelegatesToTenantAndZeroBalanceValidation() {
+        SalesOrderInventoryService service = mock(SalesOrderInventoryService.class);
+        new InventoryController(service).deleteInventoryBalance(66L);
+        verify(service).deleteInventoryBalance(66L);
+    }
+
+    @Test
     void jsonSignatureUsesExistingReceiveValidation() {
         SalesOrderInventoryService service = mock(SalesOrderInventoryService.class);
         InventoryController controller = new InventoryController(service);

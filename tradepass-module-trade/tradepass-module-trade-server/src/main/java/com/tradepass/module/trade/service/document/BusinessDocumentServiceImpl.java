@@ -35,6 +35,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Autowired;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -757,9 +758,11 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         if (documentPeopleService != null) documentPeopleService.resolveNames(document);
         try {
             JsonNode content = objectMapper.readTree(document.getContent());
+            view.put("totalAmount", new BigDecimal(content.path("totalAmount").asText("0")));
             view.put("preparedByName", content.path("preparedByName").asText(""));
             view.put("reviewedByName", content.path("reviewedByName").asText(""));
         } catch (Exception ignored) {
+            view.put("totalAmount", BigDecimal.ZERO);
             view.put("preparedByName", "");
             view.put("reviewedByName", "");
         }

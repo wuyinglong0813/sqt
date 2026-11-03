@@ -75,6 +75,7 @@ class SalesOrderInventoryServiceTest {
         when(accessControlService.hasPermission(4L, "sales_order_receive")).thenReturn(true);
         when(accessControlService.hasPermission(4L, "inventory_receive")).thenReturn(true);
         when(userIdentityService.requireCurrentVerifiedName(4L)).thenReturn("张采购");
+        when(userIdentityService.requireCurrentVerifiedName(3L)).thenReturn("供方实名用户");
         service = new SalesOrderInventoryServiceImpl(jdbc, documentMapper, contractMapper,
                 accessControlService, mock(AuditLogService.class), new ObjectMapper(),
                 null, signatureService, userIdentityService);
@@ -122,6 +123,26 @@ class SalesOrderInventoryServiceTest {
     void clearContext() {
         AuthContext.clear();
         TestIds.reset();
+    }
+
+    @Test
+    void deletesOnlyCurrentCompanyZeroQuantityAndZeroAmountBalance() {
+        when(jdbc.update(anyString(), eq(66L), eq(4L))).thenReturn(1);
+        service.deleteInventoryBalance(66L);
+        verify(accessControlService).requirePermission(4L, "inventory_receive");
+        verify(jdbc).update(argThat(sql -> sql.contains("DELETE FROM inventory_balance")
+                        && sql.contains("id = ? AND company_id = ?")
+                        && sql.contains("quantity = 0 AND inventory_amount = 0")), eq(66L), eq(4L));
+    }
+
+    @Test
+    void refusesDeletingMissingForeignOrNonzeroBalanceAndEnforcesPermissionBeforeMutation() {
+        assertThatThrownBy(() -> service.deleteInventoryBalance(66L))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("数量和金额均为 0");
+        org.mockito.Mockito.clearInvocations(jdbc);
+        doThrow(new BusinessException("无权限")).when(accessControlService).requirePermission(4L, "inventory_receive");
+        assertThatThrownBy(() -> service.deleteInventoryBalance(66L)).hasMessage("无权限");
+        org.mockito.Mockito.verifyNoInteractions(jdbc);
     }
 
     @Test
@@ -357,6 +378,17 @@ class SalesOrderInventoryServiceTest {
     }
 
     @Test
+    void refusesSignatureWithoutVerifiedIdentityBeforeChangingDocumentOrStock() {
+        when(userIdentityService.requireCurrentVerifiedName(4L))
+                .thenThrow(new BusinessException("请先完成个人认证，再确认业务单据"));
+        assertThatThrownBy(() -> service.receive(31L, "receive_only", null, null, "签名.png", SIGNATURE))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("个人认证");
+        assertThat(document.getStatus()).isEqualTo("ISSUED");
+        org.mockito.Mockito.verifyNoInteractions(signatureService);
+        org.mockito.Mockito.verify(jdbc, org.mockito.Mockito.never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test
     void receivesSalesOrderWithoutChangingInventory() {
         document.setStatus("ISSUED");
         doReturn(null).when(jdbc).query(anyString(), any(ResultSetExtractor.class), any(Object[].class));
@@ -368,7 +400,7 @@ class SalesOrderInventoryServiceTest {
         assertThat(result).containsEntry("status", "ACKNOWLEDGED")
                 .containsEntry("canInbound", true);
         assertThat(document.getAcknowledgedBy()).isEqualTo(8L);
-        verify(signatureService).save(4L, 31L, 60L, "用户8", "签名.png", SIGNATURE);
+        verify(signatureService).save(4L, 31L, 60L, "张采购", "签名.png", SIGNATURE);
         verify(approvalService).recordResult(3L, 4L, "SALES_ORDER", 31L, 12L,
                 "APPROVED", "销售单已确认", "对方已确认销售单 XS-31", null);
         verify(approvalService).recordResult(4L, 3L, "SALES_ORDER", 31L, 12L,

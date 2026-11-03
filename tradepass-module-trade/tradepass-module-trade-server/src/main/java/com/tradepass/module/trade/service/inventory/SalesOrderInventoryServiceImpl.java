@@ -353,7 +353,22 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         result.put("productCount", balances.size());
         result.put("balances", balances);
         result.put("canManualInbound", accessControlService.hasPermission(companyId, "inventory_receive"));
+        result.put("canDeleteInventory", accessControlService.hasPermission(companyId, "inventory_receive"));
         return result;
+    }
+
+    @Transactional
+    public void deleteInventoryBalance(Long balanceId) {
+        long companyId = AuthContext.requireCompanyId();
+        accessControlService.requirePermission(companyId, "inventory_receive");
+        // The conditional delete locks the balance row atomically against concurrent inbound/outbound.
+        // Product definitions and movement records remain available for historical documents.
+        int removed = jdbc.update("""
+                DELETE FROM inventory_balance
+                WHERE id = ? AND company_id = ? AND quantity = 0 AND inventory_amount = 0
+                """, balanceId, companyId);
+        if (removed != 1) throw new BusinessException("仅可删除数量和金额均为 0 的库存商品，请刷新后重试");
+        auditLogService.log(companyId, "INVENTORY_BALANCE", balanceId, "DELETE", "删除零库存商品记录");
     }
 
     @Transactional
@@ -431,7 +446,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                         SELECT product.id, product.product_name, product.model, product.specification,
                                product.base_unit, COALESCE(SUM(balance.quantity), 0) AS quantity
                         FROM inventory_product product
-                        LEFT JOIN inventory_balance balance
+                        JOIN inventory_balance balance
                           ON balance.product_id = product.id AND balance.company_id = product.company_id
                         WHERE product.company_id = ?
                           AND (? = '' OR product.product_name LIKE ? ESCAPE '\\\\'
@@ -530,10 +545,11 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             if (signatureData == null || signatureData.length == 0) {
                 throw new BusinessException("请先完成手写签名");
             }
-            signerName = userIdentityService == null
-                    ? "用户" + AuthContext.userId()
-                    : userIdentityService.currentDisplayName();
-            if (signerName == null || signerName.isBlank()) signerName = "用户" + AuthContext.userId();
+            if (userIdentityService == null) throw new BusinessException("个人认证服务尚未启用");
+            signerName = userIdentityService.requireCurrentVerifiedName(companyId);
+            if (signerName == null || signerName.isBlank()) {
+                throw new BusinessException("请先完成个人认证，再确认业务单据");
+            }
         }
         boolean returnOrder = "RETURN_ORDER".equals(document.getDocumentType());
         Long supplierCompanyId = supplierCompanyId(document, contract);

@@ -80,6 +80,24 @@ class BusinessDocumentServiceTest {
     }
 
     @Test
+    void listsSalesAndReturnAmountsIncludingZeroAndFeesFromTheirOwnSnapshot() {
+        var contract = new TradeContractRespDTO();
+        contract.setId(21L); contract.setCompanyId(3L); contract.setCounterpartyCompanyId(4L);
+        when(contractMapper.selectById(21L)).thenReturn(contract);
+        for (String type : List.of("SALES_ORDER", "RETURN_ORDER")) {
+            var document = new BusinessDocumentDO();
+            document.setId(31L); document.setCompanyId(3L); document.setContractId(21L);
+            document.setDocumentType(type); document.setStatus("ISSUED");
+            when(documentMapper.selectList(any())).thenReturn(List.of(document));
+            document.setContent("{\"totalAmount\":\"125.50\",\"preparedByName\":\"李制单\"}");
+            assertThat(service.listDocuments(21L, type).get(0))
+                    .containsEntry("totalAmount", new BigDecimal("125.50"));
+            document.setContent("{\"totalAmount\":\"0\"}");
+            assertThat(service.listDocuments(21L, type).get(0)).containsEntry("totalAmount", BigDecimal.ZERO);
+        }
+    }
+
+    @Test
     void createsDocumentFromSelectedTemplateAndEditedSnapshot() throws Exception {
         BusinessDocumentTemplateDO template = new BusinessDocumentTemplateDO();
         template.setId(11L);

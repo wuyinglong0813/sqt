@@ -91,22 +91,29 @@ class ContractDirectoryServiceTest {
         return ((AbstractWrapper<?, ?, ?>) query).getParamNameValuePairs();
     }
 
-    @Test @SuppressWarnings("unchecked") void sortsByActualSalesBeforeApplyingPagination() {
+    @Test @SuppressWarnings("unchecked") void keepsSigningDateOrderBeforeApplyingPaginationRegardlessOfSales() {
         TradeContractMapper contracts = mock(TradeContractMapper.class);
         var identity = mock(IdentityDirectoryOperations.class); var jdbc = mock(JdbcTemplate.class);
         when(jdbc.queryForList(anyString(), eq(Long.class), eq(3L), eq(3L))).thenReturn(List.of(3L));
         when(identity.companyNames(any())).thenReturn(Map.of(3L, "本公司"));
         var newest = new TradeContractDO(); newest.setId(1L); newest.setAmount(new BigDecimal("90000"));
         var older = new TradeContractDO(); older.setId(2L); older.setAmount(new BigDecimal("100"));
-        when(contracts.selectList(any(Wrapper.class))).thenReturn(List.of(newest, older));
+        when(contracts.selectList(any(Wrapper.class))).thenAnswer(invocation -> {
+            Wrapper<?> query = invocation.getArgument(0);
+            // The database orders before the service applies pagination.
+            if (query.getSqlSegment().contains("ORDER BY")) {
+                assertThat(query.getSqlSegment()).contains("ORDER BY COALESCE(approved_at, created_at) DESC, id DESC");
+            }
+            return List.of(newest, older);
+        });
         var performance = mock(com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.class);
         when(performance.contractSales(3L)).thenReturn(Map.of(
                 "1", new com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales(new BigDecimal("20"), BigDecimal.ZERO, 1),
                 "2", new com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales(new BigDecimal("100"), BigDecimal.ZERO, 2)));
         var service = new ContractDirectoryServiceImpl(contracts, identity, jdbc);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "sales", performance);
-        assertThat(service.partyContracts(3L, null, null, 1, 0)).extracting(TradeContractDO::getId).containsExactly(2L);
-        assertThat(service.partyContracts(3L, null, null, 1, 1)).extracting(TradeContractDO::getId).containsExactly(1L);
+        assertThat(service.partyContracts(3L, null, null, 1, 0)).extracting(TradeContractDO::getId).containsExactly(1L);
+        assertThat(service.partyContracts(3L, null, null, 1, 1)).extracting(TradeContractDO::getId).containsExactly(2L);
         assertThat(service.partySalesAmount(3L)).isEqualByComparingTo("120");
     }
 }

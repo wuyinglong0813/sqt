@@ -43,6 +43,17 @@ class RankingServiceTest {
     }
 
     @Test
+    void partnerListReceivesNetSalesForTheSelectedPeriodAndDirection() {
+        var netSales = List.<Map<String, Object>>of(
+                Map.of("counterpartyCompanyId", 4L, "netAmount", new BigDecimal("85450.00")),
+                Map.of("counterpartyCompanyId", 5L, "netAmount", new BigDecimal("-50.00")));
+        when(orderMapper.selectPartnerNetSales(3L, "SALE", "month")).thenReturn(netSales);
+        assertThat(service.supplierHome("MONTH", "3").stats()).containsEntry("partnerNetSales", netSales);
+        when(orderMapper.selectPartnerNetSales(3L, "PURCHASE", "year")).thenReturn(netSales);
+        assertThat(service.buyerHome("year", "3").stats()).containsEntry("partnerNetSales", netSales);
+    }
+
+    @Test
     void buildsSupplierHomeAndRanksRows() {
         CompanyRespDTO company = new CompanyRespDTO();
         company.setName("测试企业");

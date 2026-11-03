@@ -25,6 +25,14 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrderDO> {
                                             @Param("direction") String direction,
                                             @Param("period") String period);
 
+    @Select("SELECT CASE WHEN #{direction} = 'SALE' THEN d.buyer_company_id ELSE d.supplier_company_id END AS counterpartyCompanyId, "
+            + "SUM(CASE WHEN d.document_type = 'RETURN_ORDER' THEN -ABS(" + SalesPerformanceSql.AMOUNT
+            + ") ELSE " + SalesPerformanceSql.AMOUNT + " END) AS netAmount "
+            + SalesPerformanceSql.FROM + SalesPerformanceSql.DIRECTION + SalesPerformanceSql.PERIOD
+            + " AND d.document_type IN ('SALES_ORDER', 'RETURN_ORDER') GROUP BY counterpartyCompanyId")
+    List<Map<String, Object>> selectPartnerNetSales(@Param("companyId") Long companyId,
+                                                   @Param("direction") String direction, @Param("period") String period);
+
     @Select("SELECT d.contract_id AS contractId, "
             + "COALESCE(SUM(CASE WHEN d.document_type = 'SALES_ORDER' THEN " + SalesPerformanceSql.AMOUNT + " ELSE 0 END), 0) AS salesAmount, "
             + "COALESCE(SUM(CASE WHEN d.document_type = 'RETURN_ORDER' THEN ABS(" + SalesPerformanceSql.AMOUNT + ") ELSE 0 END), 0) AS returnAmount, "

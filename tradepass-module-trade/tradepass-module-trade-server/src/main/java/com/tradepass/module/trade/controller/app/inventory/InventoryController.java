@@ -5,6 +5,7 @@ import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.module.trade.service.inventory.SalesOrderInventoryService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -134,6 +135,12 @@ public class InventoryController {
             @RequestParam(required = false, defaultValue = "") String keyword,
             @RequestParam(required = false, defaultValue = "100") Integer limit) {
         return ApiResponse.ok(inventoryService.searchProducts(keyword, limit));
+    }
+
+    @DeleteMapping("/inventory/balances/{id}")
+    public ApiResponse<Boolean> deleteInventoryBalance(@PathVariable Long id) {
+        inventoryService.deleteInventoryBalance(id);
+        return ApiResponse.ok(true);
     }
 
     private Long longValue(Object value) {
