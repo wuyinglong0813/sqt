@@ -80,7 +80,11 @@ public final class TradePassDtos {
     public record MemberRole(String code, String name) {
     }
 
-    public record AuthorizationRecord(String id, String companyId, String userId, String memberName, String roleCode, String roleText, List<String> permissions, String status, String phone, Boolean realNameVerified, List<MemberRole> roles, String signingStatus, String signingMessage) {
+    public record AuthorizationRecord(String id, String companyId, String userId, String memberName, String roleCode, String roleText, List<String> permissions, String status, String phone, Boolean realNameVerified, List<MemberRole> roles, String signingStatus, String signingMessage, String invitedBy, String inviterName) {
+        public AuthorizationRecord(String id, String companyId, String userId, String memberName, String roleCode, String roleText, List<String> permissions, String status, String phone, Boolean realNameVerified, List<MemberRole> roles, String signingStatus, String signingMessage) {
+            this(id, companyId, userId, memberName, roleCode, roleText, permissions, status, phone,
+                    realNameVerified, roles, signingStatus, signingMessage, null, null);
+        }
         public AuthorizationRecord(String id, String companyId, String userId, String memberName, String roleCode, String roleText, List<String> permissions, String status, String phone, Boolean realNameVerified, List<MemberRole> roles) {
             this(id, companyId, userId, memberName, roleCode, roleText, permissions, status, phone,
                     realNameVerified, roles, null, null);

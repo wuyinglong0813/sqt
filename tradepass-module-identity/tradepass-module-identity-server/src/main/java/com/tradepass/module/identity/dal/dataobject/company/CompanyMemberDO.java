@@ -12,6 +12,8 @@ public class CompanyMemberDO {
     private Long id;
     private Long companyId;
     private Long userId;
+    private Long inviteId;
+    private Long invitedBy;
     private String roleCode;
     private String roleCodes;
     private Boolean isLegalPerson;
@@ -26,6 +28,10 @@ public class CompanyMemberDO {
     public void setCompanyId(Long companyId) { this.companyId = companyId; }
     public Long getUserId() { return userId; }
     public void setUserId(Long userId) { this.userId = userId; }
+    public Long getInviteId() { return inviteId; }
+    public void setInviteId(Long value) { this.inviteId = value; }
+    public Long getInvitedBy() { return invitedBy; }
+    public void setInvitedBy(Long value) { this.invitedBy = value; }
     public String getRoleCode() { return roleCode; }
     public void setRoleCode(String roleCode) { this.roleCode = roleCode; }
     public String getRoleCodes() { return roleCodes; }

@@ -6,9 +6,9 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ReviewedMigrationVersionsTest {
-    @Test void flatSourceRequiresExactlyReviewedV51WithoutFailedMigrations() {
+    @Test void flatSourceRequiresExactlyReviewedV52WithoutFailedMigrations() {
         for (int version = 0; version <= 60; version++) {
-            assertEquals(version == 51, SplitDatabaseMigration.isReviewedSourceVersion(version, 0),
+            assertEquals(version == 52, SplitDatabaseMigration.isReviewedSourceVersion(version, 0),
                     "Unexpected flat source version: " + version);
             assertFalse(SplitDatabaseMigration.isReviewedSourceVersion(version, 1));
         }

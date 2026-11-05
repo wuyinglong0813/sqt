@@ -21,4 +21,10 @@ public interface WechatService {
     String resolveOpenid(String code);
     String resolveOpenid(String code, String trustedOpenid);
     String resolvePhoneByCode(String phoneCode);
+    default byte[] createInvitationCode(String code) {
+        throw new BusinessException("微信小程序码服务暂不可用");
+    }
+    default String createInvitationLink(String code, long expiresAt) {
+        throw new BusinessException("微信邀请链接服务暂不可用");
+    }
 }

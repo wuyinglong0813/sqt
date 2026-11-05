@@ -17,6 +17,7 @@ import com.tradepass.support.MybatisTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -30,6 +31,7 @@ class AccessControlServiceTest {
     private CounterpartyRelationMapper relationMapper;
     private RoleDefMapper roleMapper;
     private AccessControlService service;
+    private PersonalIdentityAccess identity;
 
     @BeforeEach
     void setUp() {
@@ -38,6 +40,9 @@ class AccessControlServiceTest {
         roleMapper = mock(RoleDefMapper.class);
         service = new AccessControlServiceImpl(memberMapper, relationMapper, roleMapper,
                 new RolePermissionServiceImpl(), new ObjectMapper());
+        identity = mock(PersonalIdentityAccess.class);
+        when(identity.isVerified(org.mockito.ArgumentMatchers.anyLong())).thenReturn(true);
+        ((AccessControlServiceImpl) service).setPersonalIdentityAccess(identity);
         AuthContext.set(7L, 3L);
     }
 
@@ -49,6 +54,7 @@ class AccessControlServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void resolvesContextOrVerifiedRequestedCompany() {
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
         assertThat(service.resolveCompanyId(null)).isEqualTo(3L);
         assertThat(service.resolveCompanyId(" ")).isEqualTo(3L);
 
@@ -236,6 +242,50 @@ class AccessControlServiceTest {
         assertThat(service.hasPermission(3L, "invoice_view")).isFalse();
         when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(null);
         assertThat(service.effectiveRole(3L, 7L).permissions()).isEmpty();
+    }
+
+    @Test
+    void pendingOrUnverifiedAccountsNeverReceiveConfiguredCompanyPermissions() {
+        MybatisTestSupport.initialize(CompanyMemberDO.class, RoleDefDO.class);
+        RoleDefDO role = new RoleDefDO(); role.setPermissions("[\"all\"]");
+        when(roleMapper.selectOne(any(Wrapper.class))).thenReturn(role);
+        for (String status : List.of("PENDING_IDENTITY", "PENDING", "REJECTED")) {
+            CompanyMemberDO member = activeMember("ADMIN", "[\"all\"]"); member.setStatus(status);
+            when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(member);
+            assertThat(service.effectiveRole(3L, 7L).permissions()).as(status).isEmpty();
+            assertThat(service.hasPermission(3L, "all")).as(status).isFalse();
+        }
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(activeMember("ADMIN", "[\"all\"]"));
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        when(identity.isVerified(7L)).thenReturn(false);
+        assertThat(service.isActiveMember(3L, 7L)).isFalse();
+        assertThat(service.effectiveRole(3L, 7L).permissions()).isEmpty();
+        assertThatThrownBy(() -> service.requirePermission(3L, "anything")).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.requireLegal(3L)).hasMessageContaining("实名认证");
+        assertThatThrownBy(() -> service.requireLegalOrClaim(3L)).hasMessageContaining("实名认证");
+        assertThatThrownBy(() -> service.requireCompanyProfileAccess(3L)).hasMessageContaining("实名认证");
+    }
+
+    @Test
+    void memberOrClaimExceptionOnlyAllowsRealNameVerifiedActiveMembersOrLegalCandidates() {
+        MybatisTestSupport.initialize(CompanyMemberDO.class);
+        when(memberMapper.selectCount(any(Wrapper.class))).thenAnswer(call -> {
+            var query = (com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<CompanyMemberDO>) call.getArgument(0);
+            String sql = query.getSqlSegment();
+            assertThat(query.getParamNameValuePairs().values()).contains("ACTIVE", "PENDING", "LEGAL_CANDIDATE");
+            assertThat(sql).contains("role_code");
+            return 0L;
+        });
+        assertThatThrownBy(() -> service.requireMemberOrClaim(3L)).hasMessage("无权访问该企业");
+    }
+
+    @Test
+    void aMissingIdentityDependencyFailsClosed() {
+        AccessControlServiceImpl incomplete = new AccessControlServiceImpl(memberMapper, relationMapper, roleMapper,
+                new RolePermissionServiceImpl(), new ObjectMapper());
+        when(memberMapper.selectOne(any(Wrapper.class))).thenReturn(activeMember("LEGAL", "[\"all\"]"));
+        assertThat(incomplete.isActiveMember(3L, 7L)).isFalse();
+        assertThat(incomplete.effectiveRole(3L, 7L).permissions()).isEmpty();
     }
 
     private CompanyMemberDO activeMember(String role, String customPermissions) {

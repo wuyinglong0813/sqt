@@ -13,6 +13,7 @@ public class CompanyInviteDO {
     private Long companyId;
     private String code;
     private String type;
+    private String invitationMode;
     private String relationRole;
     private String targetPhoneHash;
     private String targetPhoneMasked;
@@ -30,6 +31,8 @@ public class CompanyInviteDO {
     public void setCode(String code) { this.code = code; }
     public String getType() { return type; }
     public void setType(String type) { this.type = type; }
+    public String getInvitationMode() { return invitationMode; }
+    public void setInvitationMode(String value) { this.invitationMode = value; }
     public String getRelationRole() { return relationRole; }
     public void setRelationRole(String relationRole) { this.relationRole = relationRole; }
     public String getTargetPhoneHash() { return targetPhoneHash; }

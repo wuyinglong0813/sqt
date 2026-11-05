@@ -12,6 +12,7 @@ import com.tradepass.module.identity.controller.app.company.vo.ApproveReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.CompanySubmitReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.InviteReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.InvitePreviewRespVO;
+import com.tradepass.module.identity.controller.app.company.vo.MemberApplicationRespVO;
 import com.tradepass.module.identity.controller.app.company.vo.JoinReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.RoleReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.SealReqVO;
@@ -134,6 +135,22 @@ public class CompanyController {
     @GetMapping("/companies/invitations/{code}")
     public ApiResponse<InvitePreviewRespVO> previewInvite(@PathVariable String code) {
         return ApiResponse.ok(companyService.previewInvite(code));
+    }
+
+    @DeleteMapping("/companies/invitations/{code}")
+    public ApiResponse<Void> revokeInvite(@PathVariable String code) {
+        companyService.revokeInvite(code);
+        return ApiResponse.ok(null);
+    }
+
+    @GetMapping("/me/member-applications")
+    public ApiResponse<List<MemberApplicationRespVO>> myMemberApplications() {
+        return ApiResponse.ok(companyService.myMemberApplications());
+    }
+
+    @PostMapping("/me/member-applications/{id}/identity-ready")
+    public ApiResponse<MemberApplicationRespVO> markMemberApplicationIdentityReady(@PathVariable String id) {
+        return ApiResponse.ok(companyService.markMemberApplicationIdentityReady(id));
     }
 
     @GetMapping("/authorizations")

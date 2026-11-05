@@ -22,6 +22,7 @@ import com.tradepass.module.identity.controller.app.company.vo.CompanySubmitReqV
 import com.tradepass.module.identity.controller.app.company.vo.InviteReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.InvitePreviewRespVO;
 import com.tradepass.module.identity.controller.app.company.vo.JoinReqVO;
+import com.tradepass.module.identity.controller.app.company.vo.MemberApplicationRespVO;
 import com.tradepass.module.identity.controller.app.company.vo.RoleReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.SealReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.VerificationReqVO;
@@ -68,6 +69,9 @@ public interface CompanyService {
     InviteResult createCounterpartyInvite(InviteReqVO req);
     InvitePreviewRespVO previewInvite(String code);
     JoinResult joinCompany(JoinReqVO req);
+    List<MemberApplicationRespVO> myMemberApplications();
+    MemberApplicationRespVO markMemberApplicationIdentityReady(String id);
+    void revokeInvite(String code);
     List<AuthorizationRecord> listMembers(String companyId);
     PagePayload<AuthorizationRecord> pageMembers(String companyId, String status, int page, int size);
     AuthorizationRecord approveMember(String id, ApproveReqVO req, String companyId);

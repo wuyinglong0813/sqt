@@ -517,9 +517,7 @@ class CompanyServiceTest {
     }
 
     @Test
-    void requiresExplicitOtherRecipientWhenCreatingMemberInvitation() {
-        assertThatThrownBy(() -> service.createInvite(new InviteReqVO("3", null)))
-                .hasMessageContaining("受邀人的有效手机号");
+    void rejectsInvalidPhonesAndSelfTargetedMemberInvitations() {
         assertThatThrownBy(() -> service.createInvite(new InviteReqVO("3", null, "abc")))
                 .hasMessageContaining("受邀人的有效手机号");
         assertThatThrownBy(() -> service.createInvite(new InviteReqVO("3", null, "13900000000")))
@@ -669,6 +667,7 @@ class CompanyServiceTest {
 
     @Test
     void approvesMembersAndManagesCustomRolesWithinTenant() {
+        allowVerifiedApproval();
         var events = mock(org.springframework.context.ApplicationEventPublisher.class);
         ((CompanyServiceImpl) service).setEventPublisher(events);
         CompanyMemberDO pending = new CompanyMemberDO();
@@ -933,6 +932,7 @@ class CompanyServiceTest {
 
     @Test
     void assignsMultipleRolesAndValidatesEveryRoleBeforeWriting() {
+        allowVerifiedApproval();
         CompanyMemberDO target = new CompanyMemberDO();
         target.setId(12L);
         target.setUserId(8L);
@@ -987,6 +987,9 @@ class CompanyServiceTest {
         RolePermissionService rolePermissions = new RolePermissionServiceImpl();
         AccessControlService realAccessControl = new AccessControlServiceImpl(memberMapper, relationMapper,
                 roleMapper, rolePermissions, new com.fasterxml.jackson.databind.ObjectMapper());
+        var identityGate = mock(com.tradepass.module.identity.service.permission.PersonalIdentityAccess.class);
+        when(identityGate.isVerified(anyLong())).thenReturn(true);
+        ((AccessControlServiceImpl) realAccessControl).setPersonalIdentityAccess(identityGate);
         CompanyService realService = new CompanyServiceImpl(companyMapper, memberMapper, inviteMapper,
                 relationMapper, roleMapper, permMapper, realAccessControl, searchRateLimiter, rolePermissions,
                 auditLogService, removalNoticeService, corpIdentityMapper, applicationMapper, true);
@@ -1100,6 +1103,15 @@ class CompanyServiceTest {
         company.setFaceStatus("VERIFIED");
         company.setSealStatus("UPLOADED");
         return company;
+    }
+
+    private void allowVerifiedApproval() {
+        SysUserDO applicant = inviteRecipient();
+        applicant.setId(8L);
+        when(inviteUserMapper.selectById(8L)).thenReturn(applicant);
+        FadadaPersonalIdentityService identity = mock(FadadaPersonalIdentityService.class);
+        when(identity.verifiedOpenUserId(8L)).thenReturn("verified-applicant");
+        service.setPersonalIdentityService(identity);
     }
 
     private CompanyInviteDO invite(boolean counterparty) {

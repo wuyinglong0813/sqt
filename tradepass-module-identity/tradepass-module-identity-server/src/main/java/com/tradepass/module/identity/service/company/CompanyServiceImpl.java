@@ -28,6 +28,7 @@ import com.tradepass.module.identity.controller.app.company.vo.CompanySubmitReqV
 import com.tradepass.module.identity.controller.app.company.vo.InviteReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.InvitePreviewRespVO;
 import com.tradepass.module.identity.controller.app.company.vo.JoinReqVO;
+import com.tradepass.module.identity.controller.app.company.vo.MemberApplicationRespVO;
 import com.tradepass.module.identity.controller.app.company.vo.RoleReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.SealReqVO;
 import com.tradepass.module.identity.controller.app.company.vo.VerificationReqVO;
@@ -378,15 +379,16 @@ public class CompanyServiceImpl implements CompanyService {
     public InviteResult createInvite(InviteReqVO req) {
         long companyId = parseId(req.companyId());
         accessControlService.requireManager(companyId);
+        boolean open = req.targetPhone() == null || req.targetPhone().isBlank();
         String targetPhone = normalizeInvitePhone(req.targetPhone());
-        if (targetPhone.isBlank()) throw new BusinessException("请填写受邀人的有效手机号");
+        if (!open && targetPhone.isBlank()) throw new BusinessException("请填写受邀人的有效手机号");
         SysUserDO inviter = currentInviteUser();
-        if (targetPhone.equals(normalizeInvitePhone(inviter.getPhone()))) {
+        if (!open && targetPhone.equals(normalizeInvitePhone(inviter.getPhone()))) {
             throw new BusinessException(46204, "不能向自己发出成员邀请，请填写受邀人的手机号");
         }
         String code = generateInviteCode();
-        saveInvite(companyId, code, "member", null, targetPhone);
-        return new InviteResult(code, req.companyId());
+        CompanyInviteDO invite = saveInvite(companyId, code, "member", null, open ? null : targetPhone);
+        return new InviteResult(code, req.companyId(), invite.getExpiresAt());
     }
 
     public InviteResult createCounterpartyInvite(InviteReqVO req) {
@@ -394,8 +396,8 @@ public class CompanyServiceImpl implements CompanyService {
         accessControlService.requireLegal(companyId);
         String code = generateInviteCode();
         String relationRole = "supplier".equalsIgnoreCase(req.relationRole()) ? "supplier" : "buyer";
-        saveInvite(companyId, code, "counterparty", relationRole, null);
-        return new InviteResult(code, req.companyId());
+        CompanyInviteDO invite = saveInvite(companyId, code, "counterparty", relationRole, null);
+        return new InviteResult(code, req.companyId(), invite.getExpiresAt());
     }
 
     public InvitePreviewRespVO previewInvite(String code) {
@@ -412,7 +414,8 @@ public class CompanyServiceImpl implements CompanyService {
         return new InvitePreviewRespVO(
                 String.valueOf(company.getId()), company.getName(), invite.getType(),
                 "member".equals(invite.getType()) && (identity == null || !"VERIFIED".equals(identity.status())),
-                "member".equals(invite.getType()) ? invite.getTargetPhoneMasked() : "", phoneBindingRequired);
+                "member".equals(invite.getType()) ? invite.getTargetPhoneMasked() : "", phoneBindingRequired,
+                invite.getInvitationMode(), invite.getExpiresAt());
     }
 
     private void validateInvite(CompanyInviteDO invite) {
@@ -466,6 +469,8 @@ public class CompanyServiceImpl implements CompanyService {
             return new JoinResult("ACTIVE", "已建立" + relationText);
         }
 
+        if ("OPEN".equals(invite.getInvitationMode())) return applyOpenInvitation(invite, userId);
+
         validateInviteRecipient(invite, false);
 
         CompanyMemberDO existing = companyMemberMapper.selectOne(new LambdaQueryWrapper<CompanyMemberDO>()
@@ -495,13 +500,124 @@ public class CompanyServiceImpl implements CompanyService {
         CompanyMemberDO member = new CompanyMemberDO();
         member.setCompanyId(invite.getCompanyId());
         member.setUserId(userId);
+        member.setInviteId(invite.getId());
+        member.setInvitedBy(invite.getInvitedBy());
         member.setRoleCode("GUEST");
         member.setIsLegalPerson(false);
         member.setIsAdministrator(false);
         member.setStatus("PENDING");
         companyMemberMapper.insert(member);
         markInviteUsed(invite, userId);
-        return new JoinResult("PENDING", "申请已提交，等待管理员审批");
+        return applicationResult(member);
+    }
+
+    private JoinResult applyOpenInvitation(CompanyInviteDO invite, long userId) {
+        validateInviteRecipient(invite, true);
+        // Serialize applications for the same account even when different
+        // invitation links are opened concurrently; the tenant/user unique key
+        // remains a second line of defence against duplicate memberships.
+        inviteUserMapper.lockForMembership(userId);
+        CompanyMemberDO existing = companyMemberMapper.selectOne(new LambdaQueryWrapper<CompanyMemberDO>()
+                .eq(CompanyMemberDO::getCompanyId, invite.getCompanyId())
+                .eq(CompanyMemberDO::getUserId, userId).last("LIMIT 1 FOR UPDATE"));
+        if (existing != null) {
+            if ("ACTIVE".equals(existing.getStatus())) throw new BusinessException("你已是该企业成员");
+            if (List.of("PENDING_IDENTITY", "PENDING").contains(existing.getStatus())
+                    && "GUEST".equals(existing.getRoleCode())) return applicationResult(existing);
+            throw new BusinessException("该企业已有其他入驻申请，请先处理原申请");
+        }
+        SysUserDO user = currentInviteUser();
+        boolean phoneReady = isVerifiedPhone(user);
+        boolean identityReady = currentIdentityVerified();
+        if (phoneReady && identityReady) personalIdentityService.requireCurrentVerified();
+        CompanyMemberDO member = new CompanyMemberDO();
+        member.setCompanyId(invite.getCompanyId());
+        member.setUserId(userId);
+        member.setInviteId(invite.getId());
+        member.setInvitedBy(invite.getInvitedBy());
+        member.setRoleCode("GUEST");
+        member.setIsLegalPerson(false);
+        member.setIsAdministrator(false);
+        member.setStatus(phoneReady && identityReady ? "PENDING" : "PENDING_IDENTITY");
+        member.setCreatedAt(LocalDateTime.now());
+        companyMemberMapper.insert(member);
+        // OPEN invitations are shared application entrances. Merely opening or
+        // applying must neither consume the invitation nor grant membership.
+        return applicationResult(member);
+    }
+
+    private JoinResult applicationResult(CompanyMemberDO member) {
+        CompanyDO company = companyMapper.selectById(member.getCompanyId());
+        return new JoinResult(member.getStatus(), "PENDING_IDENTITY".equals(member.getStatus())
+                ? "申请已记录，请完成个人实名认证后等待管理员审批" : "申请已提交，等待管理员审批",
+                member.getId() == null ? null : String.valueOf(member.getId()), String.valueOf(member.getCompanyId()),
+                company == null ? "邀请企业" : company.getName());
+    }
+
+    public List<MemberApplicationRespVO> myMemberApplications() {
+        long userId = AuthContext.userId();
+        SysUserDO user = currentInviteUser();
+        boolean phoneRequired = !isVerifiedPhone(user);
+        boolean identityRequired = !currentIdentityVerified();
+        return companyMemberMapper.selectList(new LambdaQueryWrapper<CompanyMemberDO>()
+                        .eq(CompanyMemberDO::getUserId, userId)
+                        .eq(CompanyMemberDO::getRoleCode, "GUEST")
+                        .in(CompanyMemberDO::getStatus, List.of("PENDING_IDENTITY", "PENDING"))
+                        .orderByDesc(CompanyMemberDO::getCreatedAt).orderByDesc(CompanyMemberDO::getId))
+                .stream().map(member -> memberApplication(member, phoneRequired, identityRequired)).toList();
+    }
+
+    @Transactional
+    public MemberApplicationRespVO markMemberApplicationIdentityReady(String id) {
+        long userId = AuthContext.userId();
+        CompanyMemberDO member = companyMemberMapper.selectOne(new LambdaQueryWrapper<CompanyMemberDO>()
+                .eq(CompanyMemberDO::getId, parseId(id)).eq(CompanyMemberDO::getUserId, userId)
+                .and(query -> query.eq(CompanyMemberDO::getRoleCode, "GUEST")
+                        .or().eq(CompanyMemberDO::getStatus, "ACTIVE"))
+                .in(CompanyMemberDO::getStatus, List.of("PENDING_IDENTITY", "PENDING", "ACTIVE"))
+                .last("LIMIT 1 FOR UPDATE"));
+        if (member == null) throw new BusinessException("成员申请不存在或状态已变化");
+        if (!isVerifiedPhone(currentInviteUser())) throw new BusinessException(46201, "请先通过微信核验本人手机号");
+        if (personalIdentityService == null) throw new BusinessException(503, "个人认证服务暂不可用，请稍后重试");
+        PersonalIdentityRespDTO verified = personalIdentityService.requireCurrentVerified();
+        if (verified == null || !"VERIFIED".equals(verified.status())) {
+            throw new BusinessException(46103, "请先完成个人实名认证");
+        }
+        if ("PENDING_IDENTITY".equals(member.getStatus())) {
+            int updated = companyMemberMapper.update(new LambdaUpdateWrapper<CompanyMemberDO>()
+                    .eq(CompanyMemberDO::getId, member.getId()).eq(CompanyMemberDO::getUserId, userId)
+                    .eq(CompanyMemberDO::getStatus, "PENDING_IDENTITY")
+                    .set(CompanyMemberDO::getStatus, "PENDING"));
+            if (updated != 1) throw new BusinessException("成员申请状态已变化，请刷新后重试");
+            member.setStatus("PENDING");
+        }
+        return memberApplication(member, false, false);
+    }
+
+    private MemberApplicationRespVO memberApplication(CompanyMemberDO member, boolean phoneRequired, boolean identityRequired) {
+        CompanyDO company = companyMapper.selectById(member.getCompanyId());
+        return new MemberApplicationRespVO(String.valueOf(member.getId()), String.valueOf(member.getCompanyId()),
+                company == null ? "邀请企业" : company.getName(), member.getStatus(), phoneRequired, identityRequired,
+                member.getCreatedAt());
+    }
+
+    private boolean isVerifiedPhone(SysUserDO user) {
+        return user != null && "ACTIVE".equals(user.getStatus()) && user.getPhoneVerifiedAt() != null
+                && !normalizeInvitePhone(user.getPhone()).isBlank();
+    }
+
+    private boolean currentIdentityVerified() {
+        PersonalIdentityRespDTO identity = personalIdentityService == null ? null : personalIdentityService.current();
+        return identity != null && "VERIFIED".equals(identity.status());
+    }
+
+    public void revokeInvite(String code) {
+        CompanyInviteDO invite = companyInviteMapper.selectOne(new LambdaQueryWrapper<CompanyInviteDO>()
+                .eq(CompanyInviteDO::getCode, code).last("LIMIT 1"));
+        if (invite == null) throw new BusinessException("邀请码无效");
+        accessControlService.requireManager(invite.getCompanyId());
+        companyInviteMapper.update(new LambdaUpdateWrapper<CompanyInviteDO>()
+                .eq(CompanyInviteDO::getId, invite.getId()).set(CompanyInviteDO::getUsed, true));
     }
 
     public List<AuthorizationRecord> listMembers(String companyId) {
@@ -518,7 +634,9 @@ public class CompanyServiceImpl implements CompanyService {
         String cleanStatus = status == null ? null : status.trim();
         LambdaQueryWrapper<CompanyMemberDO> countQuery = new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, cid);
-        if (cleanStatus != null && !cleanStatus.isBlank()) {
+        if ("PENDING".equals(cleanStatus)) {
+            countQuery.in(CompanyMemberDO::getStatus, List.of("PENDING", "PENDING_IDENTITY"));
+        } else if (cleanStatus != null && !cleanStatus.isBlank()) {
             countQuery.eq(CompanyMemberDO::getStatus, cleanStatus);
         }
         long total = companyMemberMapper.selectCount(countQuery);
@@ -530,6 +648,7 @@ public class CompanyServiceImpl implements CompanyService {
         return PagePayload.of(items, total, normalizedPage, normalizedSize);
     }
 
+    @Transactional
     public AuthorizationRecord approveMember(String id, ApproveReqVO req, String companyId) {
         long cid = parseId(companyId);
         accessControlService.requireManager(cid);
@@ -539,7 +658,7 @@ public class CompanyServiceImpl implements CompanyService {
                 .eq(CompanyMemberDO::getCompanyId, cid)
                 .eq(CompanyMemberDO::getStatus, "PENDING")
                 .last("LIMIT 1"));
-        if (target == null) {
+        if (target == null || !"PENDING".equals(target.getStatus())) {
             throw new BusinessException("成员申请不存在或状态已变化");
         }
         List<RoleDefDO> roles = requireAssignableRoles(cid, req);
@@ -555,6 +674,15 @@ public class CompanyServiceImpl implements CompanyService {
         String perms = !customPermissions.isEmpty()
                 ? toJson(customPermissions)
                 : null;
+        // Approval must identify the applicant, never the administrator who is
+        // performing this request. Client-supplied real-name flags are ignored.
+        SysUserDO applicant = inviteUserMapper == null ? null : inviteUserMapper.selectById(target.getUserId());
+        if (!isVerifiedPhone(applicant)) throw new BusinessException(46201, "该成员尚未完成手机号核验，不能审批加入");
+        if (personalIdentityService == null) throw new BusinessException(503, "个人认证服务暂不可用，请稍后重试");
+        String verifiedPerson = personalIdentityService.verifiedOpenUserId(target.getUserId());
+        if (verifiedPerson == null || verifiedPerson.isBlank()) {
+            throw new BusinessException(46103, "该成员尚未完成个人实名认证，不能审批加入");
+        }
         int updated = companyMemberMapper.update(new LambdaUpdateWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getId, memberId)
                 .eq(CompanyMemberDO::getCompanyId, cid)
@@ -583,7 +711,7 @@ public class CompanyServiceImpl implements CompanyService {
         int deleted = companyMemberMapper.delete(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getId, parseId(id))
                 .eq(CompanyMemberDO::getCompanyId, cid)
-                .eq(CompanyMemberDO::getStatus, "PENDING"));
+                .in(CompanyMemberDO::getStatus, List.of("PENDING", "PENDING_IDENTITY")));
         if (deleted != 1) {
             throw new BusinessException("成员申请不存在或状态已变化");
         }
@@ -736,11 +864,13 @@ public class CompanyServiceImpl implements CompanyService {
         auditLogService.log(role.getCompanyId(), "ROLE", role.getId(), "DELETE", "删除角色 " + role.getCode());
     }
 
-    private void saveInvite(long companyId, String code, String type, String relationRole, String targetPhone) {
+    private CompanyInviteDO saveInvite(long companyId, String code, String type, String relationRole, String targetPhone) {
         CompanyInviteDO invite = new CompanyInviteDO();
         invite.setCompanyId(companyId);
         invite.setCode(code);
         invite.setType(type);
+        invite.setInvitationMode("member".equals(type) && targetPhone == null ? "OPEN"
+                : targetPhone != null ? "TARGETED" : "SINGLE");
         invite.setRelationRole(relationRole);
         invite.setInvitedBy(AuthContext.userId());
         if (targetPhone != null) {
@@ -750,13 +880,15 @@ public class CompanyServiceImpl implements CompanyService {
         invite.setUsed(false);
         invite.setExpiresAt(LocalDateTime.now().plusHours(24));
         companyInviteMapper.insert(invite);
+        return invite;
     }
 
     // Only the server's WeChat-verified account phone establishes the recipient.
     // Opening a shared link never claims or changes its intended recipient.
     private boolean validateInviteRecipient(CompanyInviteDO invite, boolean allowPhoneVerification) {
-        if (!"member".equals(invite.getType()) || invite.getTargetPhoneHash() == null
-                || invite.getTargetPhoneHash().isBlank() || invite.getInvitedBy() == null) {
+        boolean open = "OPEN".equals(invite.getInvitationMode());
+        if (!"member".equals(invite.getType()) || invite.getInvitedBy() == null
+                || !open && (invite.getTargetPhoneHash() == null || invite.getTargetPhoneHash().isBlank())) {
             throw new BusinessException(46203, "该成员邀请未指定受邀人，请联系邀请人重新发送邀请");
         }
         if (Long.valueOf(AuthContext.userId()).equals(invite.getInvitedBy())) {
@@ -768,7 +900,7 @@ public class CompanyServiceImpl implements CompanyService {
             if (allowPhoneVerification) return true;
             throw new BusinessException(46201, "请先通过微信核验本人手机号，再使用成员邀请");
         }
-        if (!invitePhoneHash(phone).equals(invite.getTargetPhoneHash())) {
+        if (!open && !invitePhoneHash(phone).equals(invite.getTargetPhoneHash())) {
             throw new BusinessException(46202, "该邀请仅限指定受邀人使用，请使用受邀手机号对应的账号打开");
         }
         return false;
@@ -876,7 +1008,7 @@ public class CompanyServiceImpl implements CompanyService {
         return new AuthorizationRecord(String.valueOf(row.get("id")), companyId, String.valueOf(row.get("userId")),
                 displayName, effective.code(), effective.name(), effective.permissions(), status,
                 phone != null ? phone : "", "VERIFIED".equals(string(row.get("identityStatus"))), effective.roles(),
-                signingStatus, signingDeliveryMessage(signingStatus));
+                signingStatus, signingDeliveryMessage(signingStatus), string(row.get("invitedBy")), string(row.get("inviterName")));
     }
 
     private String signingDeliveryStatus(String status) {

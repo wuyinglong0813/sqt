@@ -7,6 +7,7 @@ import com.tradepass.framework.common.pojo.TradePassDtos;
 import com.tradepass.module.identity.dal.dataobject.permission.PermDefDO;
 import com.tradepass.module.identity.service.permission.AccessControlService;
 import com.tradepass.module.identity.service.permission.RolePermissionService;
+import com.tradepass.module.identity.service.permission.PersonalIdentityAccess;
 import com.tradepass.module.identity.service.company.CompanyOnboardingAttemptService;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -68,6 +69,12 @@ public class AuthServiceImpl implements AuthService {
     private final ExperienceTestAccountService experienceTestAccountService;
     private final boolean devEnabled;
     private CompanyOnboardingAttemptService onboardingAttempts;
+    private PersonalIdentityAccess personalIdentity;
+
+    @Autowired
+    public void setPersonalIdentityAccess(PersonalIdentityAccess personalIdentity) {
+        this.personalIdentity = personalIdentity;
+    }
 
     @Autowired
     public void setOnboardingAttempts(CompanyOnboardingAttemptService value) { this.onboardingAttempts = value; }
@@ -157,7 +164,7 @@ public class AuthServiceImpl implements AuthService {
         MemberInfo member = experienceCompanyId != null
                 ? loadMember(user.getId(), experienceCompanyId)
                 : loadMemberAnyCompany(user.getId());
-        String roleCode = member == null || member.roleCode() == null ? "GUEST" : member.roleCode();
+        String roleCode = currentCompanyId == null || member == null || member.roleCode() == null ? "GUEST" : member.roleCode();
         return new LoginSession(tokenFor(user.getId()), new UserProfile(String.valueOf(user.getId()), openid,
                 user.getPhone(), user.getNickname(), currentCompanyId, roleCode, phoneVerified(user)));
     }
@@ -258,6 +265,7 @@ public class AuthServiceImpl implements AuthService {
 
     public MePayload switchCompany(SwitchCompanyReqVO request) {
         long userId = AuthContext.userId();
+        if (!identityVerified(userId)) throw new BusinessException(46103, "请先完成个人实名认证，再进入企业");
         long newCompanyId = parseId(request.companyId());
         boolean exists = companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, newCompanyId)
@@ -374,6 +382,7 @@ public class AuthServiceImpl implements AuthService {
     }
 
     public List<CompanyRole> loadUserCompanies(long userId) {
+        if (!identityVerified(userId)) return List.of();
         return companyMemberMapper.selectUserCompanies(userId).stream()
                 .map(row -> {
                     String roleCode = string(row.get("roleCode"));
@@ -389,6 +398,12 @@ public class AuthServiceImpl implements AuthService {
 
     private MePayload buildMe(long userId, Long companyId) {
         SysUserDO account = sysUserMapper.selectById(userId);
+        if (!identityVerified(userId)) {
+            UserProfile profile = new UserProfile(String.valueOf(userId), "demo-openid",
+                    account == null ? "" : account.getPhone(), account == null ? "微信用户" : account.getNickname(),
+                    null, "GUEST", phoneVerified(account));
+            return new MePayload(profile, fallbackCompany(), null, List.of());
+        }
         List<CompanyRole> companies = loadUserCompanies(userId);
         Long effectiveCompanyId = companyId;
         if (effectiveCompanyId == null && !companies.isEmpty()) {
@@ -402,10 +417,10 @@ public class AuthServiceImpl implements AuthService {
             UserProfile profile = new UserProfile(String.valueOf(userId), "demo-openid", phone, nick, null, "GUEST", phoneVerified(user));
             return new MePayload(profile, fallbackCompany(), null, companies);
         }
-        if (onboardingAttempts != null && !"ACTIVE".equals(member.memberStatus())) {
+        if (!"ACTIVE".equals(member.memberStatus())) {
             CompanyDO selected = effectiveCompanyId == null ? null : companyMapper.selectById(effectiveCompanyId);
             CompanyProfile own = fallbackCompany();
-            if (selected != null && !onboardingAttempts.isEstablished(selected)
+            if (onboardingAttempts != null && selected != null && !onboardingAttempts.isEstablished(selected)
                     && onboardingAttempts.hasPendingAttempt(selected.getId(), userId)) {
                 own = onboardingAttempts.profile(selected, onboardingAttempts.requireAttempt(selected.getId(), userId));
             }
@@ -421,6 +436,10 @@ public class AuthServiceImpl implements AuthService {
     private boolean phoneVerified(SysUserDO user) {
         return user != null && "ACTIVE".equals(user.getStatus()) && user.getPhone() != null && !user.getPhone().isBlank()
                 && user.getPhoneVerifiedAt() != null;
+    }
+
+    private boolean identityVerified(long userId) {
+        return personalIdentity != null && personalIdentity.isVerified(userId);
     }
 
     private String normalizePhone(String value) {
@@ -441,7 +460,12 @@ public class AuthServiceImpl implements AuthService {
         }
         String roleCode = string(row.get("roleCode"));
         String status = string(row.get("status"));
-        AccessControlOperations.EffectiveRole role = companyId == null || !"ACTIVE".equals(status)
+        boolean verified = identityVerified(Long.parseLong(String.valueOf(row.get("userId"))));
+        if (("ACTIVE".equals(status) && !verified)
+                || (!"ACTIVE".equals(status) && !"LEGAL_CANDIDATE".equals(roleCode))) {
+            roleCode = "GUEST";
+        }
+        AccessControlOperations.EffectiveRole role = companyId == null || !"ACTIVE".equals(status) || !verified
                 ? new AccessControlOperations.EffectiveRole("GUEST", "访客", List.of())
                 : accessControlService.effectiveRole(companyId, Long.parseLong(String.valueOf(row.get("userId"))));
         return new MemberInfo(

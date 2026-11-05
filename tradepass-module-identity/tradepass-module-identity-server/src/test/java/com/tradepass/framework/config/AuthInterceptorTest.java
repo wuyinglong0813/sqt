@@ -8,6 +8,7 @@ import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import com.tradepass.module.identity.service.auth.AuthSessionService;
+import com.tradepass.module.identity.service.permission.PersonalIdentityAccess;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,12 +28,16 @@ class AuthInterceptorTest {
     private AuthSessionService sessionService;
     private CompanyMemberMapper memberMapper;
     private AuthInterceptor interceptor;
+    private PersonalIdentityAccess identity;
 
     @BeforeEach
     void setUp() {
         sessionService = mock(AuthSessionService.class);
         memberMapper = mock(CompanyMemberMapper.class);
         interceptor = new AuthInterceptor(sessionService, memberMapper);
+        identity = mock(PersonalIdentityAccess.class);
+        when(identity.isVerified(org.mockito.ArgumentMatchers.anyLong())).thenReturn(true);
+        interceptor.setPersonalIdentityAccess(identity);
     }
 
     @AfterEach
@@ -42,7 +47,7 @@ class AuthInterceptorTest {
 
     @Test
     void rejectsMissingOrInvalidSessionWithJson401() throws Exception {
-        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/me");
         MockHttpServletResponse response = new MockHttpServletResponse();
         when(sessionService.resolveUserId(null)).thenReturn(null);
 
@@ -121,12 +126,94 @@ class AuthInterceptorTest {
     @Test
     @SuppressWarnings("unchecked")
     void toleratesMembershipLookupFailureWithoutLeakingAnotherTenant() throws Exception {
-        MockHttpServletRequest request = new MockHttpServletRequest();
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/me");
         request.addHeader("Authorization", "token");
         when(sessionService.resolveUserId("token")).thenReturn(7L);
         when(memberMapper.selectList(any(Wrapper.class))).thenThrow(new IllegalStateException("db down"));
 
         assertThat(interceptor.preHandle(request, new MockHttpServletResponse(), new Object())).isTrue();
         assertThat(AuthContext.companyId()).isNull();
+    }
+
+    @Test
+    void pendingApplicantsCannotReadOrWriteBusinessDataEvenAfterRealNameVerification() throws Exception {
+        when(sessionService.resolveUserId("token")).thenReturn(7L);
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(memberMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+        for (String method : List.of("GET", "POST", "PUT", "DELETE")) {
+            MockHttpServletRequest request = new MockHttpServletRequest(method, "/api/contracts");
+            request.addHeader("Authorization", "token");
+            MockHttpServletResponse denied = new MockHttpServletResponse();
+            assertThat(interceptor.preHandle(request, denied, new Object())).isFalse();
+            assertThat(denied.getStatus()).isEqualTo(403);
+            assertThat(AuthContext.isLoggedIn()).isFalse();
+
+            request.addHeader("X-Company-Id", "3");
+            assertThat(interceptor.preHandle(request, new MockHttpServletResponse(), new Object())).isFalse();
+        }
+    }
+
+    @Test
+    void anUnverifiedActiveAccountCanResumePersonalIdentityButCannotUseBusinessOrInternalResolve() throws Exception {
+        when(sessionService.resolveUserId("token")).thenReturn(7L);
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        when(identity.isVerified(7L)).thenReturn(false);
+        for (String path : List.of("/api/contracts", "/api/inventory", "/api/authorizations",
+                "/api/companies/invitations/OPEN123/qrcode", "/internal/identity/resolve")) {
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", path);
+            request.addHeader("Authorization", "token");
+            request.addHeader("X-Company-Id", "3");
+            MockHttpServletResponse denied = new MockHttpServletResponse();
+            assertThat(interceptor.preHandle(request, denied, new Object())).as(path).isFalse();
+            assertThat(denied.getStatus()).isEqualTo(403);
+        }
+        for (String path : List.of("/api/me", "/api/me/member-applications", "/api/fadada/users/me/identity")) {
+            MockHttpServletRequest personal = new MockHttpServletRequest("GET", path);
+            personal.addHeader("Authorization", "token");
+            assertThat(interceptor.preHandle(personal, new MockHttpServletResponse(), new Object())).as(path).isTrue();
+        }
+        for (String path : List.of("/api/auth/bind-phone", "/api/fadada/users/me/auth-url",
+                "/api/fadada/users/me/identity/sync", "/api/me/member-applications/12/identity-ready")) {
+            MockHttpServletRequest personal = new MockHttpServletRequest("POST", path);
+            personal.addHeader("Authorization", "token");
+            assertThat(interceptor.preHandle(personal, new MockHttpServletResponse(), new Object())).as(path).isTrue();
+        }
+    }
+
+    @Test
+    void publicInvitationPreviewAndJoinDoNotGrantCompanyContextOrMediaGeneration() throws Exception {
+        when(sessionService.resolveUserId("token")).thenReturn(7L);
+        when(memberMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+        for (String path : List.of("/api/companies/invitations/OPEN123", "/api/me/member-applications")) {
+            MockHttpServletRequest request = new MockHttpServletRequest("GET", path);
+            request.addHeader("Authorization", "token");
+            assertThat(interceptor.preHandle(request, new MockHttpServletResponse(), new Object())).isTrue();
+            assertThat(AuthContext.companyId()).isNull();
+        }
+        MockHttpServletRequest apply = new MockHttpServletRequest("POST", "/api/companies/join");
+        apply.addHeader("Authorization", "token");
+        assertThat(interceptor.preHandle(apply, new MockHttpServletResponse(), new Object())).isTrue();
+        assertThat(AuthContext.companyId()).isNull();
+        for (String path : List.of("/api/companies/invitations/OPEN123/qrcode", "/api/companies/invitations/OPEN123/share-link")) {
+            MockHttpServletRequest media = new MockHttpServletRequest(path.endsWith("qrcode") ? "GET" : "POST", path);
+            media.addHeader("Authorization", "token");
+            assertThat(interceptor.preHandle(media, new MockHttpServletResponse(), new Object())).isFalse();
+        }
+    }
+
+    @Test
+    void verifiedActiveMemberCanUseBusinessUntilIdentityIsRevoked() throws Exception {
+        when(sessionService.resolveUserId("token")).thenReturn(7L);
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        for (String path : List.of("/api/contracts", "/internal/identity/resolve")) {
+            MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
+            request.addHeader("Authorization", "token");
+            request.addHeader("X-Company-Id", "3");
+            assertThat(interceptor.preHandle(request, new MockHttpServletResponse(), new Object())).isTrue();
+            when(identity.isVerified(7L)).thenReturn(false);
+            assertThat(interceptor.preHandle(request, new MockHttpServletResponse(), new Object())).isFalse();
+            assertThat(AuthContext.isLoggedIn()).isFalse();
+            when(identity.isVerified(7L)).thenReturn(true);
+        }
     }
 }

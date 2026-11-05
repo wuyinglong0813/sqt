@@ -191,6 +191,9 @@ class TradeServiceTest {
         var roleMapper = mock(com.tradepass.module.identity.dal.mysql.permission.RoleDefMapper.class);
         var acl = new AccessControlServiceImpl(memberMapper, relationMapper, roleMapper,
                 new RolePermissionServiceImpl(), new com.fasterxml.jackson.databind.ObjectMapper());
+        var personalIdentity = mock(com.tradepass.module.identity.service.permission.PersonalIdentityAccess.class);
+        when(personalIdentity.isVerified(org.mockito.ArgumentMatchers.anyLong())).thenReturn(true);
+        acl.setPersonalIdentityAccess(personalIdentity);
         service = new LegacyMixedTradeService(orderMapper, relationMapper, categoryMapper, templateMapper,
                 contractMapper, companyMapper, new AccessControlOperationsImpl(acl), acl,
                 auditLogService, rankingCache, contractArchiveService);

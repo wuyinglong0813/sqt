@@ -1,6 +1,6 @@
 # Reviewed migration inputs
 
-The split tool accepts only a successful flat source at **V51**. Upgrade older sources through the normal Flyway migrations first, including the approval processor history backfill and verified-phone targeted member invitations. Future flat versions remain rejected until their schema and data migrations are reviewed.
+The split tool accepts only a successful flat source at **V52**. Upgrade older sources through the normal Flyway migrations first, including the approval processor history backfill, verified-phone targeted member invitations, and open invitations with application identity gates. Future flat versions remain rejected until their schema and data migrations are reviewed.
 
 Reviewed additions map as follows:
 
@@ -14,6 +14,7 @@ Reviewed additions map as follows:
 | V49 unsigned signing cancellation recovery | contract V8 / business V11 |
 | V50 approval processor history | trade V5 / business V12 |
 | V51 targeted member invites and verified phone marker | identity V6 |
+| V52 explicit open invitations and pending application provenance | identity V7 |
 
 The merge tool accepts trade V3/V4/V5, contract V4/V5/V7/V8, settlement V1/V2. Each accepted owned history must have the expected migration count and no failures. Older reviewed contract inputs must lack the new cancellation-intent table; the target initializes that table empty. Contract V8 must contain it, and all of its rows are copied and verified. Other versions, including contract V6, require a separate review.
 
@@ -25,6 +26,6 @@ The table inventory, empty-target requirement, paused-writer gate, read-only sou
 
 The business V7 migration runs while initializing the empty target, before copying source rows. Merging an old owned source therefore does **not** retroactively cancel copied legacy pending `RESUME` requests or finish copied approved `VOID` requests. Operators must separately review these historical records before a real cutover. This compatibility change does not alter that data-handling behavior.
 
-The isolated core smoke path first migrates its flat fixture through V51, including V44, then splits and merges it. Its historical void and approval data has already passed those flat migrations. No production migration is performed by this test or this version-guard change.
+The isolated core smoke path first migrates its flat fixture through V52, including V44, then splits and merges it. Its historical void and approval data has already passed those flat migrations. No production migration is performed by this test or this version-guard change.
 
 `ReviewedMigrationVersionsTest` verifies exact supported versions, rejection of older/future versions and failed or incomplete owned histories. The real split/merge copy and database-isolation checks remain in `IndependentServicesIT`.

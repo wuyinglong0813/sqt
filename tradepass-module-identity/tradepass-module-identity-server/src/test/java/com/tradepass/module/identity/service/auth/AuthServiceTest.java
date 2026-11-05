@@ -8,6 +8,7 @@ import com.tradepass.module.identity.api.permission.AccessControlOperations.*;
 import com.tradepass.framework.common.pojo.TradePassDtos;
 import com.tradepass.module.identity.service.permission.AccessControlService;
 import com.tradepass.module.identity.service.permission.RolePermissionService;
+import com.tradepass.module.identity.service.permission.PersonalIdentityAccess;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.tradepass.framework.common.core.AuthContext;
@@ -66,6 +67,7 @@ class AuthServiceTest {
     private AccessControlService accessControlService;
     private AuthSessionService sessionService;
     private ExperienceTestAccountService experienceTestAccountService;
+    private PersonalIdentityAccess identity;
 
     @BeforeEach
     void setUp() {
@@ -81,6 +83,8 @@ class AuthServiceTest {
         accessControlService = mock(AccessControlService.class);
         sessionService = mock(AuthSessionService.class);
         experienceTestAccountService = mock(ExperienceTestAccountService.class);
+        identity = mock(PersonalIdentityAccess.class);
+        when(identity.isVerified(anyLong())).thenReturn(true);
         when(experienceTestAccountService.provisionIfConfigured(any(SysUserDO.class), any())).thenReturn(null);
         when(memberMapper.selectUserCompanies(anyLong())).thenReturn(List.of());
         when(accessControlService.effectiveRole(anyLong(), anyLong()))
@@ -476,10 +480,57 @@ class AuthServiceTest {
         assertThat(result.user().currentRole()).isEqualTo("GUEST");
     }
 
+    @Test
+    void unverifiedActiveAccountReceivesOnlyItsPersonalProfileWithoutCompanyDataOrRoles() {
+        AuthContext.set(7L, 3L);
+        when(identity.isVerified(7L)).thenReturn(false);
+        SysUserDO account = phoneBindingUser(); account.setPhone("13800000000");
+        account.setPhoneVerifiedAt(java.time.LocalDateTime.now());
+        when(userMapper.selectById(7L)).thenReturn(account);
+        MePayload me = service(false).me();
+        assertThat(me.user().phoneVerified()).isTrue();
+        assertThat(me.user().currentRole()).isEqualTo("GUEST");
+        assertThat(me.user().currentCompanyId()).isNull();
+        assertThat(me.companies()).isEmpty();
+        assertThat(me.member()).isNull();
+        assertThat(me.company().id()).isEmpty();
+        assertThat(me.company().bankAccount()).isNull();
+        verify(companyMapper, never()).selectById(anyLong());
+        verify(memberMapper, never()).selectMemberInfo(anyLong(), anyLong());
+    }
+
+    @Test
+    void realNameVerifiedApplicantsDoNotReceiveStoredRoleOrCompanyProfileBeforeApproval() {
+        AuthContext.set(7L, 3L);
+        when(userMapper.selectById(7L)).thenReturn(phoneBindingUser());
+        for (String status : List.of("PENDING_IDENTITY", "PENDING")) {
+            when(memberMapper.selectMemberInfo(7L, 3L)).thenReturn(memberRow(7L, "ADMIN", status));
+            MePayload me = service(false).me();
+            assertThat(me.user().currentCompanyId()).as(status).isNull();
+            assertThat(me.user().currentRole()).as(status).isEqualTo("GUEST");
+            assertThat(me.member().roleCode()).as(status).isEqualTo("GUEST");
+            assertThat(me.member().permissions()).as(status).isEmpty();
+            assertThat(me.company().id()).as(status).isEmpty();
+            assertThat(me.company().bankAccount()).as(status).isNull();
+        }
+    }
+
+    @Test
+    void unverifiedAccountCannotSelectAnActiveCompanyEvenWithAnOldMembership() {
+        AuthContext.set(7L, null);
+        when(identity.isVerified(7L)).thenReturn(false);
+        when(memberMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        assertThatThrownBy(() -> service(false).switchCompany(new SwitchCompanyReqVO("3")))
+                .hasMessageContaining("实名认证");
+        verify(companyMapper, never()).selectById(anyLong());
+    }
+
     private AuthService service(boolean devEnabled) {
-        return new AuthServiceImpl(userMapper, companyMapper, memberMapper, permissionMapper, contractMapper,
+        AuthServiceImpl service = new AuthServiceImpl(userMapper, companyMapper, memberMapper, permissionMapper, contractMapper,
                 businessDocumentMapper, wechatService, new RolePermissionServiceImpl(), accessControlService, sessionService,
                 experienceTestAccountService, devEnabled);
+        service.setPersonalIdentityAccess(identity);
+        return service;
     }
 
     private Map<String, Object> memberRow(long userId, String role, String status) {

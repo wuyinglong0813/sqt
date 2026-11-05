@@ -37,6 +37,12 @@ public class AccessControlServiceImpl implements AccessControlService {
     private final RolePermissionService rolePermissionService;
     private final ObjectMapper objectMapper;
     private CompanyOnboardingAttemptService onboardingAttempts;
+    private PersonalIdentityAccess personalIdentity;
+
+    @Autowired
+    public void setPersonalIdentityAccess(PersonalIdentityAccess personalIdentity) {
+        this.personalIdentity = personalIdentity;
+    }
 
     @Autowired
     public void setOnboardingAttemptService(CompanyOnboardingAttemptService onboardingAttempts) {
@@ -56,7 +62,7 @@ public class AccessControlServiceImpl implements AccessControlService {
     }
 
     public boolean isActiveMember(long companyId, long userId) {
-        return companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
+        return verified(userId) && companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, companyId)
                 .eq(CompanyMemberDO::getUserId, userId)
                 .eq(CompanyMemberDO::getStatus, "ACTIVE")) > 0;
@@ -65,6 +71,9 @@ public class AccessControlServiceImpl implements AccessControlService {
     public Long resolveCompanyId(String companyId) {
         long contextCompanyId = AuthContext.requireCompanyId();
         if (companyId == null || companyId.isBlank()) {
+            if (!isActiveMember(contextCompanyId, AuthContext.userId())) {
+                throw new BusinessException("你不是该企业的有效成员或尚未完成实名认证");
+            }
             return contextCompanyId;
         }
         try {
@@ -83,6 +92,7 @@ public class AccessControlServiceImpl implements AccessControlService {
     }
 
     public void requireLegal(long companyId) {
+        requireVerifiedIdentity();
         boolean allowed = companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, companyId)
                 .eq(CompanyMemberDO::getUserId, AuthContext.userId())
@@ -94,6 +104,7 @@ public class AccessControlServiceImpl implements AccessControlService {
     }
 
     public void requireMemberOrClaim(long companyId) {
+        requireVerifiedIdentity();
         if (managedOnboarding(companyId) && !isActiveMember(companyId, AuthContext.userId())
                 && !onboardingAttempts.hasPendingAttempt(companyId, AuthContext.userId())) {
             throw new BusinessException("本人的企业入驻申请已失效，请重新提交申请");
@@ -101,7 +112,9 @@ public class AccessControlServiceImpl implements AccessControlService {
         boolean allowed = companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, companyId)
                 .eq(CompanyMemberDO::getUserId, AuthContext.userId())
-                .in(CompanyMemberDO::getStatus, List.of("ACTIVE", "PENDING"))) > 0;
+                .and(q -> q.eq(CompanyMemberDO::getStatus, "ACTIVE")
+                        .or(candidate -> candidate.eq(CompanyMemberDO::getStatus, "PENDING")
+                                .eq(CompanyMemberDO::getRoleCode, "LEGAL_CANDIDATE")))) > 0;
         if (!allowed) {
             throw new BusinessException("无权访问该企业");
         }
@@ -121,6 +134,7 @@ public class AccessControlServiceImpl implements AccessControlService {
                 throw new BusinessException("无权访问企业敏感资料");
             }
         }
+        requireVerifiedIdentity();
         boolean sensitiveOwner = companyMemberMapper.selectCount(new LambdaQueryWrapper<CompanyMemberDO>()
                 .eq(CompanyMemberDO::getCompanyId, targetCompanyId)
                 .eq(CompanyMemberDO::getUserId, userId)
@@ -146,6 +160,7 @@ public class AccessControlServiceImpl implements AccessControlService {
     }
 
     public void requireLegalOrClaim(long companyId) {
+        requireVerifiedIdentity();
         if (managedOnboarding(companyId) && !isActiveMember(companyId, AuthContext.userId())
                 && !onboardingAttempts.hasPendingAttempt(companyId, AuthContext.userId())) {
             throw new BusinessException("本人的企业入驻申请已失效，请重新提交申请");
@@ -197,9 +212,9 @@ public class AccessControlServiceImpl implements AccessControlService {
                 .eq(CompanyMemberDO::getUserId, userId)
                 .eq(CompanyMemberDO::getStatus, "ACTIVE")
                 .last("LIMIT 1"));
-        if (member == null) {
-            RolePermissionService.RoleDef guest = rolePermissionService.role("GUEST");
-            return new EffectiveRole("GUEST", guest.text(), guest.permissions());
+        if (member == null || !"ACTIVE".equals(member.getStatus()) || !verified(userId)) {
+            // A configurable role must never grant permissions to an applicant.
+            return new EffectiveRole("GUEST", "访客", List.of());
         }
 
         Set<String> effective = new HashSet<>();
@@ -222,6 +237,16 @@ public class AccessControlServiceImpl implements AccessControlService {
         Collections.sort(permissions);
         String name = String.join("、", assignedRoles.stream().map(MemberRole::name).toList());
         return new EffectiveRole(member.getRoleCode(), name, List.copyOf(permissions), List.copyOf(assignedRoles));
+    }
+
+    private boolean verified(long userId) {
+        return personalIdentity != null && personalIdentity.isVerified(userId);
+    }
+
+    private void requireVerifiedIdentity() {
+        if (!verified(AuthContext.userId())) {
+            throw new BusinessException(46103, "请先完成个人实名认证，再访问企业业务");
+        }
     }
 
     private List<String> parsePermissions(String json) {

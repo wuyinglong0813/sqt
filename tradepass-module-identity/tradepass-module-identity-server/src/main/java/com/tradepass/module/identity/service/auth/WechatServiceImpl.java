@@ -36,6 +36,9 @@ public class WechatServiceImpl implements WechatService {
     private final Duration localCacheTtl;
     private volatile String cachedAccessToken;
     private volatile Instant accessTokenExpiresAt = Instant.EPOCH;
+    @Value("${wechat.invite-env-version:release}")
+    private String invitationEnvVersion = "release";
+    private static final String INVITATION_PAGE = "pages/invitation/invitation";
 
     @Autowired
     public WechatServiceImpl(@Value("${wechat.app-id}") String wechatAppId,
@@ -145,6 +148,92 @@ public class WechatServiceImpl implements WechatService {
         } catch (Exception e) {
             throw new BusinessException("微信手机号服务暂时不可用");
         }
+    }
+
+    @Override
+    public byte[] createInvitationCode(String code) {
+        requireInvitationCode(code);
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(wechatApi("/wxa/getwxacodeunlimit"))
+                    .timeout(REQUEST_TIMEOUT).header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(Map.of(
+                            "scene", code, "page", INVITATION_PAGE, "width", 430,
+                            "env_version", invitationVersion(), "check_path", "release".equals(invitationVersion())))))
+                    .build();
+            HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            byte[] body = response.body();
+            if (response.statusCode() != 200 || body == null || body.length > 2 * 1024 * 1024) {
+                throw new BusinessException("微信小程序码生成失败，请稍后重试");
+            }
+            if (!isInvitationImage(body)) {
+                JsonNode error = mapper.readTree(body);
+                throw new BusinessException("微信小程序码生成失败：" + error.path("errmsg").asText("返回内容无效"));
+            }
+            return body;
+        } catch (BusinessException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException("微信小程序码生成已中断，请重试");
+        } catch (Exception e) {
+            throw new BusinessException("微信小程序码服务暂不可用，请稍后重试");
+        }
+    }
+
+    @Override
+    public String createInvitationLink(String code, long expiresAt) {
+        requireInvitationCode(code);
+        if (expiresAt <= Instant.now().getEpochSecond()) throw new BusinessException("邀请已过期，请重新生成");
+        try {
+            JsonNode response = sendJson(HttpRequest.newBuilder()
+                    .uri(wechatApi("/wxa/generate_urllink"))
+                    .timeout(REQUEST_TIMEOUT).header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(Map.of(
+                            "path", INVITATION_PAGE, "query", "inviteCode=" + code + "&type=member",
+                            "env_version", invitationVersion(), "is_expire", true,
+                            "expire_type", 0, "expire_time", expiresAt))))
+                    .build());
+            String link = response.path("url_link").asText("");
+            if (response.path("errcode").asInt(-1) != 0 || link.isBlank()) {
+                throw new BusinessException("微信邀请链接生成失败：" + response.path("errmsg").asText("未返回链接"));
+            }
+            URI uri = URI.create(link);
+            if (!"https".equals(uri.getScheme()) || uri.getHost() == null) {
+                throw new BusinessException("微信邀请链接返回格式无效");
+            }
+            return link;
+        } catch (BusinessException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException("微信邀请链接生成已中断，请重试");
+        } catch (Exception e) {
+            throw new BusinessException("微信邀请链接服务暂不可用，请稍后重试");
+        }
+    }
+
+    private URI wechatApi(String path) {
+        return cloudOpenApiEnabled ? URI.create("http://api.weixin.qq.com" + path)
+                : URI.create("https://api.weixin.qq.com" + path + "?access_token=" + encode(getAccessToken()));
+    }
+
+    private String invitationVersion() {
+        if (!java.util.Set.of("release", "trial", "develop").contains(invitationEnvVersion)) {
+            throw new BusinessException("微信邀请版本配置无效");
+        }
+        return invitationEnvVersion;
+    }
+
+    private void requireInvitationCode(String code) {
+        if (code == null || !code.matches("[A-Z2-9]{8}")) throw new BusinessException("邀请码格式无效");
+    }
+
+    static boolean isInvitationImage(byte[] body) {
+        return body != null && (body.length >= 8 && body[0] == (byte) 0x89 && body[1] == 'P'
+                && body[2] == 'N' && body[3] == 'G' && body[4] == 13 && body[5] == 10
+                && body[6] == 26 && body[7] == 10
+                || body.length >= 3 && body[0] == (byte) 0xff && body[1] == (byte) 0xd8 && body[2] == (byte) 0xff);
     }
 
     private String getAccessToken() {

@@ -46,11 +46,15 @@ public interface CompanyMemberMapper extends BaseMapper<CompanyMemberDO> {
         SELECT m.id, m.user_id AS userId, m.role_code AS roleCode,
                m.custom_permissions AS customPermissions, m.status, u.nickname, u.phone,
                i.verified_name AS verifiedName, i.local_status AS identityStatus,
-               q.status AS signingStatus
+               q.status AS signingStatus, m.invited_by AS invitedBy,
+               COALESCE(inviter_identity.verified_name, inviter.nickname) AS inviterName
         FROM company_member m
         JOIN sys_user u ON m.user_id = u.id
         LEFT JOIN fadada_user_identity i ON i.user_id = u.id AND i.local_status = 'VERIFIED'
         LEFT JOIN fadada_signing_member_sync q ON q.company_id = m.company_id AND q.user_id = m.user_id
+        LEFT JOIN sys_user inviter ON inviter.id = m.invited_by
+        LEFT JOIN fadada_user_identity inviter_identity ON inviter_identity.user_id = m.invited_by
+             AND inviter_identity.local_status = 'VERIFIED'
         WHERE m.company_id = #{companyId}
         ORDER BY m.status, m.id
         """)
@@ -60,13 +64,18 @@ public interface CompanyMemberMapper extends BaseMapper<CompanyMemberDO> {
         SELECT m.id, m.user_id AS userId, m.role_code AS roleCode,
                m.custom_permissions AS customPermissions, m.status, u.nickname, u.phone,
                i.verified_name AS verifiedName, i.local_status AS identityStatus,
-               q.status AS signingStatus
+               q.status AS signingStatus, m.invited_by AS invitedBy,
+               COALESCE(inviter_identity.verified_name, inviter.nickname) AS inviterName
         FROM company_member m
         JOIN sys_user u ON m.user_id = u.id
         LEFT JOIN fadada_user_identity i ON i.user_id = u.id AND i.local_status = 'VERIFIED'
         LEFT JOIN fadada_signing_member_sync q ON q.company_id = m.company_id AND q.user_id = m.user_id
+        LEFT JOIN sys_user inviter ON inviter.id = m.invited_by
+        LEFT JOIN fadada_user_identity inviter_identity ON inviter_identity.user_id = m.invited_by
+             AND inviter_identity.local_status = 'VERIFIED'
         WHERE m.company_id = #{companyId}
-          AND (#{status} IS NULL OR #{status} = '' OR m.status = #{status})
+          AND (#{status} IS NULL OR #{status} = '' OR m.status = #{status}
+               OR (#{status} = 'PENDING' AND m.status = 'PENDING_IDENTITY'))
         ORDER BY m.status, m.id
         LIMIT #{limit} OFFSET #{offset}
         """)

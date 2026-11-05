@@ -8,6 +8,8 @@ import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import com.tradepass.module.identity.service.auth.AuthSessionService;
+import com.tradepass.module.identity.service.permission.PersonalIdentityAccess;
+import org.springframework.beans.factory.annotation.Autowired;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -27,6 +29,12 @@ public class AuthInterceptor implements HandlerInterceptor {
     private final AuthSessionService authSessionService;
     private final CompanyMemberMapper companyMemberMapper;
     private final ObjectMapper mapper = new ObjectMapper();
+    private PersonalIdentityAccess personalIdentity;
+
+    @Autowired
+    public void setPersonalIdentityAccess(PersonalIdentityAccess personalIdentity) {
+        this.personalIdentity = personalIdentity;
+    }
 
     public AuthInterceptor(AuthSessionService authSessionService, CompanyMemberMapper companyMemberMapper) {
         this.authSessionService = authSessionService;
@@ -35,6 +43,7 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+        AuthContext.clear();
         Long userId = authSessionService.resolveUserId(request.getHeader("Authorization"));
         if (userId == null) {
             writeUnauthorized(response);
@@ -51,6 +60,13 @@ public class AuthInterceptor implements HandlerInterceptor {
             }
         } else {
             companyId = resolveDefaultCompanyId(userId);
+        }
+        // An invitation application is not a membership. The internal resolve
+        // endpoint is used by business services and has no personal-route exception.
+        if (!isPersonalOrOnboardingRequest(request)
+                && (companyId == null || personalIdentity == null || !personalIdentity.isVerified(userId))) {
+            writeForbidden(response);
+            return false;
         }
         AuthContext.set(userId, companyId);
         return true;
@@ -92,6 +108,37 @@ public class AuthInterceptor implements HandlerInterceptor {
         response.setContentType("application/json;charset=UTF-8");
         ApiResponse<Void> body = new ApiResponse<>(401, "未登录或登录已失效", null);
         response.getWriter().write(mapper.writeValueAsString(body));
+    }
+
+    private boolean isPersonalOrOnboardingRequest(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        String method = request.getMethod();
+        if ("GET".equals(method)) {
+            return path.equals("/api/me") || path.equals("/api/me/membership-notices")
+                    || path.equals("/api/me/member-applications")
+                    || path.equals("/api/me/company-onboarding")
+                    || path.equals("/api/me/company-certification-applications")
+                    || path.equals("/api/fadada/users/me/identity")
+                    || path.equals("/api/companies/search") || path.equals("/api/ca/config")
+                    || path.matches("/api/companies/invitations/[^/]+")
+                    || path.matches("/api/companies/[0-9]+")
+                    || path.matches("/api/fadada/companies/[0-9]+/identity");
+        }
+        if ("POST".equals(method)) {
+            return path.equals("/api/auth/bind-phone") || path.equals("/api/auth/logout")
+                    || path.equals("/api/me/membership-notices/acknowledge")
+                    || path.equals("/api/me/switch-company") || path.equals("/api/me/company")
+                    || path.equals("/api/companies") || path.equals("/api/companies/join")
+                    || path.matches("/api/me/member-applications/[0-9]+/identity-ready")
+                    || path.equals("/api/fadada/users/me/identity/sync")
+                    || path.equals("/api/fadada/users/me/auth-url")
+                    || path.matches("/api/companies/[0-9]+/certifications")
+                    || path.matches("/api/fadada/companies/[0-9]+/(identity/sync|auth-url|legal-representative/(auth-url|sync))")
+                    || path.equals("/api/verifications/real-name") || path.equals("/api/verifications/face")
+                    || path.equals("/api/seals");
+        }
+        return "DELETE".equals(method) && (path.matches("/api/me/company-onboarding/[0-9]+")
+                || path.matches("/api/me/member-applications/[0-9]+"));
     }
 
     private void writeForbidden(HttpServletResponse response) throws Exception {

@@ -63,9 +63,9 @@ class MysqlTargetedMemberInviteTest {
             jdbc.update("INSERT INTO company(id,name,credit_code,legal_person_name,created_by) VALUES(3,'定向邀请测试企业','TARGET-INVITE','测试法人',7)");
             jdbc.update("INSERT INTO company_invite(id,company_id,code,type,used,expires_at) VALUES(11,3,'legacy-member','member',0,DATE_ADD(NOW(),INTERVAL 1 DAY))");
             var flyway = Flyway.configure().dataSource(source).locations(location).load();
-            assertThat(flyway.migrate().migrationsExecuted).isOne();
+            assertThat(flyway.migrate().migrationsExecuted).isEqualTo(2);
             flyway.validate();
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(layout.equals("flat") ? "51" : "6");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(layout.equals("flat") ? "52" : "7");
             assertThat(jdbc.queryForObject("SELECT phone_verified_at FROM sys_user WHERE id=10", LocalDateTime.class)).isNull();
             assertThat(jdbc.queryForObject("SELECT target_phone_hash FROM company_invite WHERE id=11", String.class)).isNull();
             assertThat(flyway.migrate().migrationsExecuted).isZero();
