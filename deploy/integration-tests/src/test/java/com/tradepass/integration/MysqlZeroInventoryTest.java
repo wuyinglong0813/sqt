@@ -107,6 +107,7 @@ class MysqlZeroInventoryTest {
             tx.executeWithoutResult(status -> service.receive(31L, "INBOUND", 10L));
             long buyerProductId = jdbc.queryForObject("SELECT id FROM inventory_product WHERE company_id=4", Long.class);
             long buyerBalanceId = jdbc.queryForObject("SELECT id FROM inventory_balance WHERE product_id=?", Long.class, buyerProductId);
+            assertBalance(service, buyerBalanceId, buyerProductId, "3", "8", "24");
             AuthContext.set(7L, 3L);
             assertBalance(service, balanceId, productId, "0", "0", "0");
 
@@ -120,8 +121,14 @@ class MysqlZeroInventoryTest {
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction WHERE biz_type='SALES_ORDER_OUTBOUND'", Long.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction WHERE biz_type='RETURN_ORDER_OUTBOUND'", Long.class)).isEqualTo(1);
 
+            AuthContext.set(7L, 3L);
+            assertBalance(service, balanceId, productId, "3", "0.333333", "1.00");
+            tx.executeWithoutResult(status -> service.reverseDocumentInventory(32L, 2000L, 7L));
+            assertBalance(service, balanceId, productId, "0", "0", "0");
+
             // Removing a zero balance preserves the SKU and its audit history, and is tenant scoped.
             long movementCount = jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction", Long.class);
+            AuthContext.set(8L, 4L);
             assertThatThrownBy(() -> tx.executeWithoutResult(status -> service.deleteInventoryBalance(balanceId)))
                     .isInstanceOf(BusinessException.class);
             AuthContext.set(7L, 3L);
@@ -157,7 +164,7 @@ class MysqlZeroInventoryTest {
         document.setStatus("ACKNOWLEDGED");
         document.setContent("""
                 {"columns":["品名","型号","规格","单位","数量","单价","金额","备注"],
-                 "rows":[["电缆","YJV","3×25","米","3","0.3333","1.00","期初库存"]]}
+                 "rows":[["电缆","YJV","3×25","米","3","8","24",""]]}
                 """);
         return document;
     }

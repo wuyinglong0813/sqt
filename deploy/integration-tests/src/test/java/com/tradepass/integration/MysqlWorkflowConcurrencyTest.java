@@ -182,9 +182,12 @@ class MysqlWorkflowConcurrencyTest {
     @BeforeEach void fixtures() {
         var access = mock(AccessControlOperations.class);
         var audit = mock(AuditLogService.class);
+        var identity = mock(UserIdentityOperations.class);
+        when(identity.requireCurrentVerifiedName(3L)).thenReturn("供方测试经办人");
+        when(identity.requireCurrentVerifiedName(4L)).thenReturn("需方测试经办人");
         var reconciliation = new ReconciliationAccountOperationsImpl(new ReconciliationAccountServiceImpl(jdbc, entriesMapper, new CounterpartyReaderImpl(mock(CounterpartyRelationMapper.class)), access));
         inventory = new SalesOrderInventoryServiceImpl(jdbc, documents, new com.tradepass.module.contract.api.contract.ContractReaderImpl(contracts), access, audit,
-                new ObjectMapper(), reconciliation, mock(SalesOrderSignatureService.class), mock(UserIdentityOperations.class));
+                new ObjectMapper(), reconciliation, mock(SalesOrderSignatureService.class), identity);
         documentService = new BusinessDocumentServiceImpl(mock(BusinessDocumentTemplateMapper.class), documents,
                 new com.tradepass.module.contract.api.contract.ContractReaderImpl(contracts), mock(CompanyReader.class), access, audit, new ObjectMapper(),
                 inventory, mock(UserIdentityOperations.class));
@@ -416,6 +419,18 @@ class MysqlWorkflowConcurrencyTest {
         assertThatThrownBy(() -> tx.execute(status -> retail.confirm(insufficient, warehouse))).hasMessageContaining("库存不足");
         assertThat(retail.document(insufficient).get("status")).isEqualTo("DRAFT");
         assertThat(jdbc.queryForObject("SELECT quantity FROM inventory_balance WHERE company_id = ? AND warehouse_id = ? AND product_id = ?", BigDecimal.class, cid, warehouse, product)).isEqualByComparingTo("140");
+
+        long returnWarehouse = IDS.incrementAndGet();
+        jdbc.update("INSERT INTO warehouse (id,company_id,name,created_by) VALUES (?,?,'退货仓',7)", returnWarehouse, cid);
+        jdbc.update("INSERT INTO inventory_balance (id,company_id,warehouse_id,product_id,quantity,unit_price,inventory_amount) VALUES (?,?,?,?,-5,0,0)",
+                IDS.incrementAndGet(), cid, returnWarehouse, product);
+        long secondReturn = Long.parseLong(String.valueOf(tx.execute(status -> retail.createDocument(customer,
+                retailRequest("RETURN_ORDER", sale, item, "10", "2.50", retailRequestId()))).get("id")));
+        tx.execute(status -> retail.confirm(secondReturn, returnWarehouse));
+        var replenished = jdbc.queryForMap("SELECT quantity,inventory_amount FROM inventory_balance WHERE warehouse_id = ?", returnWarehouse);
+        assertThat((BigDecimal) replenished.get("quantity")).isEqualByComparingTo("5");
+        assertThat((BigDecimal) replenished.get("inventory_amount")).isEqualByComparingTo("6.25");
+
         var pdf = new com.tradepass.module.trade.service.document.BusinessDocumentPdfServiceImpl(new ObjectMapper(), mock(SalesOrderSignatureService.class));
         assertThat(pdf.generate(retail.pdfDocument(sale))).startsWith("%PDF".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
     }
@@ -460,7 +475,7 @@ class MysqlWorkflowConcurrencyTest {
         String name = "负库存型号-" + documentId;
         long otherModel = IDS.incrementAndGet(), sameModel = IDS.incrementAndGet(), otherWarehouse = IDS.incrementAndGet();
         item(2, "3");
-        jdbc.update("UPDATE business_document_item SET product_name=?,model='YJV' WHERE document_id=?", name, documentId);
+        jdbc.update("UPDATE business_document_item SET product_name=?,model='YJV',unit_price=5,amount=quantity*5 WHERE document_id=?", name, documentId);
         jdbc.update("INSERT INTO inventory_product(id,company_id,product_name,model,specification,base_unit) VALUES (?,3,?,'RVVP','A','件'),(?,3,?,'YJV','A','件')", otherModel, name, sameModel, name);
         jdbc.update("INSERT INTO warehouse(id,company_id,name,created_by) VALUES (?,3,?,7)", otherWarehouse, "不应扣减仓-" + otherWarehouse);
         jdbc.update("INSERT INTO inventory_balance(id,company_id,warehouse_id,product_id,quantity,unit_price,inventory_amount) VALUES (?,3,?,?,100,2,200),(?,3,?,?,50,2,100)",
@@ -474,7 +489,13 @@ class MysqlWorkflowConcurrencyTest {
         assertThat(balance(otherWarehouse)).isEqualByComparingTo("50");
         assertThat(balance(warehouseId)).isEqualByComparingTo("5");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inventory_transaction WHERE warehouse_id=? AND biz_type='SALES_ORDER_OUTBOUND'", Integer.class, outboundWarehouseId)).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT inventory_amount FROM inventory_balance WHERE warehouse_id=? AND product_id=?", BigDecimal.class, outboundWarehouseId, sameModel)).isEqualByComparingTo("-10");
+        assertThat(jdbc.queryForObject("SELECT inventory_amount FROM inventory_balance WHERE warehouse_id=? AND product_id=?", BigDecimal.class, outboundWarehouseId, sameModel)).isEqualByComparingTo("0");
+        assertThat(jdbc.queryForObject("SELECT inventory_amount FROM inventory_balance WHERE warehouse_id=?", BigDecimal.class, warehouseId)).isEqualByComparingTo("25");
+
+        asCompany(3, () -> inventory.manualInbound(outboundWarehouseId, "stock-cost-" + documentId,
+                name, "YJV", "A", "件", new BigDecimal("7"), new BigDecimal("2"), ""));
+        assertThat(jdbc.queryForObject("SELECT quantity FROM inventory_balance WHERE warehouse_id=? AND product_id=?", BigDecimal.class, outboundWarehouseId, sameModel)).isEqualByComparingTo("2");
+        assertThat(jdbc.queryForObject("SELECT inventory_amount FROM inventory_balance WHERE warehouse_id=? AND product_id=?", BigDecimal.class, outboundWarehouseId, sameModel)).isEqualByComparingTo("4");
     }
 
     @Test void buyerAcknowledgingSupplierReturnPostsBothInventorySidesImmediatelyOnce() {

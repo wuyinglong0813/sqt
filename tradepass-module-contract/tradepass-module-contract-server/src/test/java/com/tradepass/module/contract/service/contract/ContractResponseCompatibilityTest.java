@@ -22,6 +22,7 @@ class ContractResponseCompatibilityTest {
         assertThat(snapshot.terms()).isEqualTo("双方约定条款");
         assertThat(snapshot.statusText()).isNull();
         assertThat(snapshot.abolishPending()).isFalse();
+        assertThat(snapshot.partySigningProgress()).isNull();
     }
 
     @Test

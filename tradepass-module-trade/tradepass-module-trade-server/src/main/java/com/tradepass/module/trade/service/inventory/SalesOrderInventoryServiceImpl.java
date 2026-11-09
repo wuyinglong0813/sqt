@@ -289,7 +289,8 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         List<Map<String, Object>> balances = jdbc.query("""
                         SELECT balance.id, warehouse.id AS warehouse_id, warehouse.name AS warehouse_name,
                                product.id AS product_id, product.product_name, product.model, product.specification,
-                               product.base_unit, balance.quantity, balance.unit_price,
+                               product.base_unit, balance.quantity,
+                               CASE WHEN balance.quantity = 0 THEN 0 ELSE balance.unit_price END AS unit_price,
                                balance.inventory_amount, balance.updated_at,
                                COALESCE(latest_remark.remark, '') AS remark
                         FROM inventory_balance balance
@@ -410,19 +411,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                 (id, company_id, request_id, warehouse_id, product_id, quantity, unit_price, amount, remark, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, entryId, companyId, requestId, warehouseId, productId, quantity, price, amount, remark, AuthContext.userId());
-        jdbc.update("""
-                INSERT INTO inventory_balance
-                (id, company_id, warehouse_id, product_id, quantity, unit_price, inventory_amount)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                    unit_price = CASE
-                        WHEN VALUES(quantity) = 0 THEN unit_price
-                        WHEN quantity + VALUES(quantity) = 0 THEN 0
-                        ELSE (inventory_amount + VALUES(inventory_amount)) / (quantity + VALUES(quantity))
-                    END,
-                    inventory_amount = inventory_amount + VALUES(inventory_amount),
-                    quantity = quantity + VALUES(quantity), updated_at = CURRENT_TIMESTAMP
-                """, ApplicationIds.next(), companyId, warehouseId, productId, quantity, price, amount);
+        addInboundBalance(companyId, warehouseId, productId, quantity, price, amount);
         BigDecimal balance = jdbc.queryForObject("""
                 SELECT quantity FROM inventory_balance WHERE company_id = ? AND warehouse_id = ? AND product_id = ?
                 """, BigDecimal.class, companyId, warehouseId, productId);
@@ -648,24 +637,17 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             if (quantity == null || quantity.signum() <= 0) throw new BusinessException("销售单商品数量必须大于 0");
             BigDecimal unitPrice = (BigDecimal) item.get("unitPrice");
             if (unitPrice == null || unitPrice.signum() < 0) throw new BusinessException("销售单商品单价不能小于 0");
-            BigDecimal inboundAmount = quantity.multiply(unitPrice).setScale(2, RoundingMode.HALF_UP);
             Long productId = findOrCreateProduct(inboundCompanyId,
                     String.valueOf(item.get("productName")), safeSpec(item.get("model")), safeSpec(item.get("specification")),
                     String.valueOf(item.get("baseUnit")));
-            jdbc.update("""
-                    INSERT INTO inventory_balance
-                    (id, company_id, warehouse_id, product_id, quantity, unit_price, inventory_amount)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON DUPLICATE KEY UPDATE
-                        unit_price = CASE
-                            WHEN quantity + VALUES(quantity) = 0 THEN 0
-                            ELSE (inventory_amount + VALUES(inventory_amount))
-                                / (quantity + VALUES(quantity))
-                        END,
-                        inventory_amount = inventory_amount + VALUES(inventory_amount),
-                        quantity = quantity + VALUES(quantity),
-                        updated_at = CURRENT_TIMESTAMP
-                    """, ApplicationIds.next(), inboundCompanyId, inboundWarehouseId, productId, quantity, unitPrice, inboundAmount);
+            if (returnOrder) {
+                // A refund price does not describe what the supplier paid for the goods.
+                InventoryMovement movement = new InventoryMovement(
+                        inboundCompanyId, inboundWarehouseId, productId, quantity);
+                unitPrice = inventoryUnitCost(movement, lockOrCreateBalance(movement));
+            }
+            BigDecimal inboundAmount = quantity.multiply(unitPrice).setScale(2, RoundingMode.HALF_UP);
+            addInboundBalance(inboundCompanyId, inboundWarehouseId, productId, quantity, unitPrice, inboundAmount);
             BigDecimal balance = jdbc.queryForObject("""
                     SELECT quantity FROM inventory_balance
                     WHERE company_id = ? AND warehouse_id = ? AND product_id = ?
@@ -698,6 +680,30 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         recordDocumentResult(document, companyId, "INBOUNDED",
                 documentLabel + "已确认并入库", "对方已确认并入库" + documentLabel + " " + document.getDocumentNo(), null);
         return documentDetail(documentId);
+    }
+
+    private void addInboundBalance(long companyId, long warehouseId, long productId,
+                                   BigDecimal quantity, BigDecimal unitCost, BigDecimal amount) {
+        // A receipt covers any deficit first. Only the remaining units contribute
+        // to on-hand value, at the cost of this receipt.
+        jdbc.update("""
+                INSERT INTO inventory_balance
+                (id, company_id, warehouse_id, product_id, quantity, unit_price, inventory_amount)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    unit_price = CASE
+                        WHEN VALUES(quantity) = 0 THEN unit_price
+                        WHEN quantity <= 0 THEN VALUES(unit_price)
+                        ELSE (inventory_amount + VALUES(inventory_amount)) / (quantity + VALUES(quantity))
+                    END,
+                    inventory_amount = CASE
+                        WHEN VALUES(quantity) = 0 THEN inventory_amount
+                        WHEN quantity <= 0 THEN ROUND((quantity + VALUES(quantity)) * unit_price, 2)
+                        ELSE inventory_amount + VALUES(inventory_amount)
+                    END,
+                    quantity = quantity + VALUES(quantity),
+                    updated_at = CURRENT_TIMESTAMP
+                """, ApplicationIds.next(), companyId, warehouseId, productId, quantity, unitCost, amount);
     }
 
     private void recordDocumentResult(BusinessDocumentDO document, long sourceCompanyId,
@@ -817,8 +823,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         if (delta.signum() < 0 && nextQuantity.signum() < 0) {
             throw new BusinessException("库存不足，不能完成作废冲销");
         }
-        BigDecimal unitCost = balance.quantity().signum() == 0
-                ? balance.unitPrice() : balance.amount().divide(balance.quantity(), 6, RoundingMode.HALF_UP);
+        BigDecimal unitCost = inventoryUnitCost(movement, balance);
         BigDecimal nextAmount = balance.amount().add(
                 unitCost.multiply(delta).setScale(2, RoundingMode.HALF_UP));
         if (nextQuantity.signum() == 0) nextAmount = BigDecimal.ZERO.setScale(2);
@@ -826,8 +831,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                 UPDATE inventory_balance
                 SET quantity = ?, inventory_amount = ?, unit_price = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE company_id = ? AND warehouse_id = ? AND product_id = ?
-                """, nextQuantity, nextAmount,
-                nextQuantity.signum() == 0 ? BigDecimal.ZERO : unitCost,
+                """, nextQuantity, nextAmount, unitCost,
                 movement.companyId(), movement.warehouseId(), movement.productId());
         jdbc.update("""
                 INSERT INTO inventory_transaction
@@ -840,7 +844,8 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
 
     private BalanceSnapshot lockBalance(InventoryMovement movement) {
         List<BalanceSnapshot> rows = jdbc.query("""
-                        SELECT quantity, unit_price, inventory_amount
+                        SELECT quantity, unit_price,
+                               CASE WHEN quantity = 0 THEN 0 ELSE inventory_amount END AS inventory_amount
                         FROM inventory_balance
                         WHERE company_id = ? AND warehouse_id = ? AND product_id = ?
                         FOR UPDATE
@@ -1059,8 +1064,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                 """, transferId, document.getId(), buyerCompanyId, document.getOutboundWarehouseId(),
                 supplierCompanyId, document.getInboundWarehouseId(), createdBy);
         for (OutboundStock stock : stocksByProduct.values()) {
-            BigDecimal averageCost = stock.balanceQuantity().signum() == 0
-                    ? BigDecimal.ZERO : stock.inventoryAmount().divide(
+            BigDecimal averageCost = stock.inventoryAmount().divide(
                     stock.balanceQuantity(), 6, RoundingMode.HALF_UP);
             BigDecimal amountDelta = averageCost.multiply(stock.quantity()).setScale(2, RoundingMode.HALF_UP);
             BigDecimal nextQuantity = stock.balanceQuantity().subtract(stock.quantity());
@@ -1070,8 +1074,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                     UPDATE inventory_balance
                     SET quantity = ?, inventory_amount = ?, unit_price = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE company_id = ? AND warehouse_id = ? AND product_id = ?
-                    """, nextQuantity, nextAmount,
-                    nextQuantity.signum() == 0 ? BigDecimal.ZERO : averageCost,
+                    """, nextQuantity, nextAmount, averageCost,
                     buyerCompanyId, document.getOutboundWarehouseId(), stock.productId());
             jdbc.update("""
                     INSERT INTO inventory_transaction
@@ -1101,44 +1104,28 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             document.setOutboundWarehouseId(sourceWarehouse);
         }
         requireWarehouse(supplierCompanyId, sourceWarehouse, "请选择销售出库仓库");
-        Map<Long, SalesOutbound> quantities = new java.util.TreeMap<>();
+        Map<Long, BigDecimal> quantities = new java.util.TreeMap<>();
         for (Map<String, Object> item : items) {
             BigDecimal quantity = (BigDecimal) item.get("quantity");
-            BigDecimal price = (BigDecimal) item.get("unitPrice");
             if (quantity == null || quantity.signum() <= 0) throw new BusinessException("销售单商品数量必须大于 0");
-            if (price == null || price.signum() < 0) throw new BusinessException("销售单商品单价不能小于 0");
             Long productId = findOrCreateProduct(supplierCompanyId, String.valueOf(item.get("productName")),
                     safeSpec(item.get("model")), safeSpec(item.get("specification")), String.valueOf(item.get("baseUnit")));
-            SalesOutbound entry = new SalesOutbound(quantity, quantity.multiply(price));
-            quantities.merge(productId, entry, (first, next) -> new SalesOutbound(
-                    first.quantity().add(next.quantity()), first.amount().add(next.amount())));
+            quantities.merge(productId, quantity, BigDecimal::add);
         }
-        for (Map.Entry<Long, SalesOutbound> entry : quantities.entrySet()) {
+        for (Map.Entry<Long, BigDecimal> entry : quantities.entrySet()) {
             Long productId = entry.getKey();
-            SalesOutbound outbound = entry.getValue();
-            // Create a zero balance before locking so a new product can be sold into
-            // negative stock, while concurrent sales still serialize on the same row.
-            jdbc.update("""
-                    INSERT INTO inventory_balance
-                    (id, company_id, warehouse_id, product_id, quantity, unit_price, inventory_amount)
-                    VALUES (?, ?, ?, ?, 0, 0, 0)
-                    ON DUPLICATE KEY UPDATE id = id
-                    """, ApplicationIds.next(), supplierCompanyId, sourceWarehouse, productId);
-            InventoryMovement movement = new InventoryMovement(supplierCompanyId, sourceWarehouse, productId,
-                    outbound.quantity());
-            BalanceSnapshot balance = lockBalance(movement);
-            BigDecimal unitCost = balance.quantity().signum() == 0
-                    ? (balance.unitPrice().signum() > 0 ? balance.unitPrice()
-                        : outbound.amount().divide(outbound.quantity(), 6, RoundingMode.HALF_UP))
-                    : balance.amount().divide(balance.quantity(), 6, RoundingMode.HALF_UP);
-            BigDecimal nextQuantity = balance.quantity().subtract(outbound.quantity());
+            BigDecimal quantity = entry.getValue();
+            InventoryMovement movement = new InventoryMovement(supplierCompanyId, sourceWarehouse, productId, quantity);
+            BalanceSnapshot balance = lockOrCreateBalance(movement);
+            BigDecimal unitCost = inventoryUnitCost(movement, balance);
+            BigDecimal nextQuantity = balance.quantity().subtract(quantity);
             BigDecimal nextAmount = nextQuantity.signum() == 0 ? BigDecimal.ZERO.setScale(2)
-                    : balance.amount().subtract(unitCost.multiply(outbound.quantity()).setScale(2, RoundingMode.HALF_UP));
+                    : balance.amount().subtract(unitCost.multiply(quantity).setScale(2, RoundingMode.HALF_UP));
             jdbc.update("""
                     UPDATE inventory_balance
                     SET quantity = ?, inventory_amount = ?, unit_price = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE company_id = ? AND warehouse_id = ? AND product_id = ?
-                    """, nextQuantity, nextAmount, nextQuantity.signum() == 0 ? BigDecimal.ZERO : unitCost,
+                    """, nextQuantity, nextAmount, unitCost,
                     supplierCompanyId, sourceWarehouse, productId);
             jdbc.update("""
                     INSERT INTO inventory_transaction
@@ -1146,8 +1133,47 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                      quantity_delta, balance_after, created_by)
                     VALUES (?, ?, ?, ?, 'SALES_ORDER_OUTBOUND', ?, ?, ?, ?)
                     """, ApplicationIds.next(), supplierCompanyId, sourceWarehouse, productId, inboundId,
-                    outbound.quantity().negate(), nextQuantity, userId);
+                    quantity.negate(), nextQuantity, userId);
         }
+    }
+
+    private BalanceSnapshot lockOrCreateBalance(InventoryMovement movement) {
+        jdbc.update("""
+                INSERT INTO inventory_balance
+                (id, company_id, warehouse_id, product_id, quantity, unit_price, inventory_amount)
+                VALUES (?, ?, ?, ?, 0, 0, 0)
+                ON DUPLICATE KEY UPDATE id = id
+                """, ApplicationIds.next(), movement.companyId(), movement.warehouseId(), movement.productId());
+        return lockBalance(movement);
+    }
+
+    private BigDecimal inventoryUnitCost(InventoryMovement movement, BalanceSnapshot balance) {
+        if (balance.quantity().signum() != 0) {
+            return balance.amount().divide(balance.quantity(), 6, RoundingMode.HALF_UP);
+        }
+        if (balance.unitPrice().signum() != 0) return balance.unitPrice();
+
+        // Older balances lost their cost when stock reached zero. Use the most
+        // recent purchase receipt for that warehouse and SKU if one exists.
+        BigDecimal lastPurchaseCost = jdbc.query("""
+                SELECT unit_price FROM (
+                    SELECT unit_price, created_at, id
+                    FROM inventory_manual_entry
+                    WHERE company_id = ? AND warehouse_id = ? AND product_id = ? AND quantity > 0
+                    UNION ALL
+                    SELECT item.unit_price, inbound.created_at, item.id
+                    FROM inventory_inbound inbound
+                    JOIN inventory_inbound_item item ON item.inbound_id = inbound.id
+                    JOIN business_document document ON document.id = inbound.source_document_id
+                    WHERE inbound.company_id = ? AND inbound.warehouse_id = ? AND item.product_id = ?
+                      AND inbound.status = 'COMPLETED' AND document.document_type = 'SALES_ORDER'
+                ) purchases
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """, rs -> rs.next() ? rs.getBigDecimal("unit_price") : null,
+                movement.companyId(), movement.warehouseId(), movement.productId(),
+                movement.companyId(), movement.warehouseId(), movement.productId());
+        return lastPurchaseCost == null ? BigDecimal.ZERO : lastPurchaseCost;
     }
 
     private String safeSpec(Object value) {
@@ -1263,9 +1289,6 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
     private record OutboundStock(long productId, BigDecimal quantity, BigDecimal balanceQuantity,
                                  BigDecimal unitPrice, BigDecimal inventoryAmount,
                                  String productName) {
-    }
-
-    private record SalesOutbound(BigDecimal quantity, BigDecimal amount) {
     }
 
     private record TransferRecord(long id, long outboundCompanyId, long outboundWarehouseId,

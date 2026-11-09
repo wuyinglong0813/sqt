@@ -327,9 +327,12 @@ public class RetailService {
                 cost = decimal(originalCost.get(0).get("inventory_unit_cost"));
             } else if (current.compareTo(quantity) < 0) throw new BusinessException(name + "库存不足，请先处理库存");
             BigDecimal delta = returning ? quantity : quantity.negate();
-            BigDecimal next = current.add(delta), nextValue = value.add(cost.multiply(delta).setScale(2, RoundingMode.HALF_UP));
+            BigDecimal next = current.add(delta);
+            BigDecimal nextValue = current.signum() <= 0
+                    ? cost.multiply(next).setScale(2, RoundingMode.HALF_UP)
+                    : value.add(cost.multiply(delta).setScale(2, RoundingMode.HALF_UP));
             if (next.signum() == 0) nextValue = BigDecimal.ZERO;
-            BigDecimal nextPrice = next.signum() == 0 ? BigDecimal.ZERO : nextValue.divide(next, 6, RoundingMode.HALF_UP);
+            BigDecimal nextPrice = next.signum() == 0 ? cost : nextValue.divide(next, 6, RoundingMode.HALF_UP);
             jdbc.update("UPDATE inventory_balance SET quantity = ?, unit_price = ?, inventory_amount = ?, updated_at = CURRENT_TIMESTAMP WHERE company_id = ? AND warehouse_id = ? AND product_id = ?", next, nextPrice, nextValue, cid, warehouseId, productId);
             jdbc.update("UPDATE retail_document_item SET inventory_unit_cost = ? WHERE id = ?", cost, item.get("id"));
             jdbc.update("""

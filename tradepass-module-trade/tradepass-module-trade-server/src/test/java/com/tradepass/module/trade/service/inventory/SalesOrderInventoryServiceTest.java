@@ -461,8 +461,11 @@ class SalesOrderInventoryServiceTest {
                 anyLong(), eq(3L), eq(33L), eq(501L), anyLong(),
                 eq(new BigDecimal("-2.0000")), eq(new BigDecimal("-2.0000")), eq(8L));
         verify(jdbc).update(argThat(sql -> sql.contains("UPDATE inventory_balance")),
-                eq(new BigDecimal("-2.0000")), eq(new BigDecimal("-7.00")), eq(new BigDecimal("3.500000")),
+                eq(new BigDecimal("-2.0000")), eq(new BigDecimal("0.00")), eq(BigDecimal.ZERO),
                 eq(3L), eq(33L), eq(501L));
+        verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_inbound_item")),
+                anyLong(), anyLong(), eq(41L), eq(501L), eq(new BigDecimal("2.0000")),
+                eq(new BigDecimal("3.500000")), eq(new BigDecimal("7.00")));
         org.mockito.Mockito.clearInvocations(jdbc);
         service.receive(31L, "INBOUND", 55L);
         verify(jdbc, org.mockito.Mockito.never()).update(anyString(), any(Object[].class));
@@ -657,6 +660,13 @@ class SalesOrderInventoryServiceTest {
                 when(rs.getBigDecimal("inventory_amount")).thenReturn(new BigDecimal("20.00"));
                 return List.of(mapper.mapRow(rs, 0));
             }
+            if (sql.contains("FROM inventory_balance") && sql.contains("FOR UPDATE")) {
+                ResultSet rs = mock(ResultSet.class);
+                when(rs.getBigDecimal("quantity")).thenReturn(new BigDecimal("3.0000"));
+                when(rs.getBigDecimal("unit_price")).thenReturn(new BigDecimal("1.500000"));
+                when(rs.getBigDecimal("inventory_amount")).thenReturn(new BigDecimal("4.50"));
+                return List.of(mapper.mapRow(rs, 0));
+            }
             return List.of();
         }).when(jdbc).query(anyString(), any(RowMapper.class), any(Object[].class));
         when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class)))
@@ -680,6 +690,9 @@ class SalesOrderInventoryServiceTest {
                 eq(new BigDecimal("-2.0000")), eq(new BigDecimal("8.0000")), eq(18L));
         verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_inbound")),
                 eq(80L), eq(3L), eq(55L), eq(31L), anyString(), eq(18L));
+        verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_inbound_item")),
+                anyLong(), eq(80L), eq(41L), eq(90L), eq(new BigDecimal("2.0000")),
+                eq(new BigDecimal("1.500000")), eq(new BigDecimal("3.00")));
         verify(jdbc).update(argThat(sql -> sql.contains("INSERT INTO inventory_transaction")
                         && !sql.contains("'RETURN_ORDER_OUTBOUND'")),
                 anyLong(), eq(3L), eq(55L), eq(90L), eq("RETURN_ORDER_INBOUND"), eq(70L),

@@ -16,6 +16,7 @@ import com.lowagie.text.pdf.PdfPTable;
 import com.lowagie.text.pdf.PdfWriter;
 import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.module.contract.api.contract.dto.ContractRespDTO;
+import com.tradepass.module.contract.api.contract.dto.ContractRespDTO.PartySigningProgress;
 import com.tradepass.module.identity.api.company.dto.CompanyRespDTO;
 import com.tradepass.module.identity.api.company.CompanyReader;
 import com.tradepass.module.identity.api.company.CompanyReader.*;
@@ -52,12 +53,15 @@ public class ContractPdfServiceImpl implements ContractPdfService {
     }
 
     public byte[] generate(ContractRespDTO contract) {
-        return render(contract, null);
+        PartySigningProgress progress = contract.partySigningProgress();
+        boolean showProgress = "PENDING".equals(contract.status()) && progress != null
+                && (Boolean.TRUE.equals(progress.supplierSigned()) || Boolean.TRUE.equals(progress.buyerSigned()));
+        return render(contract, null, showProgress ? progress : null);
     }
 
     public SigningDocument generateForSigning(ContractRespDTO contract) {
         Map<String, com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition> positions = new LinkedHashMap<>();
-        byte[] pdf = render(contract, positions);
+        byte[] pdf = render(contract, positions, null);
         if (positions.size() != 2 || !positions.containsKey("supplier") || !positions.containsKey("buyer")) {
             throw new BusinessException("合同 PDF 签章位置未能确认，请稍后重试");
         }
@@ -65,7 +69,8 @@ public class ContractPdfServiceImpl implements ContractPdfService {
     }
 
     private byte[] render(ContractRespDTO contract,
-            Map<String, com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition> positions) {
+            Map<String, com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition> positions,
+            PartySigningProgress progress) {
         ContractContent content = parseContent(contract);
         CompanyRespDTO initiator = selectCompany(contract.companyId());
         CompanyRespDTO counterparty = selectCompany(contract.counterpartyCompanyId());
@@ -87,11 +92,17 @@ public class ContractPdfServiceImpl implements ContractPdfService {
             document.open();
 
             addTitle(document, safe(content.title(), "购销合同"), titleFont);
+            if (progress != null) {
+                Paragraph note = new Paragraph("签署进度预览（电子签章以归档 PDF 为准）", bodyFont);
+                note.setAlignment(Element.ALIGN_CENTER);
+                note.setSpacingAfter(10);
+                document.add(note);
+            }
             addHeader(document, contract, content, parties, bodyFont);
             addProducts(document, contract, content.table(), headingFont, tableFont, bodyFont);
             addFees(document, contract, content.fees(), headingFont, tableFont, bodyFont);
             addClauses(document, content.clauses(), contract.terms(), headingFont, bodyFont);
-            addSignatureTable(document, parties, signatureTitleFont, tableFont, writer, positions);
+            addSignatureTable(document, parties, signatureTitleFont, tableFont, writer, positions, progress);
 
             document.close();
             return output.toByteArray();
@@ -280,7 +291,8 @@ public class ContractPdfServiceImpl implements ContractPdfService {
 
     private void addSignatureTable(Document document, PartyPair parties,
                                    Font headingFont, Font tableFont, PdfWriter writer,
-            Map<String, com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition> positions) throws DocumentException {
+            Map<String, com.tradepass.framework.fadada.core.FadadaSigningGateway.SealPosition> positions,
+            PartySigningProgress progress) throws DocumentException {
         PdfPTable table = new PdfPTable(2);
         table.setWidthPercentage(100);
         table.setWidths(new float[]{50, 50});
@@ -297,9 +309,16 @@ public class ContractPdfServiceImpl implements ContractPdfService {
             table.addCell(tableCell(label + "：" + buyer.get(label),
                     tableFont, Element.ALIGN_LEFT, Color.WHITE, 17));
         }
-        table.addCell(signatureCell("供方盖章", "supplier", tableFont, writer, document, positions));
-        table.addCell(signatureCell("需方盖章", "buyer", tableFont, writer, document, positions));
+        String supplierLabel = progress == null ? "供方盖章" : signatureProgressLabel("供方", progress.supplierSigned());
+        String buyerLabel = progress == null ? "需方盖章" : signatureProgressLabel("需方", progress.buyerSigned());
+        table.addCell(signatureCell(supplierLabel, "supplier", tableFont, writer, document, positions));
+        table.addCell(signatureCell(buyerLabel, "buyer", tableFont, writer, document, positions));
         document.add(table);
+    }
+
+    private String signatureProgressLabel(String party, Boolean signed) {
+        if (signed == null) return party + "签署状态待同步";
+        return party + (signed ? "已签署" : "待签署");
     }
 
     private PdfPCell signatureCell(String label, String actorId, Font font, PdfWriter writer, Document document,

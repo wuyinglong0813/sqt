@@ -453,7 +453,8 @@ public class TradeServiceImpl implements TradeService {
         boolean fullContent = accessControlService.hasPermission(companyId, "contract_view")
                 || accessControlService.hasPermission(companyId, "contract_sign");
         var result = toContractPayload(contract, companyId, fullContent, sales);
-        return signing == null ? result : result.withSigningProgress(signing.status(), signing.text());
+        return signing == null ? result : result.withSigningProgress(signing.status(), signing.text(),
+                fullContent ? signing.parties() : null);
     }
 
     private Map<String, com.tradepass.module.trade.api.ranking.SalesPerformanceOperations.ContractSales> contractSales(long companyId) {

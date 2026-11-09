@@ -1,6 +1,7 @@
 package com.tradepass.module.contract.service.signing;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.tradepass.module.contract.api.contract.dto.ContractRespDTO.PartySigningProgress;
 import com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO;
 import com.tradepass.module.contract.dal.dataobject.signing.FadadaContractSignTaskDO;
 import com.tradepass.module.contract.dal.mysql.signing.FadadaContractSignTaskMapper;
@@ -31,6 +32,7 @@ class ContractSigningPresentationServiceTest {
         MybatisTestSupport.initialize(FadadaContractSignTaskDO.class);
         var tasks = mock(FadadaContractSignTaskMapper.class);
         var contract = new TradeContractDO(); contract.setId(12L); contract.setCompanyId(3L);
+        contract.setDirection("SALE");
         contract.setVersionNo(2); contract.setStatus("PENDING");
         var current = task(2, "sign_progress");
         current.setInitiatorSignStatus("signed"); current.setCounterpartySignStatus("wait_sign");
@@ -38,8 +40,18 @@ class ContractSigningPresentationServiceTest {
         var service = new ContractSigningPresentationService(tasks);
 
         assertThat(service.statuses(List.of(contract), 3L).get(12L))
-                .isEqualTo(new ContractSigningPresentationService.Progress("sign_progress", "待对方签署"));
+                .isEqualTo(new ContractSigningPresentationService.Progress("sign_progress", "待对方签署",
+                        new PartySigningProgress(true, false)));
         assertThat(service.statuses(List.of(contract), 4L).get(12L).text()).isEqualTo("待我方签署");
+        assertThat(service.statuses(List.of(contract), 4L).get(12L).parties())
+                .isEqualTo(new PartySigningProgress(true, false));
+
+        contract.setDirection("PURCHASE");
+        current.setProviderStatus("finish_creation");
+        current.setCounterpartySignStatus(null);
+        assertThat(service.statuses(List.of(contract), 3L).get(12L).parties())
+                .isEqualTo(new PartySigningProgress(null, true));
+
         current.setCounterpartySignStatus("signed");
         assertThat(service.statuses(List.of(contract), 3L).get(12L).text()).isEqualTo("双方已签署，正在归档");
         assertThat(contract.getStatus()).isEqualTo("PENDING");

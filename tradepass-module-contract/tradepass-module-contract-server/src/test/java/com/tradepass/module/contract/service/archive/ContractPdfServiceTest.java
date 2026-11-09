@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lowagie.text.pdf.PdfReader;
 import com.lowagie.text.pdf.parser.PdfTextExtractor;
 import com.tradepass.module.contract.api.contract.dto.ContractRespDTO;
+import com.tradepass.module.contract.api.contract.dto.ContractRespDTO.PartySigningProgress;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -42,6 +43,27 @@ class ContractPdfServiceTest {
         } finally { reader.close(); }
     }
 
+
+    @Test
+    void pendingPdfShowsConfirmedProgressWithoutChangingTheSigningDocument() throws Exception {
+        var service = new ContractPdfServiceImpl(new ObjectMapper(), id -> null);
+        var contract = new ContractRespDTO(
+                "12", "HT-PARTIAL", "1", "2", "对方企业", "SALE",
+                "购销合同", "标准模板", BigDecimal.TEN, "2026-10-19", null, "{}",
+                "PENDING", 3, "1", null, null, "2026-10-19T12:00:00",
+                "本方企业", "对方企业", "1", "2", "对方企业", "SALE", "OUTGOING")
+                .withSigningProgress("sign_progress", "待对方签署", new PartySigningProgress(true, false));
+        assertThat(pdfText(service.generate(contract)))
+                .contains("签署进度预览", "电子签章以归档 PDF 为准", "供方已签署", "需方待签署")
+                .doesNotContain("需方已签署");
+        assertThat(pdfText(service.generateForSigning(contract).pdf()))
+                .contains("供方盖章", "需方盖章")
+                .doesNotContain("签署进度预览", "供方已签署");
+        var incompleteProgress = contract.withSigningProgress("sign_progress", null, new PartySigningProgress(true, null));
+        assertThat(pdfText(service.generate(incompleteProgress)))
+                .contains("供方已签署", "需方签署状态待同步")
+                .doesNotContain("需方待签署");
+    }
 
     @Test
     void contractNameOverridesLegacySnapshotTitle() throws Exception {
@@ -183,7 +205,11 @@ class ContractPdfServiceTest {
                 "2026-10-19", null, terms,
                 "PENDING", 1, "1", null, null, "2026-10-19T12:00:00",
                 "本方企业", "对方企业", "1", "2", "对方企业", "SALE", "OUTGOING");
-        PdfReader reader = new PdfReader(service.generate(contract));
+        return pdfText(service.generate(contract));
+    }
+
+    private String pdfText(byte[] pdf) throws Exception {
+        PdfReader reader = new PdfReader(pdf);
         try {
             StringBuilder text = new StringBuilder();
             PdfTextExtractor extractor = new PdfTextExtractor(reader);

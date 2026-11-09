@@ -1,6 +1,7 @@
 package com.tradepass.module.contract.service.signing;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.tradepass.module.contract.api.contract.dto.ContractRespDTO.PartySigningProgress;
 import com.tradepass.module.contract.dal.dataobject.contract.TradeContractDO;
 import com.tradepass.module.contract.dal.dataobject.signing.FadadaContractSignTaskDO;
 import com.tradepass.module.contract.dal.mysql.signing.FadadaContractSignTaskMapper;
@@ -15,17 +16,23 @@ public class ContractSigningPresentationService {
     private static final String UNSIGNED_TIMEOUT_TEXT = "超过默认签署时间已撤回";
     private final FadadaContractSignTaskMapper tasks;
     public ContractSigningPresentationService(FadadaContractSignTaskMapper tasks) { this.tasks = tasks; }
-    public record Progress(String status, String text) {}
+    public record Progress(String status, String text, PartySigningProgress parties) {
+        public Progress(String status, String text) {
+            this(status, text, null);
+        }
+    }
 
     public Map<Long, Progress> statuses(List<TradeContractDO> contracts, long viewerCompanyId) {
         var versions = new HashMap<Long, Integer>();
         var initiators = new HashMap<Long, Long>();
         var lifecycles = new HashMap<Long, String>();
+        var directions = new HashMap<Long, String>();
         contracts.stream().filter(c -> "PENDING".equals(c.getStatus()) || "CANCELLED".equals(c.getStatus()))
                 .forEach(c -> {
                     versions.put(c.getId(), c.getVersionNo() == null ? 1 : c.getVersionNo());
                     initiators.put(c.getId(), c.getCompanyId());
                     lifecycles.put(c.getId(), c.getStatus());
+                    directions.put(c.getId(), c.getDirection());
                 });
         if (versions.isEmpty()) return Map.of();
         var result = new HashMap<Long, Progress>();
@@ -63,8 +70,23 @@ public class ContractSigningPresentationService {
                     initiator ? task.getInitiatorSignStatus() : task.getCounterpartySignStatus(),
                     initiator ? task.getCounterpartySignStatus() : task.getInitiatorSignStatus(), initiator);
             if (partyText != null) text = partyText;
-            result.put(task.getContractId(), new Progress(task.getProviderStatus(), text));
+            PartySigningProgress parties = switch (task.getProviderStatus()) {
+                case "finish_creation", "sign_progress", "sign_completed", "task_finished" -> {
+                    Boolean initiatorSigned = signedState(task.getInitiatorSignStatus());
+                    Boolean counterpartySigned = signedState(task.getCounterpartySignStatus());
+                    boolean sale = "SALE".equalsIgnoreCase(directions.get(task.getContractId()));
+                    yield new PartySigningProgress(sale ? initiatorSigned : counterpartySigned,
+                            sale ? counterpartySigned : initiatorSigned);
+                }
+                default -> null;
+            };
+            result.put(task.getContractId(), new Progress(task.getProviderStatus(), text, parties));
         }
         return result;
+    }
+
+    private Boolean signedState(String status) {
+        if (ContractSigningProgress.signed(status)) return true;
+        return "wait_sign".equalsIgnoreCase(status) ? Boolean.FALSE : null;
     }
 }
