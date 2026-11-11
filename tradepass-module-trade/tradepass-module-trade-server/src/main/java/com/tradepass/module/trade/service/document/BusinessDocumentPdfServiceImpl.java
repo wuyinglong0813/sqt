@@ -82,7 +82,7 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
     }
 
     private SalesOrderSignatureService.Confirmation confirmation(BusinessDocumentDO source) {
-        return signatureService == null || "RETAIL".equals(source.getSourceType())
+        return signatureService == null || isStandalone(source)
                 ? null : signatureService.find(source.getId());
     }
 
@@ -110,7 +110,7 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
 
             if ("DRAFT".equals(businessDocument.getStatus())) {
                 Font draftFont = new Font(baseFont, 10, Font.NORMAL, new Color(180, 106, 0));
-                Paragraph draft = new Paragraph(documentLabel(businessDocument) + ("RETAIL".equals(businessDocument.getSourceType())
+                Paragraph draft = new Paragraph(documentLabel(businessDocument) + (isStandalone(businessDocument)
                         ? "草稿 · 本公司确认开单后生效" : "草稿 · 合同生效并发布后方为正式单据"), draftFont);
                 draft.setAlignment(Element.ALIGN_CENTER);
                 draft.setSpacingAfter(10);
@@ -118,15 +118,16 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
             }
 
             addDocumentHeader(document, businessDocument, snapshot, bodyFont);
-            if ("RETAIL".equals(businessDocument.getSourceType())) {
+            if (isStandalone(businessDocument)) {
                 var content = objectMapper.readTree(businessDocument.getContent());
                 document.add(new Paragraph("联系人：" + content.path("contact").asText("")
                         + "    电话：" + content.path("phone").asText("")
-                        + "\n收货地址：" + content.path("address").asText("")
+                        + (isQuickPurchase(businessDocument) ? "\n供应商地址：" : "\n收货地址：")
+                        + content.path("address").asText("")
                         + "\n备注：" + content.path("remark").asText(""), bodyFont));
             }
             addProductTable(document, snapshot, headerFont, bodyFont);
-            addFooter(document, businessDocument.getDocumentType(), snapshot, footerFont, confirmation);
+            addFooter(document, businessDocument, snapshot, footerFont, confirmation);
 
             document.close();
             return output.toByteArray();
@@ -142,8 +143,19 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
     }
 
     private String documentLabel(BusinessDocumentDO document) {
+        if (document != null && isQuickPurchase(document)) {
+            return "PURCHASE_RETURN_ORDER".equals(document.getDocumentType()) ? "零采退货单" : "零采采购单";
+        }
         return document != null && "RETURN_ORDER".equals(document.getDocumentType())
                 ? "退货单" : "销售单";
+    }
+
+    private boolean isQuickPurchase(BusinessDocumentDO document) {
+        return "QUICK_PURCHASE".equals(document.getSourceType());
+    }
+
+    private boolean isStandalone(BusinessDocumentDO document) {
+        return "RETAIL".equals(document.getSourceType()) || isQuickPurchase(document);
     }
 
     private void addDocumentHeader(Document document, BusinessDocumentDO source,
@@ -152,8 +164,14 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
         table.setWidthPercentage(100);
         table.setWidths(new float[]{62, 38});
         table.setSpacingAfter(4);
-        table.addCell(borderlessCell("往来单位：" + snapshot.counterpartyName()
-                + ("RETAIL".equals(source.getSourceType()) ? "\n业务 / 原销售单：" : "\n关联合同：")
+        String referenceLabel = "\n关联合同：";
+        if (isQuickPurchase(source)) {
+            referenceLabel = "PURCHASE_RETURN_ORDER".equals(source.getDocumentType()) ? "\n原采购单：" : "\n业务：";
+        } else if (isStandalone(source)) {
+            referenceLabel = "\n业务 / 原销售单：";
+        }
+        table.addCell(borderlessCell((isQuickPurchase(source) ? "供应商：" : "往来单位：") + snapshot.counterpartyName()
+                + referenceLabel
                 + snapshot.contractNo(), font, Element.ALIGN_LEFT));
         table.addCell(borderlessCell("单据编号：" + source.getDocumentNo()
                 + "\n日期：" + snapshot.date(), font, Element.ALIGN_LEFT));
@@ -189,7 +207,7 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
         document.add(table);
     }
 
-    private void addFooter(Document document, String type, Snapshot snapshot,
+    private void addFooter(Document document, BusinessDocumentDO source, Snapshot snapshot,
                            Font font, SalesOrderSignatureService.Confirmation confirmation)
             throws DocumentException {
         Paragraph total = new Paragraph("合计金额（元）：" + snapshot.totalAmount(), font);
@@ -203,13 +221,14 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
         signatures.setKeepTogether(true);
         signatures.addCell(borderlessCell("制单人：" + snapshot.preparedByName(), font, Element.ALIGN_LEFT));
         signatures.addCell(borderlessCell("审核人：" + snapshot.reviewedByName(), font, Element.ALIGN_LEFT));
-        signatures.addCell(borderlessCell("客户确认：" + (confirmation == null ? "" : confirmation.signerName()),
+        String counterparty = isQuickPurchase(source) ? "供应商" : "客户";
+        signatures.addCell(borderlessCell(counterparty + "确认：" + (confirmation == null ? "" : confirmation.signerName()),
                 font, Element.ALIGN_LEFT));
-        signatures.addCell(customerSignatureCell(confirmation, font));
+        signatures.addCell(customerSignatureCell(counterparty, confirmation, font));
         document.add(signatures);
     }
 
-    private PdfPCell customerSignatureCell(SalesOrderSignatureService.Confirmation confirmation,
+    private PdfPCell customerSignatureCell(String counterparty, SalesOrderSignatureService.Confirmation confirmation,
                                             Font font) throws DocumentException {
         PdfPCell cell = new PdfPCell();
         cell.setBorder(Rectangle.NO_BORDER);
@@ -218,8 +237,8 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
         cell.setPadding(1);
         PdfPTable signatureLine = new PdfPTable(2);
         signatureLine.setWidthPercentage(100);
-        signatureLine.setWidths(new float[]{48, 72});
-        signatureLine.addCell(borderlessCell("客户签字：", font, Element.ALIGN_LEFT));
+        signatureLine.setWidths(counterparty.length() > 2 ? new float[]{54, 66} : new float[]{48, 72});
+        signatureLine.addCell(borderlessCell(counterparty + "签字：", font, Element.ALIGN_LEFT));
         PdfPCell imageCell = new PdfPCell();
         imageCell.setBorder(Rectangle.NO_BORDER);
         imageCell.setPadding(0);

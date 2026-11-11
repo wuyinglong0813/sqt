@@ -35,10 +35,12 @@ class MysqlRetailOwnedMigrationTest {
         Flyway.configure().dataSource(source).locations(location).target("2").load().migrate();
         jdbc.update("INSERT INTO warehouse(id,company_id,name,created_by) VALUES (987654,3,'existing warehouse',7)");
 
+        Flyway.configure().dataSource(source).locations(location).target("3").load().migrate();
+        jdbc.update("INSERT INTO retail_customer(id,company_id,customer_type,name,created_by) VALUES (1,3,'PERSON','零售客户',7)");
         var flyway = Flyway.configure().dataSource(source).locations(location).load();
         assertThat(flyway.migrate().migrationsExecuted).isEqualTo(role.equals("business") ? 10 : 3);
         flyway.validate();
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(role.equals("business") ? "12" : "5");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(role.equals("business") ? "13" : "6");
         if (role.equals("business")) {
             assertThat(jdbc.queryForObject("""
                     SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()
@@ -55,10 +57,15 @@ class MysqlRetailOwnedMigrationTest {
                 SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()
                 AND table_name IN ('retail_customer','retail_document','retail_document_item')
                 """, Integer.class)).isEqualTo(3);
-        jdbc.update("INSERT INTO retail_customer(id,company_id,customer_type,name,created_by) VALUES (1,3,'PERSON','零售客户',7)");
+        jdbc.update("""
+                INSERT INTO retail_customer(id,company_id,customer_type,name,created_by,direction)
+                VALUES (2,3,'COMPANY','零采供应商',7,'PURCHASE')
+                """);
         assertThat(flyway.migrate().migrationsExecuted).isZero();
         flyway.validate();
         assertThat(jdbc.queryForObject("SELECT name FROM retail_customer WHERE id=1", String.class)).isEqualTo("零售客户");
+        assertThat(jdbc.queryForList("SELECT direction FROM retail_customer ORDER BY id", String.class))
+                .containsExactly("SALE", "PURCHASE");
         assertThat(jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.table_constraints
                 WHERE constraint_schema=DATABASE() AND constraint_type='FOREIGN KEY'

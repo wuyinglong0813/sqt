@@ -3,6 +3,7 @@ package com.tradepass.module.trade.service.retail;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradepass.framework.audit.core.AuditLogService;
 import com.tradepass.framework.common.core.AuthContext;
+import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.module.identity.api.company.CompanyReader;
 import com.tradepass.module.identity.api.company.dto.CompanyRespDTO;
 import com.tradepass.module.identity.api.permission.AccessControlOperations;
@@ -20,6 +21,7 @@ import java.util.Map;
 
 import static com.tradepass.module.trade.service.retail.RetailDtos.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -90,6 +92,79 @@ class RetailModelTest {
         assertThat(content.path("columns").get(2).asText()).isEqualTo("型号");
         assertThat(content.path("rows").get(0).get(2).asText()).isEqualTo("YJV");
         assertThat(content.path("rows").get(0).get(3).asText()).isEqualTo("3×25");
+    }
+
+    @Test void purchaseDocumentUsesTheSupplierAndCanOnlyBeCreatedInItsOwnDirection() throws Exception {
+        var item = new ItemRequest(null, "PRODUCT", "电缆", "YJV", "3×25", "米", BigDecimal.ONE, BigDecimal.TEN, "");
+        assertThatThrownBy(() -> service.createDocument(9L, request("PURCHASE_ORDER", null, item)))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("不匹配");
+
+        when(jdbc.queryForList(contains("SELECT * FROM retail_customer"), eq(4L), eq(9L)))
+                .thenReturn(List.of(Map.of("id", 9L, "name", "供应商", "direction", "PURCHASE")));
+        savedDocument = document(60L, "PURCHASE_ORDER", "DRAFT");
+        assertThat(service.createDocument(9L, request("PURCHASE_ORDER", null, item)))
+                .containsEntry("direction", "PURCHASE");
+        verify(jdbc).update(contains("INSERT INTO retail_document "), eq(60L), eq(4L), eq(9L),
+                eq("retail-model-test-123"), eq("LCCG-60"), eq("PURCHASE_ORDER"), isNull(), any(),
+                eq(new BigDecimal("10.00")), contains("供应商"), eq("本公司"), isNull(), eq("测试原因"), eq(8L));
+
+        var pdfDocument = service.pdfDocument(60L);
+        assertThat(pdfDocument.getSourceType()).isEqualTo("QUICK_PURCHASE");
+        assertThat(new ObjectMapper().readTree(pdfDocument.getContent()).path("title").asText()).isEqualTo("零采采购单");
+    }
+
+    @Test void purchaseStockUsesThePurchasePriceAndDoesNotReceiveTwice() {
+        savedDocument = document(60L, "PURCHASE_ORDER", "CONFIRMED");
+        when(jdbc.queryForList(contains("FROM retail_document_item WHERE document_id"), eq(60L)))
+                .thenAnswer(inv -> List.of(item(61L, "YJV")));
+        stubStock(new BigDecimal("2"), new BigDecimal("20.00"), new BigDecimal("40.00"));
+        when(jdbc.update(contains("UPDATE retail_document SET warehouse_id"), eq(9L), eq(60L), eq(4L)))
+                .thenAnswer(inv -> {
+                    savedDocument.put("stock_processed_at", "done");
+                    return 1;
+                });
+
+        assertThat(service.processStock(60L, 9L)).containsEntry("stockProcessed", true);
+        assertThat(service.processStock(60L, 9L)).containsEntry("stockProcessed", true);
+
+        verify(jdbc).update(contains("UPDATE inventory_balance"), eq(new BigDecimal("3")), eq(new BigDecimal("16.666667")),
+                eq(new BigDecimal("50.00")), eq(4L), eq(9L), eq(77L));
+        verify(jdbc).update(contains("INSERT INTO inventory_transaction"), anyLong(), eq(4L), eq(9L), eq(77L),
+                eq("QUICK_PURCHASE"), eq(60L), eq(BigDecimal.ONE), eq(new BigDecimal("3")), eq(8L));
+    }
+
+    @Test void purchaseReturnRequiresReceiptAndDeductsInventoryAtWeightedCost() {
+        savedDocument = document(60L, "PURCHASE_RETURN_ORDER", "CONFIRMED");
+        when(jdbc.queryForList(contains("FROM retail_document_item WHERE document_id"), eq(60L)))
+                .thenAnswer(inv -> {
+                    var returned = item(61L, "YJV");
+                    returned.put("originalItemId", 21L);
+                    return List.of(returned);
+                });
+        stubStock(new BigDecimal("4"), new BigDecimal("20.00"), new BigDecimal("80.00"));
+        var originalCost = new LinkedHashMap<String, Object>();
+        originalCost.put("inventory_unit_cost", null);
+        when(jdbc.queryForList(contains("SELECT inventory_unit_cost FROM retail_document_item"), eq(21L)))
+                .thenReturn(List.of(originalCost));
+
+        assertThatThrownBy(() -> service.processStock(60L, 9L))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("先完成原采购单入库");
+        originalCost.put("inventory_unit_cost", BigDecimal.TEN);
+        service.processStock(60L, 9L);
+
+        verify(jdbc).update(contains("UPDATE inventory_balance"), eq(new BigDecimal("3")), eq(new BigDecimal("20.000000")),
+                eq(new BigDecimal("60.00")), eq(4L), eq(9L), eq(77L));
+        verify(jdbc).update(contains("INSERT INTO inventory_transaction"), anyLong(), eq(4L), eq(9L), eq(77L),
+                eq("QUICK_PURCHASE_RETURN"), eq(60L), eq(BigDecimal.ONE.negate()), eq(new BigDecimal("3")), eq(8L));
+    }
+
+    private void stubStock(BigDecimal quantity, BigDecimal unitPrice, BigDecimal amount) {
+        when(jdbc.queryForList(contains("FROM warehouse"), eq(9L), eq(4L)))
+                .thenReturn(List.of(Map.of("id", 9L)));
+        when(jdbc.queryForList(contains("FROM inventory_product"), eq(Long.class), eq(4L),
+                eq("电缆"), eq("3×25"), eq("米"), eq("YJV"))).thenReturn(List.of(77L));
+        when(jdbc.queryForMap(contains("FROM inventory_balance"), eq(4L), eq(9L), eq(77L)))
+                .thenReturn(Map.of("quantity", quantity, "unit_price", unitPrice, "inventory_amount", amount));
     }
 
     private DocumentRequest request(String type, Long original, ItemRequest item) {

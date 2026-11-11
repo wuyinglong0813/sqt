@@ -63,23 +63,31 @@ public class RankingServiceImpl implements RankingService {
 
     private HomePayload home(long cid, String direction, String period) {
         String normalized = normalizePeriod(period);
+        boolean sale = "SALE".equals(direction);
         List<RankingItem> ranking = rank(direction, normalized, cid);
         BigDecimal partnerAmount = ranking.stream().map(RankingItem::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
         var totals = tradeOrderMapper.selectSalesTotals(cid, direction, normalized);
         BigDecimal partnerReturn = totals == null ? BigDecimal.ZERO : (BigDecimal) totals.getOrDefault("returnAmount", BigDecimal.ZERO);
-        var retailTotals = retail != null && "SALE".equals(direction) ? retail.summary(cid, normalized) : Map.<String, Object>of();
-        BigDecimal retailAmount = new BigDecimal(String.valueOf(retailTotals.getOrDefault("salesAmount", 0)));
-        BigDecimal returned = partnerReturn.add(new BigDecimal(String.valueOf(retailTotals.getOrDefault("returnAmount", 0))));
+        var standaloneTotals = retail == null ? Map.<String, Object>of()
+                : sale ? retail.summary(cid, normalized) : retail.purchaseSummary(cid, normalized);
+        BigDecimal standaloneAmount = new BigDecimal(String.valueOf(standaloneTotals.getOrDefault(sale ? "salesAmount" : "purchaseAmount", 0)));
+        BigDecimal returned = partnerReturn.add(new BigDecimal(String.valueOf(standaloneTotals.getOrDefault("returnAmount", 0))));
+        BigDecimal totalAmount = partnerAmount.add(standaloneAmount);
         var stats = new java.util.LinkedHashMap<String, Object>();
-        stats.put("totalAmount", partnerAmount.add(retailAmount)); stats.put("partnerAmount", partnerAmount);
-        stats.put("retailAmount", retailAmount); stats.put("returnAmount", returned);
-        stats.put("netSalesAmount", partnerAmount.add(retailAmount).subtract(returned));
+        stats.put("totalAmount", totalAmount); stats.put("partnerAmount", partnerAmount);
+        stats.put("retailAmount", sale ? standaloneAmount : BigDecimal.ZERO);
+        stats.put("returnAmount", returned);
+        stats.put("netSalesAmount", totalAmount.subtract(returned));
         stats.put("partnerNetSales", tradeOrderMapper.selectPartnerNetSales(cid, direction, normalized));
         stats.put("totalOrders", ranking.stream().mapToInt(RankingItem::orderCount).sum()
-                + Integer.parseInt(String.valueOf(retailTotals.getOrDefault("salesOrderCount", 0))));
-        stats.put("retailCustomerCount", retailTotals.getOrDefault("customerCount", 0));
-        return new HomePayload(String.valueOf(cid), loadCompanyName(cid), "SALE".equals(direction) ? "SUPPLIER" : "BUYER",
-                "SALE".equals(direction) ? "我是供应商" : "我是采购商", List.of("year", "month", "last12"), ranking,
+                + Integer.parseInt(String.valueOf(standaloneTotals.getOrDefault(sale ? "salesOrderCount" : "purchaseOrderCount", 0))));
+        stats.put("retailCustomerCount", standaloneTotals.getOrDefault("customerCount", 0));
+        if (!sale) {
+            stats.put("quickPurchaseAmount", standaloneAmount);
+            stats.put("quickPurchaseSupplierCount", standaloneTotals.getOrDefault("supplierCount", 0));
+        }
+        return new HomePayload(String.valueOf(cid), loadCompanyName(cid), sale ? "SUPPLIER" : "BUYER",
+                sale ? "我是供应商" : "我是采购商", List.of("year", "month", "last12"), ranking,
                 contractDirectory.signedTradeContractCounts(cid, direction), stats);
     }
 

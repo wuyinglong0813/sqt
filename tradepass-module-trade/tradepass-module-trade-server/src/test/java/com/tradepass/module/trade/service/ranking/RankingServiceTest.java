@@ -178,4 +178,24 @@ class RankingServiceTest {
         service.buyerHome("month", "3");
         verify(retail, org.mockito.Mockito.times(1)).summary(3L, "month");
     }
+
+    @Test void buyerHomeIncludesQuickPurchasesAndKeepsPartnerRankingSeparate() {
+        var retail = mock(com.tradepass.module.trade.service.retail.RetailService.class);
+        when(retail.purchaseSummary(3L, "month")).thenReturn(Map.of("purchaseAmount", new BigDecimal("20"),
+                "returnAmount", new BigDecimal("2"), "purchaseOrderCount", 1, "supplierCount", 3));
+        when(orderMapper.selectRanking(3L, "PURCHASE", "month")).thenReturn(List.of(
+                Map.of("counterpartyName", "合作供应商", "totalAmount", new BigDecimal("80"), "orderCount", 2)));
+        when(orderMapper.selectSalesTotals(3L, "PURCHASE", "month")).thenReturn(Map.of("returnAmount", new BigDecimal("3")));
+        var service = new RankingServiceImpl(orderMapper, companyMapper, accessControl, null, contracts, retail);
+
+        var home = service.buyerHome("month", "3");
+        assertThat(home.ranking()).extracting(RankingItem::counterpartyName).containsExactly("合作供应商");
+        assertThat((BigDecimal) home.stats().get("totalAmount")).isEqualByComparingTo("100");
+        assertThat((BigDecimal) home.stats().get("partnerAmount")).isEqualByComparingTo("80");
+        assertThat((BigDecimal) home.stats().get("quickPurchaseAmount")).isEqualByComparingTo("20");
+        assertThat((BigDecimal) home.stats().get("returnAmount")).isEqualByComparingTo("5");
+        assertThat((BigDecimal) home.stats().get("netSalesAmount")).isEqualByComparingTo("95");
+        assertThat(home.stats()).containsEntry("totalOrders", 3).containsEntry("quickPurchaseSupplierCount", 3);
+        verify(retail, never()).summary(3L, "month");
+    }
 }

@@ -17,18 +17,22 @@ public class RetailController {
     public RetailController(RetailService retail, BusinessDocumentPdfService pdf) { this.retail = retail; this.pdf = pdf; }
     @GetMapping("/customers")
     public ApiResponse<Map<String, Object>> customers(@RequestParam(defaultValue = "1") int page,
-                                                     @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(retail.customers(page, size));
+                                                     @RequestParam(defaultValue = "20") int size,
+                                                     @RequestParam(defaultValue = "SALE") String direction) {
+        return ApiResponse.ok(retail.customers(page, size, direction));
     }
     @GetMapping("/customers/{id}")
     public ApiResponse<Map<String, Object>> customer(@PathVariable Long id) { return ApiResponse.ok(retail.customer(id)); }
     @PostMapping("/customers")
-    public ApiResponse<Map<String, Object>> createCustomer(@RequestBody CustomerRequest body) { return ApiResponse.ok(retail.saveCustomer(null, body)); }
+    public ApiResponse<Map<String, Object>> createCustomer(@RequestBody CustomerRequest body,
+                                                           @RequestParam(defaultValue = "SALE") String direction) {
+        return ApiResponse.ok(retail.saveCustomer(null, body, direction));
+    }
     @PostMapping("/customers/{id}")
     public ApiResponse<Map<String, Object>> updateCustomer(@PathVariable Long id, @RequestBody CustomerRequest body) { return ApiResponse.ok(retail.saveCustomer(id, body)); }
     @GetMapping("/customers/{id}/documents")
     public ApiResponse<PagePayload<Map<String, Object>>> documents(@PathVariable Long id,
-            @RequestParam(defaultValue = "SALES_ORDER") String documentType, @RequestParam(required = false) String status,
+            @RequestParam(required = false) String documentType, @RequestParam(required = false) String status,
             @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.ok(retail.documents(id, documentType, status, page, size));
     }

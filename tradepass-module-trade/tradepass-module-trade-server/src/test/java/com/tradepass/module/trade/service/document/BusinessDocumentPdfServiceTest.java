@@ -18,6 +18,7 @@ import com.tradepass.framework.pdf.PdfPagePreview;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class BusinessDocumentPdfServiceTest {
@@ -148,6 +149,30 @@ class BusinessDocumentPdfServiceTest {
         String text = new PdfTextExtractor(reader).getTextFromPage(1);
         reader.close();
         assertThat(text).contains("客户确认：", "客户签字：").doesNotContain("张采购");
+    }
+
+    @Test
+    void quickPurchaseReturnPdfUsesSupplierAndOriginalPurchaseLabels() throws Exception {
+        var mapper = new ObjectMapper();
+        SalesOrderSignatureService signatures = mock(SalesOrderSignatureService.class);
+        BusinessDocumentPdfService service = new BusinessDocumentPdfServiceImpl(mapper, signatures);
+        BusinessDocumentDO document = example("PURCHASE_RETURN_ORDER", 3);
+        document.setSourceType("QUICK_PURCHASE");
+        document.setStatus("DRAFT");
+        document.setDocumentNo("LCTH-31");
+        var content = mapper.readValue(document.getContent(), com.fasterxml.jackson.databind.node.ObjectNode.class);
+        content.put("title", "零采退货单");
+        content.put("contractNo", "LCCG-30");
+        content.put("address", "工厂路1号");
+        document.setContent(content.toString());
+
+        PdfReader reader = new PdfReader(service.generate(document));
+        String text = new PdfTextExtractor(reader).getTextFromPage(1);
+        reader.close();
+        assertThat(service.fileName(document)).isEqualTo("零采退货单草稿-LCTH-31.pdf");
+        assertThat(text).contains("零采退货单", "本公司确认开单后生效", "供应商：河北云域科技有限公司",
+                "原采购单：LCCG-30", "供应商地址：工厂路1号", "供应商确认：", "供应商签字：");
+        verifyNoInteractions(signatures);
     }
 
     private byte[] png() throws Exception {

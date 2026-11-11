@@ -310,7 +310,7 @@ class MysqlWorkflowConcurrencyTest {
     private com.tradepass.module.trade.service.retail.RetailDtos.DocumentRequest retailRequest(String type, Long original,
             Long originalItem, String quantity, String price, String requestId) {
         return new com.tradepass.module.trade.service.retail.RetailDtos.DocumentRequest(requestId, type, original,
-                java.time.LocalDate.now().toString(), "RETURN_ORDER".equals(type) ? "多余材料退回" : "",
+                java.time.LocalDate.now().toString(), type.endsWith("RETURN_ORDER") ? "多余材料退回" : "",
                 List.of(new com.tradepass.module.trade.service.retail.RetailDtos.ItemRequest(originalItem, "PRODUCT", "电缆",
                         "零售测试", "米", new BigDecimal(quantity), new BigDecimal(price), "")));
     }
@@ -344,6 +344,53 @@ class MysqlWorkflowConcurrencyTest {
         assertThatThrownBy(() -> retail.customer(customer)).hasMessageContaining("无权访问");
         assertThatThrownBy(() -> retail.document(id)).hasMessageContaining("无权访问");
         assertThatThrownBy(() -> tx.execute(status -> retail.confirm(id, null))).hasMessageContaining("无权访问");
+    }
+
+    @Test void quickPurchaseCountsConfirmedOrdersAndReturnsAndUpdatesStockOnlyOnce() {
+        long cid = IDS.incrementAndGet(); AuthContext.set(7, cid);
+        var retail = retailer();
+        long customer = retailCustomer(retail, "同名往来方");
+        var supplierRequest = new com.tradepass.module.trade.service.retail.RetailDtos.CustomerRequest(
+                "COMPANY", "同名往来方", "", "", "", "", "", "");
+        var supplier = tx.execute(status -> retail.saveCustomer(null, supplierRequest, "PURCHASE"));
+        long supplierId = Long.parseLong((String) supplier.get("id"));
+        assertThat(retail.customers(1, 5, "SALE").get("total")).isEqualTo(1L);
+        assertThat(retail.customers(1, 5, "PURCHASE").get("total")).isEqualTo(1L);
+        assertThat(supplier).containsEntry("direction", "PURCHASE");
+        var purchase = retailRequest("PURCHASE_ORDER", null, null, "3", "4", retailRequestId());
+        assertThatThrownBy(() -> tx.execute(status -> retail.createDocument(customer, purchase)))
+                .isInstanceOf(BusinessException.class);
+        long order = Long.parseLong((String) tx.execute(status -> retail.createDocument(supplierId, purchase)).get("id"));
+        assertThat(retail.purchaseSummary(cid, "month").get("purchaseOrderCount").toString()).isEqualTo("0");
+        assertThat(retail.documents(supplierId, null, null, 1, 5).total()).isEqualTo(1L);
+        assertThatThrownBy(() -> retail.documents(supplierId, "SALES_ORDER", null, 1, 5))
+                .isInstanceOf(BusinessException.class);
+
+        long warehouse = IDS.incrementAndGet();
+        jdbc.update("INSERT INTO warehouse (id,company_id,name,created_by) VALUES (?,?,'采购仓',7)", warehouse, cid);
+        tx.execute(status -> retail.confirm(order, warehouse));
+        tx.execute(status -> retail.processStock(order, warehouse));
+        long originalItem = jdbc.queryForObject("SELECT id FROM retail_document_item WHERE document_id = ?", Long.class, order);
+        var returnRequest = retailRequest("PURCHASE_RETURN_ORDER", order, originalItem, "1", "999", retailRequestId());
+        long returned = Long.parseLong((String) tx.execute(status -> retail.createDocument(supplierId, returnRequest)).get("id"));
+        tx.execute(status -> retail.confirm(returned, warehouse));
+        tx.execute(status -> retail.processStock(returned, warehouse));
+
+        var totals = retail.purchaseSummary(cid, "month");
+        assertThat((BigDecimal) totals.get("purchaseAmount")).isEqualByComparingTo("12");
+        assertThat((BigDecimal) totals.get("returnAmount")).isEqualByComparingTo("4");
+        assertThat((BigDecimal) retail.customer(supplierId).get("netPurchaseAmount")).isEqualByComparingTo("8");
+        assertThat((BigDecimal) retail.summary(cid, "month").get("salesAmount")).isEqualByComparingTo("0");
+        var balance = jdbc.queryForMap("SELECT quantity, inventory_amount FROM inventory_balance WHERE warehouse_id = ?", warehouse);
+        assertThat((BigDecimal) balance.get("quantity")).isEqualByComparingTo("2");
+        assertThat((BigDecimal) balance.get("inventory_amount")).isEqualByComparingTo("8");
+        assertThat(jdbc.queryForList("SELECT quantity_delta FROM inventory_transaction WHERE warehouse_id = ? ORDER BY id",
+                BigDecimal.class, warehouse)).usingElementComparator(BigDecimal::compareTo)
+                .containsExactly(new BigDecimal("3"), new BigDecimal("-1"));
+        assertThat(retail.pdfDocument(returned).getContent()).contains("零采退货单");
+        AuthContext.set(7, cid + 1);
+        assertThatThrownBy(() -> retail.customer(supplierId)).hasMessageContaining("无权访问");
+        assertThatThrownBy(() -> retail.document(order)).hasMessageContaining("无权访问");
     }
 
     @Test void concurrentPartialRetailReturnsCannotExceedTheOriginalQuantity() throws Exception {

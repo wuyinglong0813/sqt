@@ -13,7 +13,8 @@ public final class SplitDatabaseMigration {
     private static final Map<String, List<String>> AUDIT_TYPES = Map.of(
             "contract", List.of("CONTRACT", "CONTRACT_TEMPLATE"),
             "trade", List.of("ORDER", "LOGISTICS_DOCUMENT", "PERSONAL_MEMO", "BILATERAL_ACTION", "PROJECT_LEDGER",
-                    "BUSINESS_DOCUMENT_TEMPLATE", "BUSINESS_DOCUMENT", "WAREHOUSE", "BUSINESS_DOCUMENT_RECEIPT", "INVENTORY_INBOUND"),
+                    "BUSINESS_DOCUMENT_TEMPLATE", "BUSINESS_DOCUMENT", "WAREHOUSE", "BUSINESS_DOCUMENT_RECEIPT", "INVENTORY_INBOUND",
+                    "QUICK_PURCHASE_SUPPLIER", "QUICK_PURCHASE_DOCUMENT"),
             "settlement", List.of("CONTRACT_ATTACHMENT", "RECONCILIATION_STATEMENT"));
     private record Target(String role, String url, String user, String password, Connection connection) { }
     private record Fingerprint(long rows, String sha256) { }
@@ -153,12 +154,12 @@ public final class SplitDatabaseMigration {
         try (var statement = source.createStatement(); var rows = statement.executeQuery(
                 "SELECT MAX(CAST(version AS UNSIGNED)), SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) FROM flyway_schema_history")) {
             if (!rows.next() || !isReviewedSourceVersion(rows.getInt(1), rows.getInt(2))) {
-                throw new IllegalStateException("Upgrade the source to reviewed V52 before cutover, including open member invitations and application identity gates; other source versions are not supported");
+                throw new IllegalStateException("Source must match reviewed flat V52 or V53 before cutover");
             }
         }
     }
     static boolean isReviewedSourceVersion(int latest, int failures) {
-        return latest == 52 && failures == 0;
+        return (latest == 52 || latest == 53) && failures == 0;
     }
     private static void requireEmpty(Connection target) throws SQLException {
         try (var tables = target.getMetaData().getTables(target.getCatalog(), null, "%", new String[]{"TABLE"})) {

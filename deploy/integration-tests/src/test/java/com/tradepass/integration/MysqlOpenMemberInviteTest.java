@@ -57,7 +57,8 @@ class MysqlOpenMemberInviteTest {
             jdbc.update("INSERT INTO sys_user(id,openid,phone,status,phone_verified_at) VALUES(7,'inviter','13800000000','ACTIVE',NOW()),(8,'applicant-a','13900000000','ACTIVE',NOW()),(9,'applicant-b','13700000000','ACTIVE',NOW())");
             jdbc.update("INSERT INTO company(id,name,credit_code,legal_person_name,created_by) VALUES(3,'开放邀请测试企业','OPEN-INVITE','测试法人',7)");
             jdbc.update("INSERT INTO company_invite(id,company_id,code,type,used,expires_at) VALUES(11,3,'LEGACY23','member',0,DATE_ADD(NOW(),INTERVAL 1 DAY))");
-            var flyway = Flyway.configure().dataSource(source).locations(location).load();
+            var flyway = Flyway.configure().dataSource(source).locations(location)
+                    .target(layout.equals("flat") ? "52" : "7").load();
             assertThat(flyway.migrate().migrationsExecuted).isOne();
             flyway.validate();
             assertThat(jdbc.queryForObject("SELECT invitation_mode FROM company_invite WHERE id=11", String.class)).isEqualTo("LEGACY");
