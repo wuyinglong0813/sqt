@@ -1,12 +1,14 @@
 package com.tradepass.module.identity.dal.mysql.company;
 
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.tradepass.module.identity.dal.dataobject.company.CompanyReferralDO;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 @Mapper
-public interface CompanyReferralMapper {
+public interface CompanyReferralMapper extends BaseMapper<CompanyReferralDO> {
     @Insert("""
             INSERT INTO company_referral (
                 invite_id, invited_company_id, invited_credit_code,
