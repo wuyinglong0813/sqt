@@ -36,6 +36,7 @@ class CompanyOnboardingAttemptServiceTest {
     private FadadaCorpIdentityMapper identities;
     private CompanyCertificationApplicationMapper applications;
     private FadadaPersonalIdentityService personal;
+    private CompanyReferralService referrals;
     private CompanyOnboardingAttemptService service;
     private CompanyDO company;
 
@@ -46,7 +47,9 @@ class CompanyOnboardingAttemptServiceTest {
         companies = mock(CompanyMapper.class); attempts = mock(CompanyOnboardingAttemptMapper.class);
         members = mock(CompanyMemberMapper.class); identities = mock(FadadaCorpIdentityMapper.class);
         applications = mock(CompanyCertificationApplicationMapper.class); personal = mock(FadadaPersonalIdentityService.class);
-        service = new CompanyOnboardingAttemptService(companies, attempts, members, identities, applications, personal);
+        referrals = mock(CompanyReferralService.class);
+        service = new CompanyOnboardingAttemptService(companies, attempts, members, identities, applications, personal,
+                referrals);
         company = new CompanyDO(); company.setId(3L); company.setCreatedBy(8L); company.setName("原草稿");
         company.setCreditCode("CODE3"); company.setLegalPersonName("原申报法人"); company.setBankAccount("ORIGINAL-BANK");
         company.setCertificationStatus("PENDING"); when(companies.selectByIdForUpdate(3L)).thenReturn(company);
@@ -124,6 +127,7 @@ class CompanyOnboardingAttemptServiceTest {
         when(attempts.selectOne(any(Wrapper.class))).thenReturn(attempt);
         service.complete(3L, 7L, "REQUEST-20");
         assertThat(attempt.getStatus()).isEqualTo("COMPLETED");
+        verify(referrals).confirm(company, attempt);
         ArgumentCaptor<Wrapper<CompanyDO>> published = ArgumentCaptor.forClass(Wrapper.class);
         verify(companies).update(published.capture());
         LambdaUpdateWrapper<CompanyDO> publication = (LambdaUpdateWrapper<CompanyDO>) published.getValue();
@@ -147,6 +151,31 @@ class CompanyOnboardingAttemptServiceTest {
         when(attempts.selectOne(any(Wrapper.class))).thenReturn(attempt);
         assertThatThrownBy(() -> service.complete(3L, 7L, "REQUEST-20")).hasMessageContaining("已失效");
         verify(attempts, never()).updateById(any(CompanyOnboardingAttemptDO.class));
+        verifyNoInteractions(referrals);
+    }
+
+    @Test
+    void aDraftRetainsItsValidatedInvitationOnLaterSubmissions() {
+        PersonalIdentityRespDTO person = mock(PersonalIdentityRespDTO.class);
+        when(person.status()).thenReturn("VERIFIED");
+        when(personal.requireCurrentVerified()).thenReturn(person);
+        when(referrals.eligibleInviteId(company, "INVITE01")).thenReturn(90L);
+        doAnswer(invocation -> {
+            invocation.<CompanyOnboardingAttemptDO>getArgument(0).setId(20L);
+            return 1;
+        }).when(attempts).insert(any(CompanyOnboardingAttemptDO.class));
+        CompanyOnboardingAttemptDO draft = service.draft(3L, 7L,
+                new CompanySubmitReqVO(null, "本人申报名称", "CODE3", "本人申报法人",
+                        null, null, null, null, "INVITE01"));
+        assertThat(draft.getReferralInviteId()).isEqualTo(90L);
+
+        when(attempts.selectOne(any(Wrapper.class))).thenReturn(draft);
+        when(attempts.update(any(Wrapper.class))).thenReturn(1);
+        CompanyOnboardingAttemptDO retry = service.draft(3L, 7L,
+                new CompanySubmitReqVO(null, "本人申报名称", "CODE3", "本人申报法人"));
+        assertThat(retry.getReferralInviteId()).isEqualTo(90L);
+        verify(referrals).eligibleInviteId(company, "INVITE01");
+        verifyNoMoreInteractions(referrals);
     }
 
     @Test

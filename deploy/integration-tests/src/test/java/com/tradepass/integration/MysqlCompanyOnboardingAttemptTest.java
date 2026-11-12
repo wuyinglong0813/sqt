@@ -4,15 +4,20 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.module.identity.api.company.CompanyReaderImpl;
 import com.tradepass.module.identity.api.fadada.dto.PersonalIdentityRespDTO;
 import com.tradepass.module.identity.controller.app.company.vo.CompanySubmitReqVO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyOnboardingAttemptDO;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMapper;
+import com.tradepass.module.identity.dal.mysql.company.CompanyInviteMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyMemberMapper;
 import com.tradepass.module.identity.dal.mysql.company.CompanyOnboardingAttemptMapper;
+import com.tradepass.module.identity.dal.mysql.company.CompanyReferralMapper;
 import com.tradepass.module.identity.dal.mysql.certification.CompanyCertificationApplicationMapper;
+import com.tradepass.module.identity.dal.mysql.counterparty.CounterpartyRelationMapper;
 import com.tradepass.module.identity.dal.mysql.fadada.FadadaCorpIdentityMapper;
 import com.tradepass.module.identity.service.company.CompanyOnboardingAttemptService;
+import com.tradepass.module.identity.service.company.CompanyReferralService;
 import com.tradepass.module.identity.service.company.TenantBootstrapService;
 import com.tradepass.module.identity.service.certification.CompanyCertificationServiceImpl;
 import com.tradepass.module.identity.service.permission.AccessControlService;
@@ -56,6 +61,7 @@ class MysqlCompanyOnboardingAttemptTest {
     private static CompanyOnboardingAttemptService service;
     private static FadadaCorpIdentityMapper identities;
     private static CompanyCertificationServiceImpl certifications;
+    private static CompanyReaderImpl companyReader;
 
     @BeforeAll static void database() throws Exception {
         schema = new Schema("identity");
@@ -67,6 +73,9 @@ class MysqlCompanyOnboardingAttemptTest {
         configuration.addMapper(CompanyMemberMapper.class);
         configuration.addMapper(FadadaCorpIdentityMapper.class);
         configuration.addMapper(CompanyCertificationApplicationMapper.class);
+        configuration.addMapper(CompanyInviteMapper.class);
+        configuration.addMapper(CompanyReferralMapper.class);
+        configuration.addMapper(CounterpartyRelationMapper.class);
         var factory = new MybatisSqlSessionFactoryBean();
         factory.setDataSource(schema.source);
         factory.setConfiguration(configuration);
@@ -76,10 +85,15 @@ class MysqlCompanyOnboardingAttemptTest {
         when(people.requireCurrentVerified()).thenReturn(new PersonalIdentityRespDTO(
                 true, "VERIFIED", "已认证", "authorized", "identified", "", "测试申请人", "face", "", "", "", ""));
         identities = sessions.getMapper(FadadaCorpIdentityMapper.class);
+        var companies = sessions.getMapper(CompanyMapper.class);
+        var referrals = sessions.getMapper(CompanyReferralMapper.class);
+        companyReader = new CompanyReaderImpl(companies, referrals);
         service = new CompanyOnboardingAttemptService(sessions.getMapper(CompanyMapper.class),
                 sessions.getMapper(CompanyOnboardingAttemptMapper.class), sessions.getMapper(CompanyMemberMapper.class),
                 identities,
-                sessions.getMapper(CompanyCertificationApplicationMapper.class), people);
+                sessions.getMapper(CompanyCertificationApplicationMapper.class), people,
+                new CompanyReferralService(sessions.getMapper(CompanyInviteMapper.class), companies,
+                        referrals, sessions.getMapper(CounterpartyRelationMapper.class)));
         certifications = new CompanyCertificationServiceImpl(sessions.getMapper(CompanyMapper.class),
                 sessions.getMapper(CompanyMemberMapper.class), sessions.getMapper(CompanyCertificationApplicationMapper.class),
                 mock(AccessControlService.class), mock(TenantBootstrapService.class), mock(AuditLogService.class), false, "");
@@ -250,6 +264,44 @@ class MysqlCompanyOnboardingAttemptTest {
         assertThat(schema.jdbc.queryForObject("SELECT status FROM company_onboarding_attempt WHERE id=?", String.class, attempt.getId()))
                 .isEqualTo("COMPLETED");
         assertThat(service.ownsCurrent(company, 7)).isFalse();
+    }
+
+    @Test void counterpartyReferralCountsOnlyAfterFirstVerifiedOnboardingCommits() {
+        long inviter = company("VERIFIED", 7);
+        long invited = company("PENDING", 8);
+        long inviteId = IDS.incrementAndGet();
+        String inviteCode = "referral-" + inviteId;
+        schema.jdbc.update("""
+                INSERT INTO company_invite(id,company_id,code,type,relation_role,used,expires_at)
+                VALUES (?,?,?,'counterparty','supplier',0,DATE_ADD(NOW(),INTERVAL 1 DAY))
+                """, inviteId, inviter, inviteCode);
+        var request = new CompanySubmitReqVO(Long.toString(invited), "新企业", "CREDIT-" + invited, "法人",
+                null, null, null, null, inviteCode);
+        var draft = as(8, () -> service.draft(invited, 8, request));
+        assertThat(draft.getReferralInviteId()).isEqualTo(inviteId);
+        assertThat(companyReader.selectById(inviter).getConfirmedReferralCount()).isZero();
+        assertThat(schema.jdbc.queryForObject("SELECT used FROM company_invite WHERE id=?", Boolean.class, inviteId)).isFalse();
+
+        var active = as(8, () -> service.activate(invited, 8)).attempt();
+        schema.jdbc.update("UPDATE company_invite SET expires_at=DATE_SUB(NOW(),INTERVAL 1 SECOND) WHERE id=?", inviteId);
+        Runnable verify = () -> {
+            schema.jdbc.update("UPDATE company SET certification_status='VERIFIED' WHERE id=?", invited);
+            service.complete(invited, 8, active.getProviderRequestId());
+        };
+        tx.executeWithoutResult(status -> {
+            verify.run();
+            status.setRollbackOnly();
+        });
+        assertThat(companyReader.selectById(inviter).getConfirmedReferralCount()).isZero();
+        inTransaction(verify);
+        assertThat(companyReader.selectById(inviter).getConfirmedReferralCount()).isOne();
+        assertThat(companyReader.selectById(invited).getConfirmedReferralCount()).isZero();
+        assertThat(schema.jdbc.queryForObject("SELECT used_by FROM company_invite WHERE id=?", Long.class, inviteId)).isEqualTo(8);
+        assertThat(schema.jdbc.queryForObject("""
+                SELECT COUNT(*) FROM counterparty_relation WHERE company_id=? AND counterparty_company_id=? AND status='ACTIVE'
+                """, Long.class, invited, inviter)).isOne();
+        assertThatThrownBy(() -> inTransaction(verify)).isInstanceOf(BusinessException.class);
+        assertThat(companyReader.selectById(inviter).getConfirmedReferralCount()).isOne();
     }
 
     @Test void cancellingAnotherApplicantsDraftLeavesTheCurrentProviderSlotIntact() {

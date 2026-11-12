@@ -16,6 +16,10 @@ import java.util.*;
 
 @Service
 public class MembershipService {
+    private static final long REFERRAL_QUOTA = 5;
+    private static final String REGISTRATION = "REGISTRATION";
+    private static final String REFERRAL = "REFERRAL";
+
     public record Status(String companyId, String companyName, String membershipText, boolean vip, String validUntil,
                          String signingMode, boolean unlimited, Long quotaTotal, long used, long reserved, Long remaining,
                          long paidRemaining, boolean canInitiate, String reason, boolean purchaseEnabled,
@@ -30,8 +34,18 @@ public class MembershipService {
     private record Pool(String scope, long total, long used, long reserved, LocalDateTime expires) {
         long remaining() { return Math.max(0, total - used - reserved); }
     }
-    private record Selection(String scope, String source, boolean unlimited, long total, long used, long reserved,
-                             long remaining, String reason) { }
+    private record Quota(long total, long used, long reserved) {
+        private static final Quota EMPTY = new Quota(0, 0, 0);
+
+        long remaining() { return Math.max(0, total - used - reserved); }
+
+        static Quota bounded(long total, long used, long reserved) {
+            long countedUsed = Math.min(total, used);
+            return new Quota(total, countedUsed, Math.min(total - countedUsed, reserved));
+        }
+    }
+    private record FreeQuotas(Quota ordinary, Quota referral, boolean usesTrial, boolean allocateTrial) { }
+    private record Selection(String scope, String source, long total, String reason) { }
     private final JdbcTemplate jdbc;
     private final MembershipPolicyStore policies;
     private final TransactionTemplate tx;
@@ -72,17 +86,13 @@ public class MembershipService {
             String until = isWhite ? MembershipPolicy.displayEnd(white.endExclusive())
                     : paid ? MembershipPolicy.display(paidVip.atZone(MembershipPolicy.BEIJING).toInstant())
                     : trial.active(now) ? MembershipPolicy.displayEnd(trial.endExclusive()) : "";
-            Selection choice = select(company, subject, snapshot, false);
-            Pool special = pool("SPECIAL", subject);
-            Pool trialPool = pool("TRIAL:" + trial.activityId(), subject);
+            FreeQuotas free = freeQuotas(company, subject, policy, now);
+            Selection choice = select(company, subject, snapshot, now, free, false);
             boolean infinite = isWhite && "UNLIMITED".equals(white.mode());
-            long total = isWhite ? infinite ? 0 : white.quotaTotal()
-                    : trial.active(now) ? trialPool == null ? trial.perCompany() : trialPool.total() : 0;
-            long used = isWhite ? special == null ? 0 : special.used() : trialPool == null ? 0 : trialPool.used();
-            long reserved = isWhite ? special == null ? 0 : special.reserved() : trialPool == null ? 0 : trialPool.reserved();
-            long remaining = Math.max(0, total - used - reserved);
-            if (!isWhite && trial.active(now) && trialPool == null && !trialAvailable(trial)) remaining = 0;
-            if (!isWhite && !trial.active(now)) { used = 0; reserved = 0; }
+            long total = free.ordinary().total() + free.referral().total();
+            long used = free.ordinary().used() + free.referral().used();
+            long reserved = free.ordinary().reserved() + free.referral().reserved();
+            long remaining = free.ordinary().remaining() + free.referral().remaining();
             long paidRemaining = paidPools(subject).stream().mapToLong(Pool::remaining).sum();
             boolean verified = "VERIFIED".equals(company.getCertificationStatus());
             String reason = !verified ? "请先完成企业认证" : choice.reason();
@@ -118,17 +128,24 @@ public class MembershipService {
                     throw new BusinessException(pendingMessage(contractId, version));
             }
             String subject = subject(company);
-            Selection choice = select(company, subject, policy, true);
+            Instant now = clock.instant();
+            FreeQuotas free = freeQuotas(company, subject, policy.policy(), now);
+            Selection choice = select(company, subject, policy, now, free, true);
             if (choice.scope() == null) throw new BusinessException(choice.reason());
             jdbc.update("""
                     INSERT IGNORE INTO membership_quota_pool(scope_key,subject_key,company_id,total_amount)
                     VALUES (?,?,?,?)
                     """, choice.scope(), subject, company.getId(), choice.total());
             jdbc.update("""
-                    UPDATE membership_quota_pool SET reserved_amount=reserved_amount+1
+                    UPDATE membership_quota_pool SET reserved_amount=reserved_amount+1,
+                        total_amount=CASE
+                            WHEN scope_key='REGISTRATION' THEN ?
+                            WHEN scope_key='REFERRAL' THEN GREATEST(total_amount,?)
+                            ELSE total_amount
+                        END
                     WHERE scope_key=? AND subject_key=?
-                    """, choice.scope(), subject);
-            LocalDateTime now = localNow();
+                    """, choice.total(), choice.total(), choice.scope(), subject);
+            LocalDateTime createdAt = localNow();
             if (existing == null) {
                 jdbc.update("""
                         INSERT INTO membership_signing_usage(contract_id,version_no,company_id,subject_key,scope_key,
@@ -136,7 +153,7 @@ public class MembershipService {
                           provider_initiator_open_corp_id)
                         VALUES (?,?,?,?,?,?,'RESERVED',?,?,?,?,?,?)
                         """, contractId, version, company.getId(), subject, choice.scope(), choice.source(),
-                        policy.revision(), AuthContext.userId(), contractSnapshot, sha256, now, providerInitiatorOpenCorpId);
+                        policy.revision(), AuthContext.userId(), contractSnapshot, sha256, createdAt, providerInitiatorOpenCorpId);
             } else {
                 jdbc.update("""
                         UPDATE membership_signing_usage SET scope_key=?,source=?,status='RESERVED',policy_revision=?,
@@ -144,7 +161,7 @@ public class MembershipService {
                           provider_initiator_open_corp_id=?
                         WHERE contract_id=? AND version_no=? AND status='RELEASED'
                         """, choice.scope(), choice.source(), policy.revision(), AuthContext.userId(), contractSnapshot, sha256,
-                        now, providerInitiatorOpenCorpId, contractId, version);
+                        createdAt, providerInitiatorOpenCorpId, contractId, version);
             }
             Reservation result = existing(contractId, version);
             return new Reservation(result.id(), result.status(), true, null, null, null, result.snapshot(), result.sha256(),
@@ -293,53 +310,94 @@ public class MembershipService {
         }, subject(company));
     }
 
-    private Selection select(CompanyRespDTO company, String subject, MembershipPolicyStore.Snapshot snapshot, boolean allocate) {
-        if (!snapshot.known()) return denied("会员策略正在同步，请稍后再试");
-        var policy = snapshot.policy();
-        var now = clock.instant();
-        var black = policy.blacklist().get(company.getId());
-        if (black != null && black.active(now)) return denied("当前企业已暂停新发起电子签，请联系平台");
+    private FreeQuotas freeQuotas(CompanyRespDTO company, String subject, MembershipPolicy policy, Instant now) {
+        if (!"VERIFIED".equals(company.getCertificationStatus())) {
+            return new FreeQuotas(Quota.EMPTY, Quota.EMPTY, false, false);
+        }
+        Pool referralPool = pool(REFERRAL, subject);
+        long earned = Math.multiplyExact(company.getConfirmedReferralCount(), REFERRAL_QUOTA);
+        Quota referral = referralPool == null ? new Quota(earned, 0, 0)
+                : new Quota(Math.max(earned, referralPool.total()), referralPool.used(), referralPool.reserved());
+
         var white = policy.whitelist().get(company.getId());
         if (white != null && white.active(now)) {
-            Pool pool = pool("SPECIAL", subject);
-            long used = pool == null ? 0 : pool.used(), reserved = pool == null ? 0 : pool.reserved();
-            if ("UNLIMITED".equals(white.mode()))
-                return new Selection("SPECIAL", "SPECIAL_UNLIMITED", true, 0, used, reserved, 0, "本次免费无限签");
-            long remaining = Math.max(0, white.quotaTotal() - used - reserved);
-            if (remaining > 0) return new Selection("SPECIAL", "SPECIAL_QUOTA", false, white.quotaTotal(),
-                    used, reserved, remaining, "本次使用企业专属免费额度 1 份");
-            return paid(subject, "企业专属免费份额已用完，请联系平台补充额度");
+            Pool special = pool("SPECIAL", subject);
+            boolean unlimited = "UNLIMITED".equals(white.mode());
+            Quota dedicated = new Quota(unlimited ? 0 : white.quotaTotal(),
+                    special == null ? 0 : special.used(), special == null ? 0 : special.reserved());
+            return new FreeQuotas(dedicated, unlimited ? Quota.EMPTY : referral, false, false);
         }
+
+        Pool registeredPool = pool(REGISTRATION, subject);
+        long registeredUsed = registeredPool == null ? 0 : registeredPool.used();
+        long registeredReserved = registeredPool == null ? 0 : registeredPool.reserved();
+        // Count historical trial usage toward the base and retain the actual
+        // used and reserved counts when the configured allowance is reduced.
+        Quota registered = jdbc.queryForObject("""
+                SELECT COALESCE(SUM(consumed_amount),0), COALESCE(SUM(reserved_amount),0)
+                FROM membership_quota_pool WHERE subject_key=? AND scope_key LIKE 'TRIAL:%'
+                """, (rs, row) -> new Quota(policy.registrationQuota(),
+                registeredUsed + rs.getLong(1), registeredReserved + rs.getLong(2)), subject);
+
         var trial = policy.trial();
-        if (trial.active(now)) {
-            String scope = "TRIAL:" + trial.activityId();
-            Pool pool = pool(scope, subject);
-            if (pool == null && trial.perCompany() > 0 && trialAvailable(trial)) {
-                if (allocate) {
+        if (!trial.active(now)) return new FreeQuotas(registered, referral, false, false);
+        Pool trialPool = pool("TRIAL:" + trial.activityId(), subject);
+        if (trialPool == null && !trialAvailable(trial)) return new FreeQuotas(registered, referral, false, false);
+
+        // A still-active promotion can provide additional capacity. Credits
+        // already taken from the base cannot be claimed again from that promotion.
+        Quota promotional = Quota.bounded(trialPool == null ? trial.perCompany() : trialPool.total(),
+                registeredUsed + (trialPool == null ? 0 : trialPool.used()),
+                registeredReserved + (trialPool == null ? 0 : trialPool.reserved()));
+        if (promotional.remaining() > registered.remaining()
+                || promotional.remaining() == registered.remaining() && promotional.total() > registered.total()) {
+            return new FreeQuotas(promotional, referral, true, trialPool == null);
+        }
+        return new FreeQuotas(registered, referral, false, false);
+    }
+
+    private Selection select(CompanyRespDTO company, String subject, MembershipPolicyStore.Snapshot snapshot,
+                             Instant now, FreeQuotas free, boolean allocate) {
+        if (!snapshot.known()) return denied("会员策略正在同步，请稍后再试");
+        var policy = snapshot.policy();
+        var black = policy.blacklist().get(company.getId());
+        if (black != null && black.active(now)) return denied("当前企业已暂停新发起电子签，请联系平台");
+        if (!"VERIFIED".equals(company.getCertificationStatus())) return denied("请先完成企业认证");
+
+        var white = policy.whitelist().get(company.getId());
+        boolean dedicated = white != null && white.active(now);
+        if (dedicated && "UNLIMITED".equals(white.mode())) {
+            return new Selection("SPECIAL", "SPECIAL_UNLIMITED", 0, "本次免费无限签");
+        }
+        if (free.ordinary().remaining() > 0) {
+            long total = free.ordinary().total();
+            if (dedicated) {
+                return new Selection("SPECIAL", "SPECIAL_QUOTA", total, "本次使用企业专属免费额度 1 份");
+            }
+            if (free.usesTrial()) {
+                var trial = policy.trial();
+                if (allocate && free.allocateTrial()) {
                     jdbc.update("INSERT IGNORE INTO membership_trial_budget(activity_id) VALUES (?)", trial.activityId());
                     jdbc.update("UPDATE membership_trial_budget SET allocated_amount=allocated_amount+? WHERE activity_id=?",
-                            trial.perCompany(), trial.activityId());
-                    jdbc.update("""
-                            INSERT INTO membership_quota_pool(scope_key,subject_key,company_id,total_amount) VALUES (?,?,?,?)
-                            """, scope, subject, company.getId(), trial.perCompany());
+                            total, trial.activityId());
                 }
-                return new Selection(scope, "TRIAL", false, trial.perCompany(), 0, 0, trial.perCompany(),
-                        "本次使用上线体验额度 1 份");
+                return new Selection("TRIAL:" + trial.activityId(), "TRIAL", total, "本次使用上线体验额度 1 份");
             }
-            if (pool != null && pool.remaining() > 0)
-                return new Selection(scope, "TRIAL", false, pool.total(), pool.used(), pool.reserved(), pool.remaining(),
-                        "本次使用上线体验额度 1 份");
-            return paid(subject, pool == null ? "本期体验赠额已领完，请联系平台" : "企业体验签署额度已用完，请联系平台");
+            return new Selection(REGISTRATION, REGISTRATION, total, "本次使用企业注册免费额度 1 份");
         }
-        return paid(subject, "当前没有可用签署额度，请联系平台开通或补充");
+        if (free.referral().remaining() > 0) {
+            return new Selection(REFERRAL, REFERRAL, free.referral().total(), "本次使用企业邀请奖励额度 1 份");
+        }
+        return paid(subject, dedicated ? "企业专属免费份额已用完，请联系平台补充额度"
+                : "当前没有可用签署额度，请联系平台开通或补充");
     }
 
     private Selection paid(String subject, String fallback) {
         return paidPools(subject).stream().filter(pool -> pool.remaining() > 0).findFirst()
-                .map(pool -> new Selection(pool.scope(), "PAID", false, pool.total(), pool.used(), pool.reserved(),
-                        pool.remaining(), "本次使用已购签署额度 1 份")).orElseGet(() -> denied(fallback));
+                .map(pool -> new Selection(pool.scope(), "PAID", pool.total(), "本次使用已购签署额度 1 份"))
+                .orElseGet(() -> denied(fallback));
     }
-    private Selection denied(String reason) { return new Selection(null, "", false, 0, 0, 0, 0, reason); }
+    private Selection denied(String reason) { return new Selection(null, "", 0, reason); }
     private boolean trialAvailable(MembershipPolicy.Trial trial) {
         long allocated = jdbc.query("SELECT allocated_amount FROM membership_trial_budget WHERE activity_id=?",
                 (rs, row) -> rs.getLong(1), trial.activityId()).stream().findFirst().orElse(0L);

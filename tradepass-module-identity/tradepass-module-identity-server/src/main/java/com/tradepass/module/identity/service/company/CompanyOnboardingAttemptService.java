@@ -36,12 +36,15 @@ public class CompanyOnboardingAttemptService {
     private final FadadaCorpIdentityMapper identities;
     private final CompanyCertificationApplicationMapper applications;
     private final FadadaPersonalIdentityService personal;
+    private final CompanyReferralService referrals;
 
     public CompanyOnboardingAttemptService(CompanyMapper companies, CompanyOnboardingAttemptMapper attempts,
             CompanyMemberMapper members, FadadaCorpIdentityMapper identities,
-            CompanyCertificationApplicationMapper applications, FadadaPersonalIdentityService personal) {
+            CompanyCertificationApplicationMapper applications, FadadaPersonalIdentityService personal,
+            CompanyReferralService referrals) {
         this.companies = companies; this.attempts = attempts; this.members = members;
         this.identities = identities; this.applications = applications; this.personal = personal;
+        this.referrals = referrals;
     }
 
     public record Activation(CompanyOnboardingAttemptDO attempt, boolean changed) { }
@@ -68,15 +71,21 @@ public class CompanyOnboardingAttemptService {
         if (!Objects.equals(company.getCreditCode(), request.creditCode())) throw new BusinessException("企业统一社会信用代码不一致");
         preserveLegacyLease(company);
         CompanyOnboardingAttemptDO attempt = latestPending(companyId, userId);
+        Long previousReferralInviteId = null;
         if (attempt != null && "ACTIVE".equals(attempt.getStatus())) {
             if (valid(attempt)) {
                 if (!sameSnapshot(attempt, request)) throw new BusinessException("当前认证办理中，暂不能修改本次申请资料");
                 return attempt;
             }
+            previousReferralInviteId = attempt.getReferralInviteId();
             expire(attempt);
             attempt = null;
         }
         if (attempt == null) attempt = newAttempt(company, userId);
+        if (attempt.getReferralInviteId() == null) {
+            Long inviteId = referrals.eligibleInviteId(company, request.inviteCode());
+            attempt.setReferralInviteId(inviteId == null ? previousReferralInviteId : inviteId);
+        }
         snapshot(attempt, request);
         if (attempt.getId() == null) {
             attempts.insert(attempt);
@@ -93,7 +102,9 @@ public class CompanyOnboardingAttemptService {
                     .set(CompanyOnboardingAttemptDO::getRegisteredAddress, attempt.getRegisteredAddress())
                     .set(CompanyOnboardingAttemptDO::getContactPhone, attempt.getContactPhone())
                     .set(CompanyOnboardingAttemptDO::getBankName, attempt.getBankName())
-                    .set(CompanyOnboardingAttemptDO::getBankAccount, attempt.getBankAccount()));
+                    .set(CompanyOnboardingAttemptDO::getBankAccount, attempt.getBankAccount())
+                    .set(attempt.getReferralInviteId() != null,
+                            CompanyOnboardingAttemptDO::getReferralInviteId, attempt.getReferralInviteId()));
             if (updated != 1) throw new BusinessException("入驻申请状态已变化，请重新提交");
         }
         return attempt;
@@ -190,11 +201,12 @@ public class CompanyOnboardingAttemptService {
 
     @Transactional
     public void complete(long companyId, long userId, String providerRequestId) {
-        lockedCompany(companyId);
+        CompanyDO company = lockedCompany(companyId);
         CompanyOnboardingAttemptDO attempt = requireCurrent(companyId, userId);
         if (!Objects.equals(attempt.getProviderRequestId(), providerRequestId)) throw new BusinessException(EXPIRED);
         attempt.setStatus("COMPLETED");
         attempts.updateById(attempt);
+        referrals.confirm(company, attempt);
         // Publish only the independently approved applicant's optional business details.
         // Provider-verified company/representative names were already stored by the caller.
         companies.update(new LambdaUpdateWrapper<CompanyDO>().eq(CompanyDO::getId, companyId)

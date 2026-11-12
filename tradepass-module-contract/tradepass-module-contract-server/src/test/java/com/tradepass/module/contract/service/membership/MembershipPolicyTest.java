@@ -42,6 +42,10 @@ class MembershipPolicyTest {
                 "whitelist: [{company-id: '1', mode: QUOTA, quota-total: 1.5}]",
                 "whitelist: [{company-id: '1', mode: UNLIMITED}, {company-id: '1', mode: UNLIMITED}]",
                 "trial: {enabled: true, activity-id: launch, end-at: '2026-02-30 00:00:00'}",
+                "registration: {sign-quota-per-company: -1}",
+                "registration: {sign-quota-per-company: 2.5}",
+                "registration: {sign-quota-per-company: '10'}",
+                "registration: {sign-quota: 10}",
                 "billing: {enabled: 'true'}",
                 "whitelits: []"
         }) assertThatThrownBy(() -> MembershipPolicy.parse("tradepass:\n  membership:\n    " + fields))
@@ -49,9 +53,20 @@ class MembershipPolicyTest {
         assertThatThrownBy(() -> MembershipPolicy.parse("tradepass:\n  membership:\n    billing: {}\n    billing: {}\n"))
                 .isInstanceOf(RuntimeException.class);
     }
-    @Test void missingOrEmptyConfigurationDoesNotTurnOnFreeSigningOrPayments() {
-        for (String content : new String[]{null, "", "tradepass: {membership: {}}"})
-            assertThat(MembershipPolicy.parse(content)).isEqualTo(MembershipPolicy.empty());
+    @Test void registrationQuotaDefaultsToTenAndCanBeConfiguredIndependentlyOfTrial() {
+        for (String content : new String[]{null, "", "tradepass: {membership: {}}",
+                "tradepass: {membership: {trial: {sign-quota-per-company: 5}}}"}) {
+            assertThat(MembershipPolicy.parse(content).registrationQuota()).isEqualTo(10);
+        }
+        var policy = MembershipPolicy.parse("""
+                tradepass:
+                  membership:
+                    registration: {sign-quota-per-company: 0}
+                    trial: {sign-quota-per-company: 5}
+                """);
+        assertThat(policy.registrationQuota()).isZero();
+        assertThat(policy.trial().perCompany()).isEqualTo(5);
+        assertThat(policy.billingEnabled()).isFalse();
     }
 
     @Test void enterpriseOfferPreservesLongCompanyIdAndPublicProductsRemainAvailable() {

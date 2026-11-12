@@ -42,7 +42,6 @@ import com.tradepass.module.identity.dal.dataobject.fadada.FadadaCorpIdentityDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyInviteDO;
 import com.tradepass.module.identity.dal.dataobject.company.CompanyMemberDO;
 import com.tradepass.module.identity.api.fadada.dto.PersonalIdentityRespDTO;
-import com.tradepass.module.identity.dal.dataobject.counterparty.CounterpartyRelationEntityDO;
 import com.tradepass.module.identity.dal.dataobject.permission.PermDefDO;
 import com.tradepass.module.identity.dal.dataobject.permission.RoleDefDO;
 import com.tradepass.module.identity.dal.mysql.certification.CompanyCertificationApplicationMapper;
@@ -450,20 +449,8 @@ public class CompanyServiceImpl implements CompanyService {
             }
             CompanyDO userCompany = companyMapper.selectById(legalMember.getCompanyId());
             CompanyDO inviterCompany = companyMapper.selectById(invite.getCompanyId());
-            String companyName = userCompany == null ? "未知企业" : userCompany.getName();
-            CounterpartyRelationEntityDO relation = new CounterpartyRelationEntityDO();
-            if ("supplier".equalsIgnoreCase(invite.getRelationRole())) {
-                relation.setCompanyId(legalMember.getCompanyId());
-                relation.setCounterpartyCompanyId(invite.getCompanyId());
-                relation.setCounterpartyCompanyName(inviterCompany == null ? "未知企业" : inviterCompany.getName());
-            } else {
-                relation.setCompanyId(invite.getCompanyId());
-                relation.setCounterpartyCompanyId(legalMember.getCompanyId());
-                relation.setCounterpartyCompanyName(companyName);
-            }
-            relation.setRelationType("SUPPLIER");
-            relation.setStatus("ACTIVE");
-            counterpartyRelationMapper.insert(relation);
+            counterpartyRelationMapper.insert(
+                    CompanyReferralService.cooperation(invite, legalMember.getCompanyId(), userCompany, inviterCompany));
             markInviteUsed(invite, userId);
             String relationText = "supplier".equalsIgnoreCase(invite.getRelationRole()) ? "客户关系" : "供应商关系";
             return new JoinResult("ACTIVE", "已建立" + relationText);

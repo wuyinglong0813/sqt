@@ -105,14 +105,89 @@ class MysqlMembershipTest {
         assertThat(service.status(company(3)).remaining()).isEqualTo(1);
     }
     @Test void trialBudgetIsAllocatedOnceAndDateExtensionDoesNotGrantAgain() {
-        String trial="    trial: {enabled: true, activity-id: launch, end-at: '2026-10-31 23:59:59', sign-quota-per-company: 2, total-sign-quota: 2}\n";
+        String trial="    trial: {enabled: true, activity-id: launch, end-at: '2026-10-31 23:59:59', sign-quota-per-company: 12, total-sign-quota: 12}\n";
         configure(trial); consume(1);
-        assertThat(service.status(company(4)).canInitiate()).isFalse();
-        configure(trial.replace("2026-10-31","2026-11-30").replace("per-company: 2","per-company: 5"));
+        assertThat(service.status(company(4)).remaining()).isEqualTo(10);
+        configure(trial.replace("2026-10-31","2026-11-30").replace("per-company: 12","per-company: 15"));
+        assertThat(service.status(company(3)).remaining()).isEqualTo(11);
+        assertThat(jdbc.queryForObject("SELECT allocated_amount FROM membership_trial_budget",Long.class)).isEqualTo(12);
+        configure(trial.replace("enabled: true","enabled: false"));
+        assertThat(service.status(company(3)).remaining()).isEqualTo(9);
+        configure(trial);
+        assertThat(service.status(company(3)).remaining()).isEqualTo(11);
+    }
+
+    @Test void verifiedRegistrationHasTenPermanentCreditsByCompanySubjectWithoutAnActiveTrial() {
+        policies.apply("", "NACOS_MISSING");
+        var unverified = company(3);
+        unverified.setCertificationStatus("PENDING");
+        assertThat(service.status(unverified).remaining()).isZero();
+        assertThatThrownBy(() -> service.reserve(unverified, 1L, 1, "{}", "a".repeat(64)))
+                .hasMessageContaining("完成企业认证");
+
+        assertThat(service.status(company(3)).remaining()).isEqualTo(10);
+        consume(1);
+        var sameSubject = company(4);
+        sameSubject.setCreditCode("credit-3");
+        assertThat(service.status(sameSubject).remaining()).isEqualTo(9);
+        assertThat(jdbc.queryForObject("SELECT source FROM membership_signing_usage", String.class))
+                .isEqualTo("REGISTRATION");
+    }
+
+    @Test void registrationQuotaChangesApplyToExistingCompaniesAndKeepPendingTasksAndUsage() {
+        configure("    registration: {sign-quota-per-company: 2}\n");
+        consume(1);
+        var pending = reserve(2);
+        configure("    registration: {sign-quota-per-company: 0}\n");
+        var reduced = service.status(company(3));
+        assertThat(reduced.quotaTotal()).isZero();
+        assertThat(reduced.used()).isEqualTo(1);
+        assertThat(reduced.reserved()).isEqualTo(1);
+        assertThat(reduced.remaining()).isZero();
+        assertThatThrownBy(() -> reserve(3)).hasMessageContaining("没有可用签署额度");
+
+        var inviter = company(3);
+        inviter.setConfirmedReferralCount(1);
+        assertThat(service.status(inviter).remaining()).isEqualTo(5);
+        service.confirm(pending.id(), new FadadaSigningGateway.CreatedTask("pending", "file", "doc"));
+
+        configure("    registration: {sign-quota-per-company: 4}\n");
+        var raised = service.status(company(3));
+        assertThat(raised.quotaTotal()).isEqualTo(4);
+        assertThat(raised.used()).isEqualTo(2);
+        assertThat(raised.reserved()).isZero();
+        assertThat(raised.remaining()).isEqualTo(2);
+        reserve(3);
+        assertThat(jdbc.queryForObject("""
+                SELECT total_amount FROM membership_quota_pool WHERE scope_key='REGISTRATION'
+                """, Long.class)).isEqualTo(4);
         assertThat(service.status(company(3)).remaining()).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT allocated_amount FROM membership_trial_budget",Long.class)).isEqualTo(2);
-        configure(trial.replace("enabled: true","enabled: false")); configure(trial);
-        assertThat(service.status(company(3)).remaining()).isEqualTo(1);
+    }
+
+    @Test void expiredTrialUsageDoesNotSpendReferralCreditsAndLaterReferralsAddFiveEach() {
+        policies.apply("", "NACOS_MISSING");
+        jdbc.update("""
+                INSERT INTO membership_quota_pool(scope_key,subject_key,company_id,total_amount,consumed_amount,reserved_amount)
+                VALUES ('TRIAL:old','CREDIT-3',3,15,12,1)
+                """);
+        var inviter = company(3);
+        assertThat(service.status(inviter).remaining()).isZero();
+        inviter.setConfirmedReferralCount(1);
+        assertThat(service.status(inviter).quotaTotal()).isEqualTo(15);
+        assertThat(service.status(inviter).remaining()).isEqualTo(5);
+        var first = service.reserve(inviter, 1L, 1, "{}", "a".repeat(64));
+        service.confirm(first.id(), new FadadaSigningGateway.CreatedTask("first", "file", "doc"));
+        assertThat(service.status(inviter).remaining()).isEqualTo(4);
+        assertThat(service.status(company(4)).remaining()).isEqualTo(10);
+        inviter.setConfirmedReferralCount(2);
+        assertThat(service.status(inviter).remaining()).isEqualTo(9);
+        service.reserve(inviter, 2L, 1, "{}", "a".repeat(64));
+        assertThat(service.status(inviter).remaining()).isEqualTo(8);
+        assertThat(jdbc.queryForObject("""
+                SELECT total_amount FROM membership_quota_pool WHERE scope_key='REFERRAL'
+                """, Long.class)).isEqualTo(10);
+        assertThat(jdbc.queryForList("SELECT source FROM membership_signing_usage", String.class))
+                .containsExactly("REFERRAL", "REFERRAL");
     }
     @Test void dedicatedQuotaDoesNotFallBackToOrdinaryTrialButCanUseIndependentPaidCredits() {
         configure("""
@@ -128,6 +203,13 @@ class MysqlMembershipTest {
         assertThat(jdbc.queryForObject("SELECT source FROM membership_signing_usage",String.class)).isEqualTo("PAID");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM membership_trial_budget",Long.class)).isZero();
         assertThat(service.status(company(3)).paidRemaining()).isEqualTo(4);
+        var inviter = company(3);
+        inviter.setConfirmedReferralCount(1);
+        assertThat(service.status(inviter).remaining()).isEqualTo(5);
+        service.reserve(inviter, 2L, 1, "{}", "a".repeat(64));
+        assertThat(jdbc.queryForObject("SELECT source FROM membership_signing_usage WHERE contract_id=2",String.class))
+                .isEqualTo("REFERRAL");
+        assertThat(service.status(inviter).paidRemaining()).isEqualTo(4);
     }
     @Test void providerReceiptSurvivesOuterRollbackAndDoesNotCreateOrChargeTwice() {
         quota(2);
@@ -319,7 +401,7 @@ class MysqlMembershipTest {
         var later=new MembershipService(jdbc,policies,manager,
                 Clock.fixed(Instant.parse("2026-11-30T16:00:00Z"),ZoneOffset.UTC));
         assertThat(later.status(company(3)).vip()).isFalse();
-        assertThat(later.status(company(3)).canInitiate()).isFalse();
+        assertThat(later.status(company(3)).remaining()).isEqualTo(10);
     }
 
     @Test
@@ -346,21 +428,20 @@ class MysqlMembershipTest {
                 .withProperty("tradepass.payment.data-id",paymentDataId);
         var paymentLoader=new com.tradepass.module.contract.framework.membership.WechatPayNacosLoader(
                 paymentStore,factory.getBeanProvider(com.alibaba.cloud.nacos.NacosConfigManager.class),paymentEnvironment);
-        String prefix="tradepass:\n  membership:\n    whitelist: [{company-id: '3', mode: QUOTA, quota-total: ";
+        String prefix="tradepass:\n  membership:\n    registration:\n      sign-quota-per-company: ";
         try {
-            assertThat(config.publishConfig(dataId,group,prefix+"1}]\n")).isTrue();
+            assertThat(config.publishConfig(dataId,group,prefix+"1\n")).isTrue();
             loader.start();
             await(()->service.status(company(3)).remaining()!=null && service.status(company(3)).remaining()==1);
             consume(10);
-            assertThat(config.publishConfig(dataId,group,prefix+"3}]\n")).isTrue();
+            assertThat(config.publishConfig(dataId,group,prefix+"3\n")).isTrue();
             await(()->service.status(company(3)).remaining()==2);
             assertThat(service.status(company(3)).used()).isEqualTo(1);
-            assertThat(config.publishConfig(dataId,group,prefix+"-1}]\n")).isTrue();
+            assertThat(config.publishConfig(dataId,group,prefix+"-1\n")).isTrue();
             await(()->!policies.error().isBlank());
             assertThat(service.status(company(3)).remaining()).isEqualTo(2);
             assertThat(config.removeConfig(dataId,group)).isTrue();
-            await(()->!service.status(company(3)).vip());
-            assertThat(service.status(company(3)).canInitiate()).isFalse();
+            await(()->service.status(company(3)).remaining()==9);
             var rsa=java.security.KeyPairGenerator.getInstance("RSA"); rsa.initialize(2048);
             String publicPem="-----BEGIN PUBLIC KEY-----\n"+java.util.Base64.getEncoder()
                     .encodeToString(rsa.generateKeyPair().getPublic().getEncoded())+"\n-----END PUBLIC KEY-----";

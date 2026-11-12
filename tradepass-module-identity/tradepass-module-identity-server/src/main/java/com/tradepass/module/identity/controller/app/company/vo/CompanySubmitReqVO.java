@@ -11,9 +11,19 @@ public record CompanySubmitReqVO(
         @Size(max = 256) String registeredAddress,
         @Size(max = 32) String contactPhone,
         @Size(max = 128) String bankName,
-        @Size(max = 64) String bankAccount
+        @Size(max = 64) String bankAccount,
+        @Size(max = 64) String inviteCode
 ) {
+    public CompanySubmitReqVO {
+        if (creditCode != null) creditCode = creditCode.trim();
+    }
+
     public CompanySubmitReqVO(String id, String name, String creditCode, String legalPersonName) {
-        this(id, name, creditCode, legalPersonName, null, null, null, null);
+        this(id, name, creditCode, legalPersonName, null, null, null, null, null);
+    }
+
+    public CompanySubmitReqVO(String id, String name, String creditCode, String legalPersonName,
+            String registeredAddress, String contactPhone, String bankName, String bankAccount) {
+        this(id, name, creditCode, legalPersonName, registeredAddress, contactPhone, bankName, bankAccount, null);
     }
 }

@@ -2,6 +2,8 @@
 # All quoted times are Beijing time yyyy-MM-dd HH:mm:ss, inclusive of the written second.
 tradepass:
   membership:
+    registration:
+      sign-quota-per-company: 10
     trial:
       enabled: true
       activity-id: "launch-202610"

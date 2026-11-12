@@ -21,6 +21,7 @@ public class CompanyOnboardingAttemptDO {
     private String contactPhone;
     private String bankName;
     private String bankAccount;
+    private Long referralInviteId;
     private LocalDateTime startedAt;
     private LocalDateTime expiresAt;
     private LocalDateTime createdAt;
@@ -50,6 +51,8 @@ public class CompanyOnboardingAttemptDO {
     public void setBankName(String value) { this.bankName = value; }
     public String getBankAccount() { return bankAccount; }
     public void setBankAccount(String value) { this.bankAccount = value; }
+    public Long getReferralInviteId() { return referralInviteId; }
+    public void setReferralInviteId(Long value) { this.referralInviteId = value; }
     public LocalDateTime getStartedAt() { return startedAt; }
     public void setStartedAt(LocalDateTime value) { this.startedAt = value; }
     public LocalDateTime getExpiresAt() { return expiresAt; }

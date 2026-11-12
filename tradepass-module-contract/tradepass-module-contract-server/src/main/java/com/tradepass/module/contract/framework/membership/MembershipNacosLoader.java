@@ -41,7 +41,7 @@ public class MembershipNacosLoader {
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
         if (!environment.getProperty("spring.cloud.nacos.config.enabled", Boolean.class, false)) {
-            // Explicit local YAML is for development/tests; no policy defaults to no free signature grants.
+            // Development can provide local YAML through the same policy store.
             store.apply(environment.getProperty("tradepass.membership.local-yaml", ""), "LOCAL");
             return;
         }

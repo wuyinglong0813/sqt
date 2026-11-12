@@ -10,10 +10,11 @@ import java.time.format.ResolverStyle;
 import java.util.*;
 
 /** Immutable, all-or-nothing operational policy. Human-readable times are always Beijing time. */
-public record MembershipPolicy(Trial trial, boolean billingEnabled,
+public record MembershipPolicy(long registrationQuota, Trial trial, boolean billingEnabled,
                                Map<Long, Rule> blacklist, Map<Long, Rule> whitelist,
                                List<Product> products, int orderExpireMinutes) {
     public static final ZoneId BEIJING = ZoneId.of("Asia/Shanghai");
+    private static final long DEFAULT_REGISTRATION_QUOTA = 10;
     private static final DateTimeFormatter FORMAT =
             DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss").withResolverStyle(ResolverStyle.STRICT);
 
@@ -33,7 +34,8 @@ public record MembershipPolicy(Trial trial, boolean billingEnabled,
     }
 
     public static MembershipPolicy empty() {
-        return new MembershipPolicy(new Trial(false, "", Instant.EPOCH, 0, 0), false, Map.of(), Map.of(), List.of(), 15);
+        return new MembershipPolicy(DEFAULT_REGISTRATION_QUOTA, new Trial(false, "", Instant.EPOCH, 0, 0),
+                false, Map.of(), Map.of(), List.of(), 15);
     }
 
     public static MembershipPolicy parse(String content) {
@@ -50,8 +52,11 @@ public record MembershipPolicy(Trial trial, boolean billingEnabled,
         if (!root.isEmpty() && !parent.containsKey("membership"))
             throw new IllegalArgumentException("缺少 tradepass.membership 配置");
         Map<?, ?> config = map(parent.get("membership"));
-        keys(config, "trial", "billing", "blacklist", "whitelist", "products");
+        keys(config, "registration", "trial", "billing", "blacklist", "whitelist", "products");
         if (config.isEmpty()) return empty();
+        Map<?, ?> registration = map(config.get("registration"));
+        keys(registration, "sign-quota-per-company");
+        long registrationQuota = number(registration.get("sign-quota-per-company"), DEFAULT_REGISTRATION_QUOTA);
         Map<?, ?> trial = map(config.get("trial"));
         keys(trial, "enabled", "activity-id", "end-at", "sign-quota-per-company", "total-sign-quota");
         boolean enabled = bool(trial, "enabled", false);
@@ -65,7 +70,7 @@ public record MembershipPolicy(Trial trial, boolean billingEnabled,
         keys(billing, "enabled", "order-expire-minutes");
         long expire = number(billing.get("order-expire-minutes"), 15);
         if (expire < 2 || expire > 120) throw new IllegalArgumentException("order-expire-minutes 必须为 2 至 120");
-        return new MembershipPolicy(new Trial(enabled, activity, end == null ? Instant.EPOCH : end, each, budget),
+        return new MembershipPolicy(registrationQuota, new Trial(enabled, activity, end == null ? Instant.EPOCH : end, each, budget),
                 bool(billing, "enabled", false), rules(config.get("blacklist"), true),
                 rules(config.get("whitelist"), false), products(config.get("products")), (int) expire);
     }

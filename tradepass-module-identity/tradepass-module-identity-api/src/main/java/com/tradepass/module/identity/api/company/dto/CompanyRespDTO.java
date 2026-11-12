@@ -18,6 +18,7 @@ public class CompanyRespDTO {
     private String realNameStatus;
     private String faceStatus;
     private String sealStatus;
+    private long confirmedReferralCount;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
@@ -47,6 +48,8 @@ public class CompanyRespDTO {
     public void setFaceStatus(String faceStatus) { this.faceStatus = faceStatus; }
     public String getSealStatus() { return sealStatus; }
     public void setSealStatus(String sealStatus) { this.sealStatus = sealStatus; }
+    public long getConfirmedReferralCount() { return confirmedReferralCount; }
+    public void setConfirmedReferralCount(long confirmedReferralCount) { this.confirmedReferralCount = confirmedReferralCount; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }

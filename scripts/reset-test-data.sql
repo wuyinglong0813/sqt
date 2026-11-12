@@ -40,6 +40,7 @@ BEGIN
         ('tradepass_staging_identity', 'company'),
         ('tradepass_staging_identity', 'company_member'),
         ('tradepass_staging_identity', 'company_invite'),
+        ('tradepass_staging_identity', 'company_referral'),
         ('tradepass_staging_identity', 'role_def'),
         ('tradepass_staging_identity', 'counterparty_relation'),
         ('tradepass_staging_identity', 'auth_session'),

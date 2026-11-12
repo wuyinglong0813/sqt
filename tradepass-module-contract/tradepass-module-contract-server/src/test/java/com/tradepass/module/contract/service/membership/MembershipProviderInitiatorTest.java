@@ -112,6 +112,7 @@ class MembershipProviderInitiatorTest {
         final MembershipService service;
         Fixture() {
             company.setId(3L); company.setName("企业3"); company.setCreditCode("CREDIT-3");
+            company.setCertificationStatus("VERIFIED");
             AuthContext.set(12L, 3L);
             when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
             when(policies.current(true)).thenReturn(new MembershipPolicyStore.Snapshot(7L,
