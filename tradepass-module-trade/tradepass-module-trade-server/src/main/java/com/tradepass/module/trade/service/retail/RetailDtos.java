@@ -15,6 +15,15 @@ public final class RetailDtos {
         }
     }
     public record DocumentRequest(String requestId, String documentType, Long originalDocumentId,
-                                  String orderDate, String remark, List<ItemRequest> items) {}
-    public record ConfirmRequest(Long warehouseId) {}
+                                  String orderDate, String remark, List<ItemRequest> items, Object taxPricing) {
+        public DocumentRequest(String requestId, String documentType, Long originalDocumentId,
+                               String orderDate, String remark, List<ItemRequest> items) {
+            this(requestId, documentType, originalDocumentId, orderDate, remark, items, null);
+        }
+    }
+    public record ConfirmRequest(Long warehouseId, Object taxDeductions) {
+        public ConfirmRequest(Long warehouseId) {
+            this(warehouseId, null);
+        }
+    }
 }

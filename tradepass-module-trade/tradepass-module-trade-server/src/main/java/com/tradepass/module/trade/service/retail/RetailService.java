@@ -1,16 +1,23 @@
 package com.tradepass.module.trade.service.retail;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.tradepass.framework.audit.core.AuditLogService;
 import com.tradepass.framework.mybatis.core.ApplicationIds;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.framework.common.money.TradeTaxPricing.Amounts;
+import com.tradepass.framework.common.money.TradeTaxPricing.Basis;
 import com.tradepass.framework.common.pojo.PagePayload;
 import com.tradepass.module.identity.api.company.CompanyReader;
 import com.tradepass.module.identity.api.permission.AccessControlOperations;
 import com.tradepass.module.identity.api.user.UserIdentityOperations;
 import com.tradepass.module.trade.dal.dataobject.document.BusinessDocumentDO;
+import com.tradepass.module.trade.service.document.DocumentTaxPricing;
+import com.tradepass.module.trade.service.document.DocumentTaxPricing.Line;
+import com.tradepass.module.trade.service.document.DocumentTaxPricing.Snapshot;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -141,13 +148,22 @@ public class RetailService {
         String type = String.valueOf(row.get("document_type"));
         var result = documentView(row);
         var itemRows = items(id);
-        for (var item : itemRows) {
+        JsonNode pricingNode = storedJson(row.get("tax_pricing"));
+        Snapshot pricing = DocumentTaxPricing.read(pricingNode);
+        if (pricing != null) result.put("taxPricing", pricingNode);
+        if (row.get("purchase_tax_costs") != null && (access.hasPermission(cid, "inventory_view")
+                || access.hasPermission(cid, "inventory_receive"))) {
+            result.put("purchaseTaxCosts", storedJson(row.get("purchase_tax_costs")));
+        }
+        for (int index = 0; index < itemRows.size(); index++) {
+            var item = itemRows.get(index);
             long itemId = number(item.get("id"));
             BigDecimal returned = returnedQuantity(itemId, null);
             item.put("returnedQuantity", returned.toPlainString());
             item.put("returnedAmount", returnedAmount(itemId, null).toPlainString());
             item.put("returnableQuantity", decimal(item.get("quantity")).subtract(returned).toPlainString());
-            item.put("roundingAdjustment", decimal(item.get("amount")).subtract(decimal(item.get("quantity"))
+            BigDecimal quotedAmount = quoteAmount(item, pricing, index);
+            item.put("roundingAdjustment", quotedAmount.subtract(decimal(item.get("quantity"))
                     .multiply(decimal(item.get("unitPrice"))).setScale(2, RoundingMode.HALF_UP)).toPlainString());
         }
         result.put("items", itemRows);
@@ -196,9 +212,10 @@ public class RetailService {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, id, cid, customerId, requestId, documentNumberPrefix(type) + id,
                 type, isReturn(type) ? request.originalDocumentId() : null, date(request.orderDate()),
-                total(normalized), encode(customerView(customer)), company.getName(), users.currentDisplayName(),
+                total(normalized.items()), encode(customerView(customer)), company.getName(), users.currentDisplayName(),
                 text(request.remark(), 500, "备注"), AuthContext.userId());
-        insertItems(id, normalized);
+        savePricing(cid, id, normalized.pricing());
+        insertItems(id, normalized.items());
         audit.log(cid, auditType(type), id, "CREATE", "创建" + businessLabel(type) + label(type) + "草稿");
         return document(id);
     }
@@ -209,14 +226,18 @@ public class RetailService {
         if (!"DRAFT".equals(row.get("status"))) throw new BusinessException("只有草稿可以修改");
         if (!Objects.equals(request.documentType(), row.get("document_type"))) throw new BusinessException("不能修改单据类型");
         var normalized = normalizeItems(cid, number(row.get("customer_id")), request.documentType(), request, id);
+        if (normalized.pricing() == null && row.get("tax_pricing") != null) {
+            throw new BusinessException("单据已记录价税明细，请填写价税明细后再保存");
+        }
         jdbc.update("""
                 UPDATE retail_document SET order_date = ?, amount = ?, remark = ?, original_document_id = ?, customer_snapshot = ?,
                     updated_at = CURRENT_TIMESTAMP WHERE id = ? AND company_id = ?
-                """, date(request.orderDate()), total(normalized), text(request.remark(), 500, "备注"),
+                """, date(request.orderDate()), total(normalized.items()), text(request.remark(), 500, "备注"),
                 isReturn(request.documentType()) ? request.originalDocumentId() : null,
                 encode(customerView(requireCustomer(cid, number(row.get("customer_id")), false))), id, cid);
         jdbc.update("DELETE FROM retail_document_item WHERE document_id = ?", id);
-        insertItems(id, normalized);
+        savePricing(cid, id, normalized.pricing());
+        insertItems(id, normalized.items());
         audit.log(cid, auditType(request.documentType()), id, "UPDATE",
                 "修改" + businessLabel(request.documentType()) + "单据草稿");
         return document(id);
@@ -224,23 +245,18 @@ public class RetailService {
 
     @Transactional
     public Map<String, Object> confirm(Long id, Long warehouseId) {
+        return confirm(id, warehouseId, null);
+    }
+
+    @Transactional
+    public Map<String, Object> confirm(Long id, Long warehouseId, Object taxDeductions) {
         long cid = writeCompany(); var row = requireDocument(cid, id, true);
         if ("CONFIRMED".equals(row.get("status"))) return document(id);
         if (!"DRAFT".equals(row.get("status"))) throw new BusinessException("当前单据不能确认");
         String type = String.valueOf(row.get("document_type"));
-        if (isReturn(type)) {
-            var original = requireOriginal(cid, number(row.get("customer_id")), type, number(row.get("original_document_id")));
-            var originals = items(number(original.get("id")));
-            for (var item : items(id)) {
-                long originalId = number(item.get("originalItemId"));
-                var source = originals.stream().filter(i -> number(i.get("id")) == originalId).findFirst()
-                        .orElseThrow(() -> new BusinessException("原单商品不存在"));
-                ensureReturnQuantity(source, decimal(item.get("quantity")), id);
-                if (refundAmount(source, decimal(item.get("quantity")), id).compareTo(decimal(item.get("amount"))) != 0)
-                    throw new BusinessException("原" + originalLabel(type) + "已有新退货，请编辑刷新草稿金额后再确认");
-            }
-        }
-        if (warehouseId != null) processStock(cid, row, warehouseId);
+        if (isReturn(type)) validateCurrentRefund(cid, id, row, type);
+        if (warehouseId != null) processStock(cid, row, warehouseId, taxDeductions);
+        else if (taxDeductions != null) throw new BusinessException("请先选择入库仓库");
         jdbc.update("""
                 UPDATE retail_document SET status = 'CONFIRMED', confirmed_by = ?, confirmed_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP WHERE id = ? AND company_id = ?
@@ -251,9 +267,14 @@ public class RetailService {
 
     @Transactional
     public Map<String, Object> processStock(Long id, Long warehouseId) {
+        return processStock(id, warehouseId, null);
+    }
+
+    @Transactional
+    public Map<String, Object> processStock(Long id, Long warehouseId, Object taxDeductions) {
         long cid = readCompany(); var row = requireDocument(cid, id, true);
         if (!"CONFIRMED".equals(row.get("status"))) throw new BusinessException("请先确认单据");
-        processStock(cid, row, warehouseId);
+        processStock(cid, row, warehouseId, taxDeductions);
         return document(id);
     }
 
@@ -306,12 +327,13 @@ public class RetailService {
         var customer = (Map<?, ?>) detail.get("customer");
         String type = String.valueOf(detail.get("documentType"));
         List<List<String>> rows = new ArrayList<>(); int index = 1;
-        for (var item : items(id)) rows.add(List.of(String.valueOf(index++), String.valueOf(item.get("productName")),
+        @SuppressWarnings("unchecked")
+        var itemRows = (List<Map<String, Object>>) detail.get("items");
+        for (var item : itemRows) rows.add(List.of(String.valueOf(index++), String.valueOf(item.get("productName")),
                 text((String) item.get("model"), 128, "型号"), String.valueOf(item.get("specification")), String.valueOf(item.get("baseUnit")),
                 String.valueOf(item.get("quantity")), String.valueOf(item.get("unitPrice")),
                 String.valueOf(item.get("amount")), String.valueOf(item.get("remark"))
-                    + (decimal(item.get("amount")).compareTo(decimal(item.get("quantity")).multiply(decimal(item.get("unitPrice")))
-                            .setScale(2, RoundingMode.HALF_UP)) != 0 ? "（含累计舍入尾差）" : "")));
+                    + (decimal(item.get("roundingAdjustment")).signum() != 0 ? "（含累计舍入尾差）" : "")));
         var content = new LinkedHashMap<String, Object>();
         content.put("title", businessLabel(type) + label(type));
         content.put("companyName", detail.get("companyName")); content.put("counterpartyName", customer.get("name"));
@@ -321,6 +343,7 @@ public class RetailService {
         content.put("preparedByName", detail.get("preparedByName")); content.put("remark", detail.get("remark"));
         content.put("columns", List.of("序号", "品名", "型号", "规格", "单位", "数量", "单价", "金额", "备注"));
         content.put("rows", rows); content.put("blankRows", Math.max(8, rows.size()));
+        if (detail.containsKey("taxPricing")) content.put("taxPricing", detail.get("taxPricing"));
         BusinessDocumentDO document = new BusinessDocumentDO();
         document.setId(id); document.setCompanyId(AuthContext.requireCompanyId());
         document.setDocumentNo(String.valueOf(detail.get("documentNo"))); document.setDocumentType(type);
@@ -329,7 +352,7 @@ public class RetailService {
         return document;
     }
 
-    private void processStock(long cid, Map<String, Object> document, Long warehouseId) {
+    private void processStock(long cid, Map<String, Object> document, Long warehouseId, Object taxDeductions) {
         access.requirePermission(cid, "inventory_receive");
         if (document.get("stock_processed_at") != null) return;
         if (warehouseId == null) throw new BusinessException("请选择仓库");
@@ -340,9 +363,20 @@ public class RetailService {
         boolean returning = isReturn(type);
         boolean purchasing = isPurchase(type);
         boolean inbound = purchasing != returning;
-        var products = items(documentId).stream().filter(i -> "PRODUCT".equals(i.get("lineType"))).toList();
-        if (products.isEmpty()) throw new BusinessException("该单据没有需要处理库存的商品");
-        for (var item : products) {
+        Snapshot pricing = DocumentTaxPricing.read(storedJson(document.get("tax_pricing")));
+        boolean pricedPurchase = pricing != null && purchasing && !returning;
+        if (taxDeductions != null && !pricedPurchase) {
+            throw new BusinessException("该单据无需填写采购进项税额");
+        }
+        Map<Integer, RetailTaxPricing.PurchaseCost> purchaseCosts = pricedPurchase
+                ? RetailTaxPricing.purchaseCosts(json, pricing, taxDeductions) : Map.of();
+        var lines = items(documentId);
+        if (lines.stream().noneMatch(i -> "PRODUCT".equals(i.get("lineType")))) {
+            throw new BusinessException("该单据没有需要处理库存的商品");
+        }
+        for (int index = 0; index < lines.size(); index++) {
+            var item = lines.get(index);
+            if (!"PRODUCT".equals(item.get("lineType"))) continue;
             String name = String.valueOf(item.get("productName")), spec = String.valueOf(item.get("specification")), unit = String.valueOf(item.get("baseUnit"));
             String model = text((String) item.get("model"), 128, "型号");
             var ids = jdbc.queryForList("SELECT id FROM inventory_product WHERE company_id = ? AND product_name = ? AND specification = ? AND base_unit = ? AND model = ?", Long.class, cid, name, spec, unit, model);
@@ -362,6 +396,10 @@ public class RetailService {
             var balance = jdbc.queryForMap("SELECT quantity, unit_price, inventory_amount FROM inventory_balance WHERE company_id = ? AND warehouse_id = ? AND product_id = ? FOR UPDATE", cid, warehouseId, productId);
             BigDecimal quantity = decimal(item.get("quantity")), current = decimal(balance.get("quantity")), value = decimal(balance.get("inventory_amount"));
             BigDecimal cost = current.signum() == 0 ? decimal(balance.get("unit_price")) : value.divide(current, 6, RoundingMode.HALF_UP);
+            RetailTaxPricing.PurchaseCost purchaseCost = purchaseCosts.get(index);
+            if (pricedPurchase && purchaseCost == null) {
+                throw new BusinessException("采购入库缺少对应商品价税明细");
+            }
             if (returning) {
                 var originalCost = jdbc.queryForList("SELECT inventory_unit_cost FROM retail_document_item WHERE id = ?",
                         number(item.get("originalItemId")));
@@ -372,7 +410,9 @@ public class RetailService {
                 }
                 if (inbound) cost = decimal(originalCost.get(0).get("inventory_unit_cost"));
             } else if (purchasing) {
-                cost = decimal(item.get("unitPrice"));
+                cost = purchaseCost == null ? decimal(item.get("unitPrice"))
+                        : validDecimal(purchaseCost.costAmount().divide(quantity, 6, RoundingMode.HALF_UP),
+                                6, false, "采购入库单位成本");
             }
             if (!inbound && current.compareTo(quantity) < 0)
                 throw new BusinessException(name + "库存不足，请先处理库存");
@@ -381,30 +421,55 @@ public class RetailService {
             BigDecimal nextValue = current.signum() <= 0
                     ? cost.multiply(next).setScale(2, RoundingMode.HALF_UP)
                     : value.add(cost.multiply(delta).setScale(2, RoundingMode.HALF_UP));
+            if (purchaseCost != null) {
+                nextValue = current.signum() < 0
+                        ? purchaseCost.costAmount().multiply(next).divide(quantity, 2, RoundingMode.HALF_UP)
+                        : value.add(purchaseCost.costAmount());
+            }
             if (next.signum() == 0) nextValue = BigDecimal.ZERO;
             BigDecimal nextPrice = next.signum() == 0 || (purchasing && inbound && current.signum() <= 0)
                     ? cost : nextValue.divide(next, 6, RoundingMode.HALF_UP);
             jdbc.update("UPDATE inventory_balance SET quantity = ?, unit_price = ?, inventory_amount = ?, updated_at = CURRENT_TIMESTAMP WHERE company_id = ? AND warehouse_id = ? AND product_id = ?", next, nextPrice, nextValue, cid, warehouseId, productId);
             jdbc.update("UPDATE retail_document_item SET inventory_unit_cost = ? WHERE id = ?", cost, item.get("id"));
+            long transactionId = ApplicationIds.next();
             jdbc.update("""
                     INSERT INTO inventory_transaction (id, company_id, warehouse_id, product_id, biz_type, biz_id, quantity_delta, balance_after, created_by)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, ApplicationIds.next(), cid, warehouseId, productId, stockType(type), documentId, delta, next, AuthContext.userId());
+                    """, transactionId, cid, warehouseId, productId, stockType(type), documentId, delta, next, AuthContext.userId());
+            if (pricing != null) {
+                jdbc.update("UPDATE inventory_transaction SET cost_amount_delta = ? WHERE id = ?",
+                        nextValue.subtract(value), transactionId);
+            }
+        }
+        if (pricedPurchase) {
+            var costDetails = purchaseCosts.values().stream()
+                    .sorted(Comparator.comparingInt(RetailTaxPricing.PurchaseCost::rowIndex))
+                    .map(RetailTaxPricing.PurchaseCost::view).toList();
+            jdbc.update("UPDATE retail_document SET purchase_tax_costs = ? WHERE id = ? AND company_id = ?",
+                    encode(costDetails), documentId, cid);
         }
         jdbc.update("UPDATE retail_document SET warehouse_id = ?, stock_processed_at = CURRENT_TIMESTAMP WHERE id = ? AND company_id = ?", warehouseId, documentId, cid);
         String action = returning ? "退货" : purchasing ? "采购" : "销售";
         audit.log(cid, auditType(type), documentId, "STOCK", businessLabel(type) + action + (inbound ? "入库" : "出库"));
     }
 
-    private List<NormalizedItem> normalizeItems(long cid, long customerId, String type, DocumentRequest request, Long selfId) {
+    private NormalizedDocument normalizeItems(long cid, long customerId, String type, DocumentRequest request, Long selfId) {
         if (request.items() == null || request.items().isEmpty() || request.items().size() > 100)
             throw new BusinessException("请录入 1 至 100 条明细");
         boolean returning = isReturn(type);
         if (returning) required(request.remark(), 500, "退货原因");
-        List<Map<String, Object>> originals = returning
-                ? items(number(requireOriginal(cid, customerId, type, request.originalDocumentId()).get("id"))) : List.of();
+        if (request.taxPricing() != null && !"PURCHASE_ORDER".equals(type)) {
+            throw new BusinessException("仅零采采购单可录入报价和税务处理，退货继承原单");
+        }
+        RetailTaxPricing.Request pricingRequest = RetailTaxPricing.request(json, request.taxPricing(), request.items().size());
+        Map<String, Object> original = returning
+                ? requireOriginal(cid, customerId, type, request.originalDocumentId()) : Map.of();
+        List<Map<String, Object>> originals = returning ? items(number(original.get("id"))) : List.of();
+        Snapshot originalPricing = DocumentTaxPricing.read(storedJson(original.get("tax_pricing")));
         List<NormalizedItem> result = new ArrayList<>(); Set<Long> seen = new HashSet<>();
-        for (var item : request.items()) {
+        List<Line> pricedLines = new ArrayList<>();
+        for (int index = 0; index < request.items().size(); index++) {
+            var item = request.items().get(index);
             if (item == null) throw new BusinessException("商品明细不能为空");
             BigDecimal quantity = validDecimal(item.quantity(), 4, true, "数量");
             String name, model, spec, unit, lineType; BigDecimal price; Long originalId = null;
@@ -429,13 +494,102 @@ public class RetailService {
                 price = validDecimal(item.unitPrice(), 6, false, "单价");
                 if ("FEE".equals(lineType) && quantity.compareTo(BigDecimal.ONE) != 0) throw new BusinessException("费用数量必须为 1");
             }
-            BigDecimal amount = returning ? refundAmount(returnSource, quantity, selfId)
-                    : quantity.multiply(price).setScale(2, RoundingMode.HALF_UP);
+            BigDecimal amount;
+            if (originalPricing != null) {
+                Line source = pricingLine(originalPricing, originals.indexOf(returnSource));
+                Amounts refund = pricedRefund(source, originalId, quantity, selfId);
+                pricedLines.add(new Line(index, lineType, lineType + ":" + index, source.lineId(),
+                        source.treatment(), source.taxRate(), quantity, price, refund));
+                amount = refund.grossAmount();
+            } else if (pricingRequest != null) {
+                Line priced = pricingRequest.price(index, lineType, quantity, price);
+                pricedLines.add(priced);
+                amount = priced.amounts().grossAmount();
+            } else {
+                amount = returning ? refundAmount(returnSource, quantity, selfId)
+                        : quantity.multiply(price).setScale(2, RoundingMode.HALF_UP);
+            }
             checkAmount(amount);
             result.add(new NormalizedItem(originalId, lineType, name, model, spec, unit, quantity, price, amount, text(item.remark(), 500, "明细备注")));
         }
-        checkAmount(total(result)); return result;
+        checkAmount(total(result));
+        Basis basis = originalPricing == null ? (pricingRequest == null ? null : pricingRequest.basis()) : originalPricing.basis();
+        ObjectNode pricing = basis == null ? null : DocumentTaxPricing.write(json, basis, null,
+                returning ? request.originalDocumentId() : null, pricedLines);
+        return new NormalizedDocument(result, pricing);
     }
+
+    private void validateCurrentRefund(long cid, Long id, Map<String, Object> row, String type) {
+        var original = requireOriginal(cid, number(row.get("customer_id")), type, number(row.get("original_document_id")));
+        var originals = items(number(original.get("id")));
+        Snapshot originalPricing = DocumentTaxPricing.read(storedJson(original.get("tax_pricing")));
+        Snapshot returnPricing = DocumentTaxPricing.read(storedJson(row.get("tax_pricing")));
+        var returns = items(id);
+        String message = "原" + originalLabel(type) + "已有新退货，请编辑刷新草稿金额后再确认";
+        for (int index = 0; index < returns.size(); index++) {
+            var item = returns.get(index);
+            long originalId = number(item.get("originalItemId"));
+            var source = originals.stream().filter(i -> number(i.get("id")) == originalId).findFirst()
+                    .orElseThrow(() -> new BusinessException("原单商品不存在"));
+            BigDecimal quantity = decimal(item.get("quantity"));
+            ensureReturnQuantity(source, quantity, id);
+            if (originalPricing == null) {
+                if (refundAmount(source, quantity, id).compareTo(decimal(item.get("amount"))) != 0) {
+                    throw new BusinessException(message);
+                }
+            } else {
+                Line sourceLine = pricingLine(originalPricing, originals.indexOf(source));
+                Amounts current = pricedRefund(sourceLine, originalId, quantity, id);
+                if (returnPricing == null) throw new BusinessException(message);
+                Amounts frozen = pricingLine(returnPricing, index).amounts();
+                if (current.grossAmount().compareTo(frozen.grossAmount()) != 0
+                        || current.taxAmount().compareTo(frozen.taxAmount()) != 0) {
+                    throw new BusinessException(message);
+                }
+            }
+        }
+    }
+
+    private Amounts pricedRefund(Line source, long originalItemId, BigDecimal quantity, Long selfId) {
+        List<Map<String, Object>> earlier = jdbc.queryForList("""
+                SELECT i.line_no, i.quantity, d.tax_pricing
+                FROM retail_document_item i JOIN retail_document d ON d.id = i.document_id
+                WHERE i.original_item_id = ? AND d.status = 'CONFIRMED'
+                    AND d.document_type = 'PURCHASE_RETURN_ORDER' AND d.id <> ?
+                """, originalItemId, selfId == null ? -1L : selfId);
+        Amounts available = source.amounts();
+        BigDecimal availableQuantity = source.quantity();
+        for (Map<String, Object> line : earlier) {
+            Snapshot prior = DocumentTaxPricing.read(storedJson(line.get("tax_pricing")));
+            if (prior == null) throw new BusinessException("原采购单退货价税明细缺失");
+            int index = Math.toIntExact(number(line.get("line_no"))) - 1;
+            available = DocumentTaxPricing.minus(available, pricingLine(prior, index).amounts());
+            availableQuantity = availableQuantity.subtract(decimal(line.get("quantity")));
+        }
+        if (quantity.compareTo(availableQuantity) > 0) throw new BusinessException("退货数量超过剩余可退数量");
+        return RetailTaxPricing.refund(available, quantity, availableQuantity);
+    }
+
+    private void savePricing(long companyId, long documentId, ObjectNode pricing) {
+        if (pricing != null) {
+            jdbc.update("UPDATE retail_document SET tax_pricing = ? WHERE id = ? AND company_id = ?",
+                    encode(pricing), documentId, companyId);
+        }
+    }
+
+    private BigDecimal quoteAmount(Map<String, Object> item, Snapshot pricing, int index) {
+        if (pricing == null) return decimal(item.get("amount"));
+        Amounts amounts = pricingLine(pricing, index).amounts();
+        return pricing.basis() == Basis.GROSS ? amounts.grossAmount() : amounts.netAmount();
+    }
+
+    private Line pricingLine(Snapshot pricing, int index) {
+        if (index < 0 || index >= pricing.lines().size() || pricing.lines().get(index).rowIndex() != index) {
+            throw new BusinessException("单据价税明细与商品行号不一致");
+        }
+        return pricing.lines().get(index);
+    }
+
     private Map<String, Object> requireOriginal(long cid, long customerId, String returnType, Long id) {
         if (id == null) throw new BusinessException("请选择原" + originalLabel(returnType));
         var original = requireDocument(cid, id, true);
@@ -549,6 +703,14 @@ public class RetailService {
         try { return json.readValue(value, new TypeReference<LinkedHashMap<String, Object>>() {}); }
         catch (Exception e) { throw new BusinessException("单据信息读取失败"); }
     }
+    private JsonNode storedJson(Object value) {
+        if (value == null) return null;
+        try {
+            return json.readTree(String.valueOf(value));
+        } catch (Exception invalid) {
+            throw new BusinessException("单据价税数据读取失败");
+        }
+    }
     private String text(String value, int limit, String label) {
         String result = value == null ? "" : value.trim(); if (result.length() > limit) throw new BusinessException(label + "过长"); return result;
     }
@@ -606,4 +768,5 @@ public class RetailService {
     }
     private record NormalizedItem(Long originalId, String lineType, String name, String model, String spec, String unit,
                                   BigDecimal quantity, BigDecimal price, BigDecimal amount, String remark) {}
+    private record NormalizedDocument(List<NormalizedItem> items, ObjectNode pricing) {}
 }

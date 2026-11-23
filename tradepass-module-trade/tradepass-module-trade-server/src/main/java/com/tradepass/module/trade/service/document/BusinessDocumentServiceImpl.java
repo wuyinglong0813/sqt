@@ -21,6 +21,8 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.framework.common.money.TradeTaxPricing.Amounts;
+import com.tradepass.framework.common.money.TradeTaxPricing.Basis;
 import com.tradepass.module.trade.dal.dataobject.document.BusinessDocumentDO;
 import com.tradepass.module.trade.dal.dataobject.document.BusinessDocumentTemplateDO;
 import com.tradepass.module.identity.api.company.dto.CompanyRespDTO;
@@ -40,10 +42,14 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -232,7 +238,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         String snapshot = createSnapshot(type, template, contract, company,
                 recipientCompany == null ? contract.getCounterpartyName() : recipientCompany.getName(),
                 preparedByName);
-        document.setContent(applySnapshotEdits(snapshot, body.get("content")));
+        document.setContent(applyDocumentEdits(document, contract, snapshot, body.get("content")));
         document.setCreatedBy(AuthContext.userId());
         documentMapper.insert(document);
         if (inventoryService != null) {
@@ -253,7 +259,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         if (!"PENDING".equals(contract.getStatus()) && !"ACTIVE".equals(contract.getStatus())) {
             throw new BusinessException("当前合同状态不能编辑单据草稿");
         }
-        document.setContent(applySnapshotEdits(document.getContent(), body.get("content")));
+        document.setContent(applyDocumentEdits(document, contract, document.getContent(), body.get("content")));
         document.setStatus("DRAFT");
         document.setRejectedReason(null);
         documentMapper.updateById(document);
@@ -289,6 +295,10 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         document.setRecipientCompanyId(companyId == supplierCompanyId ? buyerCompanyId : supplierCompanyId);
         document.setSupplierCompanyId(supplierCompanyId);
         document.setBuyerCompanyId(buyerCompanyId);
+        if (DocumentTaxPricing.read(objectMapper, document.getContent()) != null) {
+            document.setContent(applyDocumentEdits(document, contract, document.getContent(), null));
+            if (inventoryService != null) inventoryService.saveDocumentItems(document);
+        }
         if (RETURN_ORDER.equals(document.getDocumentType())) {
             if (inventoryService == null) throw new BusinessException("退货库存服务尚未启用");
             inventoryService.selectReturnWarehouse(document, companyId, warehouseId);
@@ -508,6 +518,263 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         }
     }
 
+    private String applyDocumentEdits(BusinessDocumentDO document, TradeContractRespDTO contract,
+                                      String snapshot, Object content) {
+        String edited = applySnapshotEdits(snapshot, content);
+        try {
+            ObjectNode result = (ObjectNode) objectMapper.readTree(edited);
+            JsonNode terms = contract.getTerms() == null || !contract.getTerms().trim().startsWith("{")
+                    ? null : objectMapper.readTree(contract.getTerms());
+            var contractPricing = terms == null ? null : DocumentTaxPricing.read(terms.get("taxPricing"));
+            var priorPricing = DocumentTaxPricing.read(result.get("taxPricing"));
+            if (priorPricing != null && (contractPricing == null
+                    || !Objects.equals(priorPricing.contractVersion(), contract.getVersionNo()))) {
+                throw new BusinessException("合同版本已变更，请按当前合同重新创建单据");
+            }
+            if (contractPricing == null) return edited;
+            JsonNode edits = content instanceof String text ? objectMapper.readTree(text) : objectMapper.valueToTree(content);
+            JsonNode references = edits.path("taxPricing");
+            if (references.isMissingNode()) references = result.path("taxPricing");
+            JsonNode columns = result.path("columns");
+            int productIndex = taxDocumentColumn(columns, "PRODUCT");
+            int quantityIndex = taxDocumentColumn(columns, "QUANTITY");
+            int priceIndex = taxDocumentColumn(columns, "PRICE");
+            int amountIndex = taxDocumentColumn(columns, "AMOUNT");
+            if (productIndex < 0 || quantityIndex < 0 || priceIndex < 0 || amountIndex < 0) {
+                throw new BusinessException("价税单据模板须有商品名称、数量、单价和金额列");
+            }
+
+            Map<String, List<String>> sourceRows = taxSourceRows(terms, contractPricing, columns);
+            Map<Integer, String> requestedIds = readTaxReferences(references);
+            Map<String, DocumentTaxPricing.Line> sources = new HashMap<>();
+            contractPricing.lines().forEach(line -> sources.put(line.lineId(), line));
+            JsonNode rows = result.path("rows");
+            Set<String> usedLines = new HashSet<>();
+            List<DocumentTaxPricing.Line> pricedLines = new ArrayList<>();
+            for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+                ArrayNode row = (ArrayNode) rows.path(rowIndex);
+                String itemName = row.path(productIndex).asText("").trim();
+                String rowType = result.path("rowTypes").path(rowIndex).asText("PRODUCT");
+                String requestedId = requestedIds.get(rowIndex);
+                if (itemName.isBlank() && requestedId == null) {
+                    if (hasPricingInput(row.path(quantityIndex)) || hasPricingInput(row.path(priceIndex))
+                            || hasPricingInput(row.path(amountIndex))) {
+                        throw new BusinessException("价税单据商品名称不能为空");
+                    }
+                    continue;
+                }
+                DocumentTaxPricing.Line source = resolveTaxSource(
+                        sources, sourceRows, columns, row, rowType, requestedId);
+                if (!usedLines.add(source.lineId())) {
+                    throw new BusinessException("同一合同行只能在一张单据内引用一次");
+                }
+                BigDecimal quantity;
+                try {
+                    quantity = new BigDecimal(row.path(quantityIndex).asText("").trim());
+                } catch (NumberFormatException exception) {
+                    throw new BusinessException("请输入有效的明细数量");
+                }
+                if ("FEE".equals(rowType) && quantity.compareTo(BigDecimal.ONE) != 0) {
+                    throw new BusinessException("费用项目数量须为 1");
+                }
+                if (quantity.compareTo(source.quantity()) > 0) throw new BusinessException("明细数量超过合同行数量");
+                Amounts lineAmounts = DocumentTaxPricing.calculate(contractPricing.basis(), source, quantity);
+                pricedLines.add(new DocumentTaxPricing.Line(rowIndex, source.lineType(), source.lineId(), source.lineId(),
+                        source.treatment(), source.taxRate(), quantity, source.quoteUnitPrice(), lineAmounts));
+            }
+            if (pricedLines.stream().noneMatch(line -> "PRODUCT".equals(line.lineType()))) {
+                throw new BusinessException("价税单据至少需要一项有效商品");
+            }
+            if (requestedIds.keySet().stream().anyMatch(index -> index >= rows.size())) {
+                throw new BusinessException("单据来源行已失效，请重新选择合同行");
+            }
+
+            Long sourceDocumentId = null;
+            Basis basis = contractPricing.basis();
+            if (RETURN_ORDER.equals(document.getDocumentType())) {
+                Long requested = DocumentTaxPricing.sourceDocumentId(references);
+                if (requested == null && priorPricing != null) requested = priorPricing.sourceDocumentId();
+                OriginalSale original = resolveOriginalSale(document, requested, pricedLines);
+                sourceDocumentId = original.id();
+                basis = original.pricing().basis();
+                pricedLines = priceReturns(document, original, pricedLines);
+            }
+            for (DocumentTaxPricing.Line line : pricedLines) {
+                writeDisplayAmounts(columns, (ArrayNode) rows.path(line.rowIndex()), line);
+            }
+            ObjectNode pricing = DocumentTaxPricing.write(objectMapper, basis, contract.getVersionNo(),
+                    sourceDocumentId, pricedLines);
+            result.set("taxPricing", pricing);
+            result.put("totalAmount", pricing.path("grossAmount").asText());
+            return result.toString();
+        } catch (BusinessException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new BusinessException("单据价税数据格式不正确");
+        }
+    }
+
+    private Map<String, List<String>> taxSourceRows(JsonNode terms, DocumentTaxPricing.Snapshot pricing,
+                                                   JsonNode columns) {
+        JsonNode products = objectMapper.createObjectNode();
+        JsonNode fees = objectMapper.createArrayNode();
+        for (JsonNode section : terms.path("sections")) {
+            if ("table".equalsIgnoreCase(section.path("type").asText())) products = section;
+            if ("fees".equalsIgnoreCase(section.path("type").asText())) fees = section.path("items");
+        }
+        List<String> productColumns = new ArrayList<>();
+        products.path("columns").forEach(column -> productColumns.add(column.asText()));
+        Map<String, List<String>> result = new HashMap<>();
+        for (var line : pricing.lines()) {
+            List<String> mapped = new ArrayList<>();
+            if ("FEE".equals(line.lineType())) {
+                JsonNode fee = fees.path(line.rowIndex());
+                FeeItem item = new FeeItem(fee.path("feeType").asText(fee.path("name").asText("其他费用")),
+                        fee.path("amount").asText("0"), fee.path("remark").asText(""));
+                columns.forEach(column -> mapped.add(valueForFeeTarget(column.asText(), line.rowIndex(), item)));
+            } else {
+                List<String> product = new ArrayList<>();
+                products.path("rows").path(line.rowIndex()).forEach(cell -> product.add(cell.asText()));
+                columns.forEach(column -> mapped.add(valueForTarget(column.asText(), line.rowIndex(), productColumns, product)));
+            }
+            result.put(line.lineId(), mapped);
+        }
+        return result;
+    }
+
+    private Map<Integer, String> readTaxReferences(JsonNode references) {
+        Map<Integer, String> ids = new HashMap<>();
+        for (JsonNode reference : references.path("lines")) {
+            int index = reference.path("rowIndex").asInt(-1);
+            String sourceId = reference.path("sourceLineId").asText("").trim();
+            if (index < 0 || sourceId.isBlank() || ids.putIfAbsent(index, sourceId) != null) {
+                throw new BusinessException("单据来源行格式不正确");
+            }
+        }
+        return ids;
+    }
+
+    private DocumentTaxPricing.Line resolveTaxSource(Map<String, DocumentTaxPricing.Line> sources,
+            Map<String, List<String>> sourceRows, JsonNode columns, JsonNode row, String rowType, String requestedId) {
+        if (requestedId != null) {
+            var source = sources.get(requestedId);
+            if (source != null && rowType.equals(source.lineType())
+                    && matchesTaxSource(columns, row, sourceRows.get(requestedId))) return source;
+            throw new BusinessException("单据商品应与原合同行一致");
+        }
+        var candidates = sources.values().stream()
+                .filter(source -> rowType.equals(source.lineType()))
+                .filter(source -> matchesTaxSource(columns, row, sourceRows.get(source.lineId()))).toList();
+        if (candidates.size() == 1) return candidates.get(0);
+        throw new BusinessException("请选择此商品对应的原合同行");
+    }
+
+    private boolean matchesTaxSource(JsonNode columns, JsonNode row, List<String> expected) {
+        for (int index = 0; index < columns.size(); index++) {
+            String column = columns.path(index).asText();
+            if (isProductColumn(column) || column.contains("型号") || column.contains("规格") || column.contains("单位")) {
+                String actual = row.path(index).asText("").trim();
+                String original = expected.get(index).trim();
+                if (!actual.equals(original)
+                        && !(column.contains("单位") && original.isEmpty() && "件".equals(actual))) return false;
+            }
+        }
+        return true;
+    }
+
+    private int taxDocumentColumn(JsonNode columns, String type) {
+        for (int index = 0; index < columns.size(); index++) {
+            String column = columns.path(index).asText();
+            boolean match = switch (type) {
+                case "PRODUCT" -> isProductColumn(column);
+                case "QUANTITY" -> column.contains("数量");
+                case "PRICE" -> column.contains("单价");
+                default -> column.contains("金额") || column.contains("价税合计");
+            };
+            if (match) return index;
+        }
+        return -1;
+    }
+
+    private boolean hasPricingInput(JsonNode cell) {
+        String text = cell.asText("").trim();
+        if (text.isEmpty()) return false;
+        try {
+            return new BigDecimal(text).signum() != 0;
+        } catch (NumberFormatException ignored) {
+            return true;
+        }
+    }
+
+    private void writeDisplayAmounts(JsonNode columns, ArrayNode row, DocumentTaxPricing.Line line) {
+        for (int index = 0; index < columns.size(); index++) {
+            String column = columns.path(index).asText();
+            String amount = null;
+            if (column.contains("单价")) amount = line.quoteUnitPrice().toPlainString();
+            else if (column.contains("不含税金额") || column.contains("未税金额")) {
+                amount = line.amounts().netAmount().toPlainString();
+            } else if (column.contains("税额")) amount = line.amounts().taxAmount().toPlainString();
+            else if (column.contains("金额") || column.contains("价税合计")) {
+                amount = line.amounts().grossAmount().toPlainString();
+            } else if (column.contains("税率") || column.contains("征收率")) amount = line.taxDisplay();
+            if (amount != null) row.set(index, objectMapper.getNodeFactory().textNode(amount));
+        }
+    }
+
+    private OriginalSale resolveOriginalSale(BusinessDocumentDO document, Long requestedId,
+                                             List<DocumentTaxPricing.Line> requestedLines) {
+        var query = new LambdaQueryWrapper<BusinessDocumentDO>()
+                .eq(BusinessDocumentDO::getContractId, document.getContractId())
+                .eq(BusinessDocumentDO::getDocumentType, SALES_ORDER)
+                .in(BusinessDocumentDO::getStatus, "ACKNOWLEDGED", "INBOUNDED")
+                .isNull(BusinessDocumentDO::getDeletedAt);
+        if (requestedId != null) query.eq(BusinessDocumentDO::getId, requestedId);
+        List<OriginalSale> matches = new ArrayList<>();
+        for (var candidate : documentMapper.selectList(query)) {
+            var pricing = DocumentTaxPricing.read(objectMapper, candidate.getContent());
+            if (pricing != null && requestedLines.stream().allMatch(line -> pricing.lines().stream()
+                    .anyMatch(source -> source.contractLineId().equals(line.contractLineId())))) {
+                matches.add(new OriginalSale(candidate.getId(), pricing));
+            }
+        }
+        if (matches.size() == 1) return matches.get(0);
+        throw new BusinessException(matches.isEmpty() ? "未找到包含所退商品的已确认原销售单" : "请选择本次退货的原销售单");
+    }
+
+    private List<DocumentTaxPricing.Line> priceReturns(BusinessDocumentDO document, OriginalSale original,
+                                                       List<DocumentTaxPricing.Line> requested) {
+        var preceding = documentMapper.selectList(new LambdaQueryWrapper<BusinessDocumentDO>()
+                .eq(BusinessDocumentDO::getContractId, document.getContractId())
+                .eq(BusinessDocumentDO::getDocumentType, RETURN_ORDER)
+                .ne(document.getId() != null, BusinessDocumentDO::getId, document.getId())
+                .in(BusinessDocumentDO::getStatus, "ISSUED", "ACKNOWLEDGED", "INBOUNDED")
+                .isNull(BusinessDocumentDO::getDeletedAt)).stream()
+                .map(other -> DocumentTaxPricing.read(objectMapper, other.getContent()))
+                .filter(Objects::nonNull).filter(pricing -> original.id().equals(pricing.sourceDocumentId()))
+                .flatMap(pricing -> pricing.lines().stream()).toList();
+        List<DocumentTaxPricing.Line> result = new ArrayList<>();
+        for (var line : requested) {
+            var source = original.pricing().lines().stream()
+                    .filter(item -> item.contractLineId().equals(line.contractLineId())).findFirst().orElseThrow();
+            BigDecimal availableQuantity = source.quantity();
+            Amounts availableAmounts = source.amounts();
+            for (var prior : preceding) {
+                if (prior.contractLineId().equals(source.contractLineId())) {
+                    availableQuantity = availableQuantity.subtract(prior.quantity());
+                    availableAmounts = DocumentTaxPricing.minus(availableAmounts, prior.amounts());
+                }
+            }
+            if (line.quantity().compareTo(availableQuantity) > 0) throw new BusinessException("退货数量超过原销售单可退数量");
+            result.add(new DocumentTaxPricing.Line(line.rowIndex(), source.lineType(), source.lineId(),
+                    source.contractLineId(), source.treatment(), source.taxRate(), line.quantity(),
+                    source.quoteUnitPrice(), DocumentTaxPricing.refund(availableAmounts, line.quantity(), availableQuantity)));
+        }
+        return result;
+    }
+
+    private record OriginalSale(Long id, DocumentTaxPricing.Snapshot pricing) {
+    }
+
     private void copyTextEdit(JsonNode source, ObjectNode target, String field, int maxLength) {
         if (!source.has(field)) return;
         JsonNode value = source.path(field);
@@ -656,7 +923,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         } else if (normalized.contains("规格")) {
             aliases = List.of("规格");
         } else if (productColumn) {
-            aliases = List.of("品名", "名称", "产品");
+            aliases = List.of("品名", "名称", "产品", "商品");
         } else if (normalized.contains("单位")) {
             aliases = List.of("单位");
         } else if (normalized.contains("数量")) {
@@ -684,7 +951,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
 
     private boolean isProductColumn(String column) {
         return !column.contains("型号") && !column.contains("规格")
-                && (column.contains("品名") || column.contains("名称") || column.contains("产品"));
+                && (column.contains("品名") || column.contains("名称") || column.contains("产品") || column.contains("商品"));
     }
 
     private TradeContractRespDTO requireContractParty(Long contractId, long companyId) {
@@ -759,6 +1026,7 @@ public class BusinessDocumentServiceImpl implements BusinessDocumentService {
         try {
             JsonNode content = objectMapper.readTree(document.getContent());
             view.put("totalAmount", new BigDecimal(content.path("totalAmount").asText("0")));
+            if (content.has("taxPricing")) view.put("taxPricing", content.get("taxPricing"));
             view.put("preparedByName", content.path("preparedByName").asText(""));
             view.put("reviewedByName", content.path("reviewedByName").asText(""));
         } catch (Exception ignored) {

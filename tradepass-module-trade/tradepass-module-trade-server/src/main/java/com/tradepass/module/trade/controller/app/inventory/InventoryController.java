@@ -40,23 +40,22 @@ public class InventoryController {
     @PostMapping(value = "/sales-orders/{id}/receive", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ApiResponse<Map<String, Object>> receive(@PathVariable Long id,
                                                     @RequestBody Map<String, Object> body) {
-        byte[] signature = decodeSignature(body.get("signatureBase64"));
-        return ApiResponse.ok(inventoryService.receive(id,
-                String.valueOf(body.getOrDefault("decision", "")),
-                longValue(body.get("warehouseId")),
-                String.valueOf(body.getOrDefault("reason", "")),
-                signature == null ? null : "signature.png", signature));
+        return receiveJson(id, body);
     }
 
     @PostMapping(value = "/trade-documents/{id}/receive", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ApiResponse<Map<String, Object>> confirmDocument(@PathVariable Long id,
                                                             @RequestBody Map<String, Object> body) {
+        return receiveJson(id, body);
+    }
+
+    private ApiResponse<Map<String, Object>> receiveJson(Long id, Map<String, Object> body) {
         byte[] signature = decodeSignature(body.get("signatureBase64"));
-        return ApiResponse.ok(inventoryService.receive(id,
+        return receive(id,
                 String.valueOf(body.getOrDefault("decision", "")),
                 longValue(body.get("warehouseId")),
                 String.valueOf(body.getOrDefault("reason", "")),
-                signature == null ? null : "signature.png", signature));
+                signature == null ? null : "signature.png", signature, body.get("taxDeductions"));
     }
 
     @PostMapping(value = "/sales-orders/{id}/receive", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -64,10 +63,11 @@ public class InventoryController {
             @PathVariable Long id,
             @RequestParam String decision,
             @RequestParam(required = false) Long warehouseId,
+            @RequestParam(required = false) String taxDeductions,
             @RequestParam("signature") MultipartFile signature) {
         try {
-            return ApiResponse.ok(inventoryService.receive(id, decision, warehouseId, "",
-                    signature.getOriginalFilename(), signature.getBytes()));
+            return receive(id, decision, warehouseId, "", signature.getOriginalFilename(), signature.getBytes(),
+                    taxDeductions);
         } catch (BusinessException exception) {
             throw exception;
         } catch (Exception exception) {
@@ -80,15 +80,26 @@ public class InventoryController {
             @PathVariable Long id,
             @RequestParam String decision,
             @RequestParam(required = false) Long warehouseId,
+            @RequestParam(required = false) String taxDeductions,
             @RequestParam("signature") MultipartFile signature) {
         try {
-            return ApiResponse.ok(inventoryService.receive(id, decision, warehouseId, "",
-                    signature.getOriginalFilename(), signature.getBytes()));
+            return receive(id, decision, warehouseId, "", signature.getOriginalFilename(), signature.getBytes(),
+                    taxDeductions);
         } catch (BusinessException exception) {
             throw exception;
         } catch (Exception exception) {
             throw new BusinessException("签名图片读取失败，请重新签名");
         }
+    }
+
+    private ApiResponse<Map<String, Object>> receive(Long id, String decision, Long warehouseId, String rejectedReason,
+                                                      String signatureName, byte[] signature, Object taxDeductions) {
+        if (taxDeductions == null) {
+            return ApiResponse.ok(inventoryService.receive(id, decision, warehouseId, rejectedReason,
+                    signatureName, signature));
+        }
+        return ApiResponse.ok(inventoryService.receive(id, decision, warehouseId, rejectedReason,
+                signatureName, signature, taxDeductions));
     }
 
     static byte[] decodeSignature(Object value) {

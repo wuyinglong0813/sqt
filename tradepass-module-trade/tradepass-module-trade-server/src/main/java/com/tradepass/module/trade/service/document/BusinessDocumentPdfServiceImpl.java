@@ -210,7 +210,15 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
     private void addFooter(Document document, BusinessDocumentDO source, Snapshot snapshot,
                            Font font, SalesOrderSignatureService.Confirmation confirmation)
             throws DocumentException {
-        Paragraph total = new Paragraph("合计金额（元）：" + snapshot.totalAmount(), font);
+        Paragraph total;
+        if (snapshot.pricing() == null) {
+            total = new Paragraph("合计金额（元）：" + snapshot.totalAmount(), font);
+        } else {
+            var amounts = snapshot.pricing().amounts();
+            total = new Paragraph("不含税金额（元）：" + amounts.netAmount().toPlainString()
+                    + "    税额（元）：" + amounts.taxAmount().toPlainString()
+                    + "\n价税合计（元）：" + amounts.grossAmount().toPlainString(), font);
+        }
         total.setAlignment(Element.ALIGN_RIGHT);
         total.setSpacingBefore(8);
         document.add(total);
@@ -267,6 +275,7 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
     private Snapshot parseSnapshot(BusinessDocumentDO document) {
         try {
             JsonNode root = objectMapper.readTree(document.getContent());
+            var pricing = DocumentTaxPricing.read(root.get("taxPricing"));
             List<String> columns = new ArrayList<>();
             root.path("columns").forEach(node -> columns.add(node.asText("")));
             if (columns.isEmpty()) {
@@ -278,6 +287,7 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
                 rowNode.forEach(node -> row.add(node.asText("")));
                 rows.add(row);
             }
+            if (pricing != null) applyTaxColumns(columns, rows, pricing);
             return new Snapshot(
                     root.path("title").asText("销售单"),
                     root.path("companyName").asText("本方企业"),
@@ -289,9 +299,34 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
                     root.path("reviewedByName").asText(""),
                     Math.max(1, root.path("blankRows").asInt(10)),
                     columns,
-                    rows);
+                    rows,
+                    pricing);
         } catch (Exception exception) {
             throw new BusinessException("单据数据损坏，无法生成 PDF");
+        }
+    }
+
+    private void applyTaxColumns(List<String> columns, List<List<String>> rows, DocumentTaxPricing.Snapshot pricing) {
+        String priceLabel = switch (pricing.basis()) {
+            case GROSS -> "含税单价";
+            case NET -> "不含税单价";
+        };
+        for (int index = 0; index < columns.size(); index++) {
+            String column = columns.get(index);
+            if (column.contains("单价")) columns.set(index, priceLabel);
+            if ("金额".equals(column) || column.startsWith("金额(") || column.startsWith("金额（")) {
+                columns.set(index, "价税合计");
+            }
+        }
+        if (columns.size() >= 12 || columns.stream().anyMatch(column -> column.contains("税率") || column.contains("征收率"))) {
+            return;
+        }
+        columns.add("税率／征收率");
+        for (List<String> row : rows) {
+            while (row.size() < columns.size()) row.add("");
+        }
+        for (var line : pricing.lines()) {
+            rows.get(line.rowIndex()).set(columns.size() - 1, line.taxDisplay());
         }
     }
 
@@ -354,13 +389,13 @@ public class BusinessDocumentPdfServiceImpl implements BusinessDocumentPdfServic
     }
 
     private boolean isNumericColumn(String column) {
-        return Arrays.stream(new String[]{"数量", "单价", "金额"})
+        return Arrays.stream(new String[]{"数量", "单价", "金额", "价税合计", "税率", "税额"})
                 .anyMatch(column::contains);
     }
 
     private record Snapshot(String title, String companyName, String counterpartyName,
                             String contractNo, String date, String totalAmount,
                             String preparedByName, String reviewedByName, int blankRows,
-                            List<String> columns, List<List<String>> rows) {
+                            List<String> columns, List<List<String>> rows, DocumentTaxPricing.Snapshot pricing) {
     }
 }

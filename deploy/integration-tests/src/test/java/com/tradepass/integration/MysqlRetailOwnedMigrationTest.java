@@ -38,9 +38,9 @@ class MysqlRetailOwnedMigrationTest {
         Flyway.configure().dataSource(source).locations(location).target("3").load().migrate();
         jdbc.update("INSERT INTO retail_customer(id,company_id,customer_type,name,created_by) VALUES (1,3,'PERSON','零售客户',7)");
         var flyway = Flyway.configure().dataSource(source).locations(location).load();
-        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(role.equals("business") ? 10 : 3);
+        assertThat(flyway.migrate().migrationsExecuted).isEqualTo(role.equals("business") ? 11 : 4);
         flyway.validate();
-        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(role.equals("business") ? "13" : "6");
+        assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo(role.equals("business") ? "13.1" : "7");
         if (role.equals("business")) {
             assertThat(jdbc.queryForObject("""
                     SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE()
@@ -51,6 +51,12 @@ class MysqlRetailOwnedMigrationTest {
                 SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE()
                 AND table_name IN ('inventory_product','business_document_item','retail_document_item') AND column_name='model'
                 """, Integer.class)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND is_nullable='YES'
+                AND ((table_name='inventory_inbound_item' AND column_name IN ('purchase_tax_status','purchase_tax_deductible_amount'))
+                  OR (table_name='inventory_transaction' AND column_name='cost_amount_delta')
+                  OR (table_name='retail_document' AND column_name IN ('tax_pricing','purchase_tax_costs')))
+                """, Integer.class)).isEqualTo(5);
         assertThat(jdbc.queryForObject("SELECT name FROM warehouse WHERE id=987654", String.class))
                 .isEqualTo("existing warehouse");
         assertThat(jdbc.queryForObject("""

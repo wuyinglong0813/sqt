@@ -18,7 +18,7 @@ class ReviewedMigrationVersionsTest {
         for (String role : new String[]{"trade", "contract", "settlement", "unknown"}) {
             for (int version = 0; version <= 10; version++) {
                 boolean expected = switch (role) {
-                    case "trade" -> version == 3 || version == 4 || version == 5 || version == 6;
+                    case "trade" -> version >= 3 && version <= 7;
                     case "contract" -> version == 4 || version == 5 || version == 7 || version == 8;
                     case "settlement" -> version == 1 || version == 2;
                     default -> false;

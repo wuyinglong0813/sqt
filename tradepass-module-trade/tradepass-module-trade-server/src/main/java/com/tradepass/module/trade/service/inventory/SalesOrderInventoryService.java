@@ -59,5 +59,7 @@ public interface SalesOrderInventoryService {
     Map<String, Object> receive(Long documentId, String decision, Long warehouseId);
     Map<String, Object> receive(Long documentId, String decision, Long warehouseId, String rejectedReason);
     Map<String, Object> receive(Long documentId, String decision, Long warehouseId, String rejectedReason, String signatureName, byte[] signatureData);
+    Map<String, Object> receive(Long documentId, String decision, Long warehouseId, String rejectedReason,
+                                String signatureName, byte[] signatureData, Object taxDeductions);
     void reverseDocumentInventory(Long documentId, long actionRequestId, long userId);
 }

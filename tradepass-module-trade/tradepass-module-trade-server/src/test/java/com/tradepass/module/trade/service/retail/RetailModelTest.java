@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradepass.framework.audit.core.AuditLogService;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.framework.common.money.TradeTaxPricing.Amounts;
 import com.tradepass.module.identity.api.company.CompanyReader;
 import com.tradepass.module.identity.api.company.dto.CompanyRespDTO;
 import com.tradepass.module.identity.api.permission.AccessControlOperations;
@@ -12,6 +13,7 @@ import com.tradepass.support.TestIds;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
@@ -131,6 +133,65 @@ class RetailModelTest {
                 eq(new BigDecimal("50.00")), eq(4L), eq(9L), eq(77L));
         verify(jdbc).update(contains("INSERT INTO inventory_transaction"), anyLong(), eq(4L), eq(9L), eq(77L),
                 eq("QUICK_PURCHASE"), eq(60L), eq(BigDecimal.ONE), eq(new BigDecimal("3")), eq(8L));
+    }
+
+    @Test void quickPurchaseStoresCanonicalTaxPricingAndGrossPayable() throws Exception {
+        when(jdbc.queryForList(contains("SELECT * FROM retail_customer"), eq(4L), eq(9L)))
+                .thenReturn(List.of(Map.of("id", 9L, "name", "供应商", "direction", "PURCHASE")));
+        savedDocument = document(60L, "PURCHASE_ORDER", "DRAFT");
+        var item = new ItemRequest(null, "PRODUCT", "电缆", "YJV", "3×25", "米",
+                new BigDecimal("100"), new BigDecimal("120"), "");
+        var pricing = Map.of("version", 1, "basis", "NET", "grossAmount", "0",
+                "lines", List.of(Map.of("rowIndex", 0, "lineType", "PRODUCT", "taxTreatment", "TAXABLE", "taxRate", "13")));
+        service.createDocument(9L, new DocumentRequest("retail-model-test-123", "PURCHASE_ORDER", null,
+                "2026-10-26", "", List.of(item), pricing));
+
+        var snapshot = ArgumentCaptor.forClass(String.class);
+        verify(jdbc).update(contains("UPDATE retail_document SET tax_pricing"), snapshot.capture(), eq(60L), eq(4L));
+        var result = new ObjectMapper().readTree(snapshot.getValue());
+        assertThat(result.path("grossAmount").asText()).isEqualTo("13560.00");
+        assertThat(result.path("taxAmount").asText()).isEqualTo("1560.00");
+        assertThat(result.at("/lines/0/quoteUnitPrice").asText()).isEqualTo("120");
+        verify(jdbc).update(contains("INSERT INTO retail_document_item"), anyLong(), eq(60L), eq(1),
+                eq("PRODUCT"), isNull(), eq("电缆"), eq("YJV"), eq("3×25"), eq("米"),
+                eq(new BigDecimal("100")), eq(new BigDecimal("120")), eq(new BigDecimal("13560.00")), eq(""));
+    }
+
+    @Test void quickPurchaseSubtractsConfirmedDeductionFromWarehouseCost() throws Exception {
+        savedDocument = document(60L, "PURCHASE_ORDER", "CONFIRMED");
+        savedDocument.put("tax_pricing", """
+                {"version":1,"basis":"GROSS","netAmount":"100.00","taxAmount":"13.00","grossAmount":"113.00","lines":[
+                  {"rowIndex":0,"lineType":"PRODUCT","lineId":"PRODUCT:0","taxTreatment":"TAXABLE","taxRate":"13",
+                   "quantity":"1","quoteUnitPrice":"113","netAmount":"100.00","taxAmount":"13.00","grossAmount":"113.00"}]}
+                """);
+        when(jdbc.queryForList(contains("FROM retail_document_item WHERE document_id"), eq(60L)))
+                .thenAnswer(inv -> {
+                    var item = item(61L, "YJV");
+                    item.put("unitPrice", new BigDecimal("113"));
+                    item.put("amount", new BigDecimal("113.00"));
+                    return List.of(item);
+                });
+        stubStock(new BigDecimal("2"), new BigDecimal("20.00"), new BigDecimal("40.00"));
+
+        service.processStock(60L, 9L, List.of(Map.of("rowIndex", 0, "status", "CONFIRMED", "deductibleAmount", "13")));
+
+        verify(jdbc).update(contains("UPDATE inventory_balance"), eq(new BigDecimal("3")),
+                eq(new BigDecimal("46.666667")), eq(new BigDecimal("140.00")), eq(4L), eq(9L), eq(77L));
+        var costs = ArgumentCaptor.forClass(String.class);
+        verify(jdbc).update(contains("UPDATE retail_document SET purchase_tax_costs"), costs.capture(), eq(60L), eq(4L));
+        var cost = new ObjectMapper().readTree(costs.getValue()).get(0);
+        assertThat(cost.path("costAmount").asText()).isEqualTo("100.00");
+        assertThat(cost.path("deductibleAmount").asText()).isEqualTo("13");
+        assertThat(cost.path("status").asText()).isEqualTo("CONFIRMED");
+    }
+
+    @Test void quickPurchaseRefundAllocatesGrossAndCapsNetAndTax() {
+        Amounts available = new Amounts(new BigDecimal("0.01"), new BigDecimal("0.01"), new BigDecimal("0.02"));
+        var first = RetailTaxPricing.refund(available, BigDecimal.ONE, BigDecimal.valueOf(2));
+        assertThat(first.grossAmount()).isEqualByComparingTo("0.01");
+        assertThat(first.taxAmount()).isEqualByComparingTo("0.01");
+        Amounts remaining = new Amounts(new BigDecimal("0.01"), new BigDecimal("0.00"), new BigDecimal("0.01"));
+        assertThat(RetailTaxPricing.refund(remaining, BigDecimal.ONE, BigDecimal.ONE)).isEqualTo(remaining);
     }
 
     @Test void purchaseReturnRequiresReceiptAndDeductsInventoryAtWeightedCost() {

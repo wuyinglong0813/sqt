@@ -2,6 +2,8 @@ package com.tradepass.module.trade.service.inventory;
 
 import com.tradepass.module.trade.convert.document.BusinessDocumentConvert;
 import com.tradepass.module.trade.service.approval.ApprovalService;
+import com.tradepass.module.trade.service.document.DocumentTaxPricing;
+import com.tradepass.framework.common.money.TradeTaxPricing;
 
 import com.tradepass.module.identity.api.permission.AccessControlOperations;
 import com.tradepass.module.identity.api.permission.AccessControlOperations.*;
@@ -34,6 +36,7 @@ import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -45,6 +48,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
     public static final String RECEIVE_ONLY = "RECEIVE_ONLY";
     public static final String INBOUND = "INBOUND";
     public static final String REJECT = "REJECT";
+    private static final BigDecimal MAX_INVENTORY_UNIT_COST = new BigDecimal("999999999999.999999");
 
     private final JdbcTemplate jdbc;
     private final BusinessDocumentMapper documentMapper;
@@ -203,6 +207,13 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         view.put("supplierCompanyId", supplierCompanyId);
         view.put("buyerCompanyId", buyerCompanyId);
         view.put("viewerCompanyId", companyId);
+        if ("SALES_ORDER".equals(document.getDocumentType()) && Long.valueOf(companyId).equals(buyerCompanyId)
+                && (accessControlService.hasPermission(companyId, "inventory_view")
+                    || accessControlService.hasPermission(companyId, "inventory_receive"))
+                && "INBOUNDED".equals(document.getStatus())
+                && DocumentTaxPricing.read(objectMapper, document.getContent()) != null) {
+            view.put("purchaseTaxCosts", purchaseTaxDetails(companyId, documentId));
+        }
         view.put("outboundWarehouseId", document.getOutboundWarehouseId());
         view.put("inboundWarehouseId", document.getInboundWarehouseId());
         view.put("outboundWarehouseName", document.getOutboundWarehouseId() == null ? ""
@@ -239,6 +250,25 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         view.put("canRequestVoid", !contractReadOnly
                 && List.of("ACKNOWLEDGED", "INBOUNDED").contains(document.getStatus()));
         return view;
+    }
+
+    private List<Map<String, Object>> purchaseTaxDetails(long companyId, long documentId) {
+        return jdbc.query("""
+                SELECT item.line_no, detail.amount, detail.purchase_tax_status, detail.purchase_tax_deductible_amount
+                FROM inventory_inbound inbound
+                JOIN inventory_inbound_item detail ON detail.inbound_id = inbound.id
+                JOIN business_document_item item ON item.id = detail.document_item_id
+                WHERE inbound.company_id = ? AND inbound.source_document_id = ?
+                  AND detail.purchase_tax_status IS NOT NULL
+                ORDER BY item.line_no
+                """, (rs, rowNum) -> {
+            Map<String, Object> detail = new LinkedHashMap<>();
+            detail.put("rowIndex", rs.getInt("line_no") - 1);
+            detail.put("costAmount", rs.getBigDecimal("amount"));
+            detail.put("status", rs.getString("purchase_tax_status"));
+            detail.put("deductibleAmount", rs.getBigDecimal("purchase_tax_deductible_amount"));
+            return detail;
+        }, companyId, documentId);
     }
 
     public List<Map<String, Object>> listWarehouses() {
@@ -471,6 +501,13 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
     public Map<String, Object> receive(Long documentId, String decision, Long warehouseId,
                                        String rejectedReason, String signatureName,
                                        byte[] signatureData) {
+        return receive(documentId, decision, warehouseId, rejectedReason, signatureName, signatureData, null);
+    }
+
+    @Transactional
+    public Map<String, Object> receive(Long documentId, String decision, Long warehouseId,
+                                       String rejectedReason, String signatureName,
+                                       byte[] signatureData, Object taxDeductions) {
         long companyId = AuthContext.requireCompanyId();
         BusinessDocumentDO document = documentMapper.selectByIdForUpdate(documentId);
         if (document != null && "RETURN_ORDER".equals(document.getDocumentType())) {
@@ -563,6 +600,13 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             requireWarehouse(companyId, warehouseId,
                     returnOrder ? "请选择退货入库仓库" : "请选择入库仓库");
         }
+        boolean purchaseInbound = INBOUND.equals(normalized) && !returnOrder;
+        DocumentTaxPricing.Snapshot pricing = DocumentTaxPricing.read(objectMapper, document.getContent());
+        Map<Integer, PurchaseCost> purchaseCosts = purchaseInbound && pricing != null
+                ? purchaseCosts(pricing, taxDeductions) : Map.of();
+        if (taxDeductions != null && (!purchaseInbound || pricing == null)) {
+            throw new BusinessException("仅支持价税销售单采购入库时填写进项税");
+        }
 
         Long receiptId = existingReceipt(companyId, documentId);
         if (receiptId == null) {
@@ -622,11 +666,11 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                 .toList();
         if (items.isEmpty()) throw new BusinessException(documentLabel + "没有可入库商品");
         Long transferId = returnOrder
-                ? createReturnTransfer(document, items, AuthContext.userId()) : null;
+                ? createReturnTransfer(document, items, AuthContext.userId(), pricing != null) : null;
 
         String inboundNo = createInboundNo();
         Long inboundId = ApplicationIds.next();
-        if (!returnOrder) createSalesOutbound(document, supplierCompanyId, items, inboundId, AuthContext.userId());
+        if (!returnOrder) createSalesOutbound(document, supplierCompanyId, items, inboundId, AuthContext.userId(), pricing != null);
         jdbc.update("""
                 INSERT INTO inventory_inbound
                 (id, company_id, warehouse_id, source_document_id, inbound_no, created_by)
@@ -640,32 +684,53 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             Long productId = findOrCreateProduct(inboundCompanyId,
                     String.valueOf(item.get("productName")), safeSpec(item.get("model")), safeSpec(item.get("specification")),
                     String.valueOf(item.get("baseUnit")));
-            if (returnOrder) {
-                // A refund price does not describe what the supplier paid for the goods.
-                InventoryMovement movement = new InventoryMovement(
-                        inboundCompanyId, inboundWarehouseId, productId, quantity);
-                unitPrice = inventoryUnitCost(movement, lockOrCreateBalance(movement));
+            PurchaseCost purchaseCost = purchaseCosts.get((Integer) item.get("lineNo"));
+            InventoryMovement movement = new InventoryMovement(inboundCompanyId, inboundWarehouseId, productId, quantity);
+            BalanceSnapshot priorBalance = pricing == null ? null : lockOrCreateBalance(movement);
+            BigDecimal returnedAmount = null;
+            if (returnOrder && pricing != null && pricing.sourceDocumentId() != null) {
+                returnedAmount = calculateReturnedStockCost(pricing.sourceDocumentId(), movement);
+                if (returnedAmount != null) unitPrice = inboundUnitCost(returnedAmount, quantity);
             }
-            BigDecimal inboundAmount = quantity.multiply(unitPrice).setScale(2, RoundingMode.HALF_UP);
+            if (returnOrder && returnedAmount == null) {
+                // A refund price does not describe what the supplier paid for the goods.
+                unitPrice = inventoryUnitCost(movement, priorBalance == null ? lockOrCreateBalance(movement) : priorBalance);
+            }
+            BigDecimal inboundAmount = returnedAmount != null ? returnedAmount : purchaseCost == null
+                    ? quantity.multiply(unitPrice).setScale(2, RoundingMode.HALF_UP) : purchaseCost.cost();
+            if (purchaseCost != null) unitPrice = inboundUnitCost(inboundAmount, quantity);
             addInboundBalance(inboundCompanyId, inboundWarehouseId, productId, quantity, unitPrice, inboundAmount);
             BigDecimal balance = jdbc.queryForObject("""
                     SELECT quantity FROM inventory_balance
                     WHERE company_id = ? AND warehouse_id = ? AND product_id = ?
                     """, BigDecimal.class, inboundCompanyId, inboundWarehouseId, productId);
+            long inboundItemId = ApplicationIds.next();
             jdbc.update("""
                     INSERT INTO inventory_inbound_item
                     (id, inbound_id, document_item_id, product_id, quantity, unit_price, amount)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, ApplicationIds.next(), inboundId, item.get("id"), productId, quantity, unitPrice, inboundAmount);
+                    """, inboundItemId, inboundId, item.get("id"), productId, quantity, unitPrice, inboundAmount);
+            if (purchaseCost != null) jdbc.update("""
+                    UPDATE inventory_inbound_item SET purchase_tax_status = ?, purchase_tax_deductible_amount = ?
+                    WHERE id = ?
+                    """, purchaseCost.status(), purchaseCost.deducted(), inboundItemId);
+            long transactionId = ApplicationIds.next();
             jdbc.update("""
                     INSERT INTO inventory_transaction
                     (id, company_id, warehouse_id, product_id, biz_type, biz_id,
                      quantity_delta, balance_after, created_by)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, ApplicationIds.next(), inboundCompanyId, inboundWarehouseId, productId,
+                    """, transactionId, inboundCompanyId, inboundWarehouseId, productId,
                     "RETURN_ORDER".equals(document.getDocumentType())
                             ? "RETURN_ORDER_INBOUND" : "SALES_ORDER_INBOUND",
                     returnOrder ? transferId : inboundId, quantity, balance, AuthContext.userId());
+            if (priorBalance != null) {
+                BigDecimal nextAmount = jdbc.queryForObject("""
+                        SELECT inventory_amount FROM inventory_balance
+                        WHERE company_id = ? AND warehouse_id = ? AND product_id = ?
+                        """, BigDecimal.class, inboundCompanyId, inboundWarehouseId, productId);
+                saveMovementCost(transactionId, nextAmount.subtract(priorBalance.amount()));
+            }
         }
         jdbc.update("UPDATE sales_order_receipt SET decision = 'INBOUND', status = 'INBOUNDED' WHERE id = ?", receiptId);
         document.setStatus("INBOUNDED");
@@ -680,6 +745,106 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         recordDocumentResult(document, companyId, "INBOUNDED",
                 documentLabel + "已确认并入库", "对方已确认并入库" + documentLabel + " " + document.getDocumentNo(), null);
         return documentDetail(documentId);
+    }
+
+    private Map<Integer, PurchaseCost> purchaseCosts(DocumentTaxPricing.Snapshot pricing, Object taxDeductions) {
+        Map<Integer, DocumentTaxPricing.Line> products = new HashMap<>();
+        pricing.lines().stream().filter(line -> "PRODUCT".equals(line.lineType()))
+                .forEach(line -> products.put(line.rowIndex(), line));
+        Map<Integer, PurchaseCost> result = new HashMap<>();
+        if (taxDeductions != null) {
+            try {
+                JsonNode supplied = taxDeductions instanceof String text ? objectMapper.readTree(text)
+                        : objectMapper.valueToTree(taxDeductions);
+                if (!supplied.isArray() || supplied.size() > products.size()) {
+                    throw new BusinessException("进项税确认数据格式不正确");
+                }
+                for (JsonNode option : supplied) {
+                    int index = option.path("rowIndex").asInt(-1);
+                    DocumentTaxPricing.Line line = products.get(index);
+                    if (line == null || result.containsKey(index + 1)) {
+                        throw new BusinessException("进项税确认商品行无效");
+                    }
+                    String status = option.path("status").asText();
+                    BigDecimal amount = option.hasNonNull("deductibleAmount")
+                            ? new BigDecimal(option.path("deductibleAmount").asText()) : null;
+                    if ("PENDING".equals(status) && (amount == null || amount.signum() == 0)) {
+                        result.put(index + 1, pendingPurchaseCost(line));
+                    } else if ("CONFIRMED".equals(status) && amount != null) {
+                        result.put(index + 1, new PurchaseCost(status, amount,
+                                TradeTaxPricing.acquisitionCost(line.amounts().grossAmount(), line.amounts().taxAmount(), amount)));
+                    } else {
+                        throw new BusinessException("请选择进项税确认状态及可抵扣金额");
+                    }
+                }
+            } catch (BusinessException exception) {
+                throw exception;
+            } catch (IllegalArgumentException exception) {
+                throw new BusinessException(exception.getMessage());
+            } catch (Exception exception) {
+                throw new BusinessException("进项税确认数据格式不正确");
+            }
+        }
+        products.forEach((index, line) -> result.putIfAbsent(index + 1, pendingPurchaseCost(line)));
+        return result;
+    }
+
+    private PurchaseCost pendingPurchaseCost(DocumentTaxPricing.Line line) {
+        if (line.amounts().taxAmount().signum() == 0) {
+            return new PurchaseCost("CONFIRMED", BigDecimal.ZERO, line.amounts().grossAmount());
+        }
+        return new PurchaseCost("PENDING", null, line.amounts().grossAmount());
+    }
+
+    private BigDecimal inboundUnitCost(BigDecimal amount, BigDecimal quantity) {
+        BigDecimal unitCost = amount.divide(quantity, 6, RoundingMode.HALF_UP);
+        if (unitCost.compareTo(MAX_INVENTORY_UNIT_COST) > 0) {
+            throw new BusinessException("入库单位成本过大");
+        }
+        return unitCost;
+    }
+
+    private BigDecimal calculateReturnedStockCost(long originalDocumentId, InventoryMovement movement) {
+        ReturnedCost original = findOriginalOutboundCost(originalDocumentId, movement);
+        if (original == null) return null;
+        ReturnedCost existing = jdbc.queryForObject("""
+                SELECT COALESCE(SUM(detail.quantity), 0) AS quantity,
+                       COALESCE(SUM(detail.amount), 0) AS amount
+                FROM inventory_inbound inbound
+                JOIN inventory_inbound_item detail ON detail.inbound_id = inbound.id
+                JOIN business_document document ON document.id = inbound.source_document_id
+                WHERE inbound.company_id = ? AND detail.product_id = ?
+                  AND inbound.status = 'COMPLETED' AND document.document_type = 'RETURN_ORDER'
+                  AND (CASE WHEN JSON_VALID(document.content)
+                            THEN JSON_UNQUOTE(JSON_EXTRACT(document.content, '$.taxPricing.sourceDocumentId')) END) = ?
+                """, (rs, rowNum) -> new ReturnedCost(rs.getBigDecimal("quantity"), rs.getBigDecimal("amount")),
+                movement.companyId(), movement.productId(), Long.toString(originalDocumentId));
+        BigDecimal availableQuantity = original.quantity().subtract(existing.quantity());
+        BigDecimal availableAmount = original.amount().subtract(existing.amount());
+        if (availableQuantity.compareTo(movement.quantity()) < 0 || availableAmount.signum() < 0) {
+            throw new BusinessException("退货入库成本超过原销售出库，请核对关联单据");
+        }
+        return movement.quantity().compareTo(availableQuantity) == 0 ? availableAmount
+                : availableAmount.multiply(movement.quantity()).divide(availableQuantity, 2, RoundingMode.HALF_UP);
+    }
+
+    private ReturnedCost findOriginalOutboundCost(long originalDocumentId, InventoryMovement movement) {
+        List<ReturnedCost> costs = jdbc.query("""
+                SELECT movement.quantity_delta, movement.cost_amount_delta
+                FROM inventory_inbound original
+                JOIN inventory_transaction movement ON movement.biz_id = original.id
+                   AND movement.biz_type = 'SALES_ORDER_OUTBOUND'
+                WHERE original.source_document_id = ? AND original.status = 'COMPLETED'
+                  AND movement.company_id = ? AND movement.product_id = ?
+                """, (rs, rowNum) -> {
+            BigDecimal amount = rs.getBigDecimal("cost_amount_delta");
+            return amount == null ? null : new ReturnedCost(rs.getBigDecimal("quantity_delta").abs(), amount.negate());
+        }, originalDocumentId, movement.companyId(), movement.productId());
+        return costs.size() == 1 ? costs.get(0) : null;
+    }
+
+    private void saveMovementCost(long transactionId, BigDecimal amountDelta) {
+        jdbc.update("UPDATE inventory_transaction SET cost_amount_delta = ? WHERE id = ?", amountDelta, transactionId);
     }
 
     private void addInboundBalance(long companyId, long warehouseId, long productId,
@@ -698,7 +863,8 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                     END,
                     inventory_amount = CASE
                         WHEN VALUES(quantity) = 0 THEN inventory_amount
-                        WHEN quantity <= 0 THEN ROUND((quantity + VALUES(quantity)) * unit_price, 2)
+                        WHEN quantity = 0 THEN VALUES(inventory_amount)
+                        WHEN quantity < 0 THEN ROUND((quantity + VALUES(quantity)) * unit_price, 2)
                         ELSE inventory_amount + VALUES(inventory_amount)
                     END,
                     quantity = quantity + VALUES(quantity),
@@ -797,13 +963,14 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
 
     private List<InventoryMovement> originalMovements(long companyId, String bizType, long bizId) {
         return jdbc.query("""
-                        SELECT company_id, warehouse_id, product_id, quantity_delta
+                        SELECT company_id, warehouse_id, product_id, quantity_delta, cost_amount_delta
                         FROM inventory_transaction
                         WHERE company_id = ? AND biz_type = ? AND biz_id = ?
                         ORDER BY id
                         """, (rs, rowNum) -> new InventoryMovement(
                         rs.getLong("company_id"), rs.getLong("warehouse_id"),
-                        rs.getLong("product_id"), rs.getBigDecimal("quantity_delta").abs()),
+                        rs.getLong("product_id"), rs.getBigDecimal("quantity_delta").abs(),
+                        rs.getBigDecimal("cost_amount_delta")),
                 companyId, bizType, bizId);
     }
 
@@ -824,22 +991,33 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             throw new BusinessException("库存不足，不能完成作废冲销");
         }
         BigDecimal unitCost = inventoryUnitCost(movement, balance);
-        BigDecimal nextAmount = balance.amount().add(
-                unitCost.multiply(delta).setScale(2, RoundingMode.HALF_UP));
+        BigDecimal originalCost = movement.costAmountDelta();
+        BigDecimal amountDelta = originalCost == null
+                ? unitCost.multiply(delta).setScale(2, RoundingMode.HALF_UP) : originalCost.negate();
+        BigDecimal nextAmount = balance.amount().add(amountDelta);
+        if (originalCost != null && ((nextQuantity.signum() > 0 && nextAmount.signum() < 0)
+                || (nextQuantity.signum() == 0 && nextAmount.signum() != 0))) {
+            throw new BusinessException("后续库存变动影响成本冲销，请先处理后续库存单据");
+        }
         if (nextQuantity.signum() == 0) nextAmount = BigDecimal.ZERO.setScale(2);
+        if (originalCost != null && nextQuantity.signum() != 0) {
+            unitCost = nextAmount.divide(nextQuantity, 6, RoundingMode.HALF_UP);
+        }
         jdbc.update("""
                 UPDATE inventory_balance
                 SET quantity = ?, inventory_amount = ?, unit_price = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE company_id = ? AND warehouse_id = ? AND product_id = ?
                 """, nextQuantity, nextAmount, unitCost,
                 movement.companyId(), movement.warehouseId(), movement.productId());
+        long transactionId = ApplicationIds.next();
         jdbc.update("""
                 INSERT INTO inventory_transaction
                 (id, company_id, warehouse_id, product_id, biz_type, biz_id,
                  quantity_delta, balance_after, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, ApplicationIds.next(), movement.companyId(), movement.warehouseId(), movement.productId(),
+                """, transactionId, movement.companyId(), movement.warehouseId(), movement.productId(),
                 bizType, bizId, delta, nextQuantity, userId);
+        if (originalCost != null) saveMovementCost(transactionId, nextAmount.subtract(balance.amount()));
     }
 
     private BalanceSnapshot lockBalance(InventoryMovement movement) {
@@ -899,6 +1077,9 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
     private List<SalesItem> parseItems(String content) {
         try {
             JsonNode root = objectMapper.readTree(content);
+            DocumentTaxPricing.Snapshot pricing = DocumentTaxPricing.read(root.get("taxPricing"));
+            Map<Integer, DocumentTaxPricing.Line> pricedRows = new HashMap<>();
+            if (pricing != null) pricing.lines().forEach(line -> pricedRows.put(line.rowIndex(), line));
             List<String> columns = new ArrayList<>();
             root.path("columns").forEach(node -> columns.add(node.asText("")));
             int productIndex = findProductColumn(columns);
@@ -919,11 +1100,23 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             int lineNo = 1;
             int rowIndex = 0;
             for (JsonNode row : root.path("rows")) {
+                DocumentTaxPricing.Line priced = pricedRows.get(rowIndex);
                 String lineType = rowTypes.isArray() && rowIndex < rowTypes.size()
                         && "FEE".equalsIgnoreCase(rowTypes.path(rowIndex).asText())
                         ? "FEE" : "PRODUCT";
                 rowIndex++;
                 String product = cell(row, productIndex).trim();
+                if (pricing != null) {
+                    if (priced == null) continue;
+                    if (product.isBlank()) throw new BusinessException("销售单商品名称不能为空");
+                    String model = cell(row, modelIndex).trim();
+                    if (model.length() > 128) throw new BusinessException("销售单商品型号不能超过 128 字");
+                    items.add(new SalesItem(rowIndex, priced.lineType(), product, model, cell(row, specIndex).trim(),
+                            defaultText(cell(row, unitIndex), "FEE".equals(priced.lineType()) ? "项" : "件"),
+                            priced.quantity(), priced.quoteUnitPrice(), priced.amounts().grossAmount(),
+                            cell(row, remarkIndex).trim()));
+                    continue;
+                }
                 BigDecimal quantity = decimal(cell(row, quantityIndex), 4);
                 BigDecimal price = decimal(cell(row, priceIndex), 6);
                 BigDecimal amount = decimal(cell(row, amountIndex), 2);
@@ -957,7 +1150,8 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
         for (int i = 0; i < columns.size(); i++) {
             String column = columns.get(i);
             if (!column.contains("型号") && !column.contains("规格")
-                    && (column.contains("品名") || column.contains("产品") || column.contains("名称"))) return i;
+                    && (column.contains("品名") || column.contains("产品") || column.contains("名称")
+                    || column.contains("商品"))) return i;
         }
         return -1;
     }
@@ -1006,7 +1200,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
     }
 
     private Long createReturnTransfer(BusinessDocumentDO document, List<Map<String, Object>> items,
-                                      long createdBy) {
+                                      long createdBy, boolean captureCost) {
         Long buyerCompanyId = document.getBuyerCompanyId();
         Long supplierCompanyId = document.getSupplierCompanyId();
         if (buyerCompanyId == null || supplierCompanyId == null) {
@@ -1070,6 +1264,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             BigDecimal nextQuantity = stock.balanceQuantity().subtract(stock.quantity());
             BigDecimal nextAmount = nextQuantity.signum() == 0
                     ? BigDecimal.ZERO.setScale(2) : stock.inventoryAmount().subtract(amountDelta);
+            long transactionId = ApplicationIds.next();
             jdbc.update("""
                     UPDATE inventory_balance
                     SET quantity = ?, inventory_amount = ?, unit_price = ?, updated_at = CURRENT_TIMESTAMP
@@ -1081,14 +1276,15 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                     (id, company_id, warehouse_id, product_id, biz_type, biz_id,
                      quantity_delta, balance_after, created_by)
                     VALUES (?, ?, ?, ?, 'RETURN_ORDER_OUTBOUND', ?, ?, ?, ?)
-                    """, ApplicationIds.next(), buyerCompanyId, document.getOutboundWarehouseId(), stock.productId(),
+                    """, transactionId, buyerCompanyId, document.getOutboundWarehouseId(), stock.productId(),
                     transferId, stock.quantity().negate(), nextQuantity, createdBy);
+            if (captureCost) saveMovementCost(transactionId, nextAmount.subtract(stock.inventoryAmount()));
         }
         return transferId;
     }
 
     private void createSalesOutbound(BusinessDocumentDO document, Long supplierCompanyId,
-                                     List<Map<String, Object>> items, Long inboundId, long userId) {
+                                     List<Map<String, Object>> items, Long inboundId, long userId, boolean captureCost) {
         if (supplierCompanyId == null) throw new BusinessException("销售单供方企业信息不完整");
         Long sourceWarehouse = document.getOutboundWarehouseId();
         if (sourceWarehouse == null) {
@@ -1121,6 +1317,7 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
             BigDecimal nextQuantity = balance.quantity().subtract(quantity);
             BigDecimal nextAmount = nextQuantity.signum() == 0 ? BigDecimal.ZERO.setScale(2)
                     : balance.amount().subtract(unitCost.multiply(quantity).setScale(2, RoundingMode.HALF_UP));
+            long transactionId = ApplicationIds.next();
             jdbc.update("""
                     UPDATE inventory_balance
                     SET quantity = ?, inventory_amount = ?, unit_price = ?, updated_at = CURRENT_TIMESTAMP
@@ -1132,8 +1329,11 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                     (id, company_id, warehouse_id, product_id, biz_type, biz_id,
                      quantity_delta, balance_after, created_by)
                     VALUES (?, ?, ?, ?, 'SALES_ORDER_OUTBOUND', ?, ?, ?, ?)
-                    """, ApplicationIds.next(), supplierCompanyId, sourceWarehouse, productId, inboundId,
+                    """, transactionId, supplierCompanyId, sourceWarehouse, productId, inboundId,
                     quantity.negate(), nextQuantity, userId);
+            if (captureCost && (balance.quantity().signum() > 0 || unitCost.signum() > 0)) {
+                saveMovementCost(transactionId, nextAmount.subtract(balance.amount()));
+            }
         }
     }
 
@@ -1234,9 +1434,10 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
 
     private void recordReconciliation(BusinessDocumentDO document) {
         if (reconciliationAccountService == null) return;
-        List<SalesItem> items = parseItems(document.getContent());
-        BigDecimal total = items.stream().map(SalesItem::amount)
-                .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(2, RoundingMode.HALF_UP);
+        var pricing = DocumentTaxPricing.read(objectMapper, document.getContent());
+        BigDecimal total = pricing == null ? parseItems(document.getContent()).stream().map(SalesItem::amount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(2, RoundingMode.HALF_UP)
+                : pricing.amounts().grossAmount();
         LocalDate businessDate = LocalDate.now();
         try {
             String date = objectMapper.readTree(document.getContent()).path("date").asText("");
@@ -1286,6 +1487,12 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
                              BigDecimal amount, String remark) {
     }
 
+    private record PurchaseCost(String status, BigDecimal deducted, BigDecimal cost) {
+    }
+
+    private record ReturnedCost(BigDecimal quantity, BigDecimal amount) {
+    }
+
     private record OutboundStock(long productId, BigDecimal quantity, BigDecimal balanceQuantity,
                                  BigDecimal unitPrice, BigDecimal inventoryAmount,
                                  String productName) {
@@ -1299,7 +1506,10 @@ public class SalesOrderInventoryServiceImpl implements SalesOrderInventoryServic
     }
 
     private record InventoryMovement(long companyId, long warehouseId, long productId,
-                                     BigDecimal quantity) {
+                                     BigDecimal quantity, BigDecimal costAmountDelta) {
+        private InventoryMovement(long companyId, long warehouseId, long productId, BigDecimal quantity) {
+            this(companyId, warehouseId, productId, quantity, null);
+        }
     }
 
     private record BalanceSnapshot(BigDecimal quantity, BigDecimal unitPrice, BigDecimal amount) {

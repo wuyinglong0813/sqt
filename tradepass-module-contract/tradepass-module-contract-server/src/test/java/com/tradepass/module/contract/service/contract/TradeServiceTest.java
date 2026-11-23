@@ -24,6 +24,7 @@ import com.tradepass.module.trade.service.approval.ApprovalService;
 import com.tradepass.module.trade.service.ranking.RankingCacheService;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tradepass.framework.common.core.AuthContext;
 import com.tradepass.framework.common.exception.BusinessException;
 import com.tradepass.framework.common.pojo.TradePassDtos.CounterpartyRelation;
@@ -378,6 +379,55 @@ class TradeServiceTest {
     }
 
     @Test
+    void calculatesContractPriceAndTaxFromProductAndFeeRows() throws Exception {
+        doAnswer(invocation -> {
+            TradeContractDO contract = invocation.getArgument(0);
+            contract.setId(21L);
+            return 1;
+        }).when(contractMapper).insert(any(TradeContractDO.class));
+        CompanyRespDTO initiator = new CompanyRespDTO();
+        initiator.setId(3L);
+        initiator.setName("当前企业");
+        CompanyRespDTO counterparty = new CompanyRespDTO();
+        counterparty.setId(9L);
+        counterparty.setName("对方企业");
+        when(companyMapper.selectById(3L)).thenReturn(initiator);
+        when(companyMapper.selectById(9L)).thenReturn(counterparty);
+        when(relationMapper.countActiveBetween(3L, 9L)).thenReturn(1L);
+        String terms = """
+                {"taxPricing":{"version":1,"basis":"NET","grossAmount":"0.01","lines":[
+                  {"lineType":"PRODUCT","rowIndex":1,"taxTreatment":"TAXABLE","taxRate":"13",
+                   "quantity":"100","quoteUnitPrice":"120","grossAmount":"0.01"},
+                  {"lineType":"FEE","rowIndex":0,"taxTreatment":"SIMPLE","taxRate":"3"}
+                ]},"sections":[
+                  {"type":"table","columns":["名称","数量","单价","金额"],
+                    "rows":[["","0","0","0"],["球阀","100","120","1"]]},
+                  {"type":"fees","items":[{"feeType":"运费","amount":"100","remark":""}]}
+                ]}
+                """;
+        var request = new CreateContractReqVO("对方企业", "球阀采购", "模板", new BigDecimal("0.01"),
+                "2026-01-01", null, terms, 9L, "PURCHASE", null, "request-21");
+
+        ContractRespDTO created = service.createContract(request);
+        var content = new ObjectMapper().readTree(created.terms());
+        assertThat(created.amount()).isEqualByComparingTo("13663.00");
+        assertThat(content.at("/taxPricing/netAmount").asText()).isEqualTo("12100.00");
+        assertThat(content.at("/taxPricing/taxAmount").asText()).isEqualTo("1563.00");
+        assertThat(content.at("/taxPricing/lines/0/lineId").asText()).isEqualTo("PRODUCT:1");
+        assertThat(content.at("/taxPricing/lines/0/grossAmount").asText()).isEqualTo("13560.00");
+        assertThat(content.at("/taxPricing/lines/1/grossAmount").asText()).isEqualTo("103.00");
+        assertThat(content.at("/sections/0/rows/1/3").asText()).isEqualTo("12000.00");
+        assertThat(content.at("/sections/0/summary/totalAmount").asText()).isEqualTo("13560.00");
+        assertThat(content.at("/sections/1/items/0/amount").asText()).isEqualTo("100");
+        assertThatThrownBy(() -> service.createContract(new CreateContractReqVO(
+                "对方企业", "球阀采购", "模板", BigDecimal.ZERO, "2026-01-01", null,
+                terms.replace("\"quoteUnitPrice\":\"120\"", "\"quoteUnitPrice\":\"119\""),
+                9L, "PURCHASE", null, "request-22")))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("报价单价与合同表格不一致");
+    }
+
+    @Test
     void initiatorCanCancelResubmitAndDeleteInactiveContract() {
         TradeContractDO outgoing = new TradeContractDO();
         outgoing.setId(41L);
@@ -417,6 +467,11 @@ class TradeServiceTest {
         ContractRespDTO resubmitted = service.resubmitContract(41L, changed);
         assertThat(resubmitted.id()).isEqualTo("41");
         verify(signingCancellation).cancelForChange(outgoing, "合同修改，终止旧版本签署");
+
+        outgoing.setTerms("{\"taxPricing\":{\"version\":1}}");
+        assertThatThrownBy(() -> service.resubmitContract(41L, changed))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("合同已记录价税明细");
 
         outgoing.setStatus("REJECTED");
         assertThat(service.deleteContract(41L)).isEqualTo("合同已从我方列表删除");

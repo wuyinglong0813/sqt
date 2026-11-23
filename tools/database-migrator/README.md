@@ -17,9 +17,11 @@ Reviewed additions map as follows:
 | V52 explicit open invitations and pending application provenance | identity V7 |
 | V53 standalone purchase direction | trade V6 / business V13 |
 
-The merge tool accepts trade V3/V4/V5/V6, contract V4/V5/V7/V8, settlement V1/V2. Each accepted owned history must have the expected migration count and no failures. Older reviewed contract inputs must lack the new cancellation-intent table; the target initializes that table empty. Contract V8 must contain it, and all of its rows are copied and verified. Other versions, including contract V6, require a separate review.
+The merge tool accepts trade V3–V7, contract V4/V5/V7/V8, and settlement V1/V2. Each accepted owned history must have the expected migration count and no failures. Older reviewed contract inputs must lack the new cancellation-intent table. The target initializes that table empty. Contract V8 must contain it, and all of its rows are copied and verified. Other versions, including contract V6, require a separate review.
 
 The copy preserves the direction of each standalone supplier or customer from flat V53 or trade V6. For older reviewed inputs the target defaults those records to `SALE`.
+
+Trade V7 adds nullable purchase tax and inventory cost snapshot fields. Business V13.1 has the same fields, and the merge copies and verifies their values.
 
 Approval history uses the existing notification table and preserves every source row. V50/trade V5/business V12 copy only recorded counterparty decisions into the processor company's history, using deterministic negative IDs and marking historical mirrors as read. Repeating the backfill adds no rows and does not mirror its own output. Merging trade V3/V4 retains its exact source rows: the empty target's V12 does not backfill rows copied later; apply the reviewed idempotent V50 SQL separately after an old-source merge if those historical processor records are needed.
 

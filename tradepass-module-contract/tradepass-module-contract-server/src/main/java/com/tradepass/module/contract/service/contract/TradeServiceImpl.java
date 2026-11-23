@@ -17,6 +17,7 @@ import com.tradepass.module.trade.api.ranking.RankingCacheOperations.*;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -491,7 +492,9 @@ public class TradeServiceImpl implements TradeService {
         }
         String direction = normalizeDirection(request.direction());
         String contractName = request.name().trim();
-        BigDecimal amount = requireNonNegativeAmount(request.amount(), "合同金额");
+        NormalizedContractTerms terms = normalizeContractTerms(request, contractName,
+                initiator.getName(), counterparty.getName(), direction);
+        BigDecimal amount = terms.amount();
         TradeContractDO contract = new TradeContractDO();
         contract.setCompanyId(companyId);
         contract.setContractNo(normalizeBusinessNo(request.contractNo(), "HT"));
@@ -504,8 +507,7 @@ public class TradeServiceImpl implements TradeService {
         contract.setAmount(amount);
         contract.setStartDate(startDate);
         contract.setEndDate(endDate);
-        contract.setTerms(normalizeContractTerms(request.terms(), contractName,
-                initiator.getName(), counterparty.getName(), direction));
+        contract.setTerms(terms.content());
         contract.setVersionNo(1);
         contract.setStatus("PENDING");
         contract.setInitiatorHidden(false);
@@ -617,9 +619,12 @@ public class TradeServiceImpl implements TradeService {
         if (initiator == null) throw new BusinessException("当前企业不存在");
         String direction = normalizeDirection(request.direction());
         String contractName = request.name().trim();
-        BigDecimal amount = requireNonNegativeAmount(request.amount(), "合同金额");
-        String terms = normalizeContractTerms(request.terms(), contractName,
+        NormalizedContractTerms terms = normalizeContractTerms(request, contractName,
                 initiator.getName(), counterparty.getName(), direction);
+        BigDecimal amount = terms.amount();
+        if (!terms.priced() && hasFrozenTaxPricing(existing.getTerms())) {
+            throw new BusinessException("合同已记录价税明细，请填写价税明细后重新发起");
+        }
         if (signingCancellation != null) signingCancellation.cancelForChange(existing, "合同修改，终止旧版本签署");
         int nextVersion = Math.max(1, existing.getVersionNo() == null ? 1 : existing.getVersionNo()) + 1;
         int updated = tradeContractMapper.update(new LambdaUpdateWrapper<TradeContractDO>()
@@ -633,7 +638,7 @@ public class TradeServiceImpl implements TradeService {
                 .set(TradeContractDO::getAmount, amount)
                 .set(TradeContractDO::getStartDate, startDate)
                 .set(TradeContractDO::getEndDate, endDate)
-                .set(TradeContractDO::getTerms, terms)
+                .set(TradeContractDO::getTerms, terms.content())
                 .set(TradeContractDO::getVersionNo, nextVersion)
                 .set(TradeContractDO::getStatus, "PENDING")
                 .set(TradeContractDO::getInitiatorHidden, false)
@@ -854,10 +859,11 @@ public class TradeServiceImpl implements TradeService {
         return company;
     }
 
-    private String normalizeContractTerms(String terms, String contractName, String initiatorName,
-                                          String counterpartyName, String direction) {
+    private NormalizedContractTerms normalizeContractTerms(CreateContractReqVO request, String contractName,
+            String initiatorName, String counterpartyName, String direction) {
+        String terms = request.terms();
         if (terms == null || terms.isBlank()) {
-            return terms;
+            return new NormalizedContractTerms(terms, requireNonNegativeAmount(request.amount(), "合同金额"), false);
         }
         try {
             JsonNode parsed = objectMapper.readTree(terms);
@@ -877,12 +883,27 @@ public class TradeServiceImpl implements TradeService {
                     }
                 }
             }
-            return objectMapper.writeValueAsString(root);
+            BigDecimal pricedAmount = ContractTaxPricing.normalize(root);
+            BigDecimal amount = pricedAmount == null
+                    ? requireNonNegativeAmount(request.amount(), "合同金额") : pricedAmount;
+            return new NormalizedContractTerms(objectMapper.writeValueAsString(root), amount, pricedAmount != null);
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
             throw new BusinessException("合同正文格式错误");
         }
+    }
+
+    private boolean hasFrozenTaxPricing(String terms) {
+        if (terms == null || terms.isBlank()) return false;
+        try {
+            return objectMapper.readTree(terms).path("taxPricing").path("version").asInt() == 1;
+        } catch (JsonProcessingException legacyPlainText) {
+            return false;
+        }
+    }
+
+    private record NormalizedContractTerms(String content, BigDecimal amount, boolean priced) {
     }
 
     private String companyName(Long companyId) {

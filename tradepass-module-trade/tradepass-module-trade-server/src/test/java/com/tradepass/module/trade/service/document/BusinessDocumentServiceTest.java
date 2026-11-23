@@ -222,6 +222,61 @@ class BusinessDocumentServiceTest {
     }
 
     @Test
+    void calculatesTaxSalesDraftFromTypedContractLineAndRequestedQuantity() throws Exception {
+        var template = new BusinessDocumentTemplateDO();
+        template.setId(11L);
+        template.setCompanyId(3L);
+        template.setDocumentType(BusinessDocumentService.SALES_ORDER);
+        template.setName("标准销售单");
+        template.setContent("{\"columns\":[\"品名\",\"数量\",\"单价\",\"金额\"],\"blankRows\":8}");
+        when(templateMapper.selectOne(any())).thenReturn(template);
+        var contract = new TradeContractRespDTO();
+        contract.setId(21L);
+        contract.setCompanyId(3L);
+        contract.setCounterpartyCompanyId(4L);
+        contract.setDirection("SALE");
+        contract.setStatus("ACTIVE");
+        contract.setVersionNo(2);
+        contract.setAmount(new BigDecimal("13560.00"));
+        contract.setTerms("""
+                {
+                  "sections":[{"type":"table","columns":["产品名称","数量","单价","金额"],
+                    "rows":[["","","",""],["球阀","100","120","12000"]]}],
+                  "taxPricing":{"version":1,"basis":"NET","netAmount":"12000.00","taxAmount":"1560.00","grossAmount":"13560.00",
+                    "lines":[{"rowIndex":1,"lineType":"PRODUCT","lineId":"PRODUCT:1","taxTreatment":"TAXABLE",
+                      "taxRate":"13","quantity":"100","quoteUnitPrice":"120",
+                      "netAmount":"12000.00","taxAmount":"1560.00","grossAmount":"13560.00"}]}
+                }
+                """);
+        when(contractMapper.selectByIdForUpdate(21L)).thenReturn(contract);
+        AtomicReference<BusinessDocumentDO> inserted = new AtomicReference<>();
+        doAnswer(invocation -> {
+            BusinessDocumentDO document = invocation.getArgument(0);
+            document.setId(31L);
+            inserted.set(document);
+            return 1;
+        }).when(documentMapper).insert(any(BusinessDocumentDO.class));
+        when(documentMapper.selectById(31L)).thenAnswer(invocation -> inserted.get());
+        var edits = Map.of("rows", List.of(List.of("球阀", "50", "1", "1")),
+                "taxPricing", Map.of("version", 1, "lines",
+                        List.of(Map.of("rowIndex", 0, "sourceLineId", "PRODUCT:1"))),
+                "totalAmount", "1");
+
+        Map<String, Object> view = service.createDocument(21L, Map.of(
+                "documentType", BusinessDocumentService.SALES_ORDER, "templateId", 11L, "content", edits));
+
+        assertThat(view).containsEntry("totalAmount", new BigDecimal("6780.00"));
+        JsonNode content = objectMapper.readTree(inserted.get().getContent());
+        assertThat(content.path("rows").get(0).get(2).asText()).isEqualTo("120");
+        assertThat(content.path("rows").get(0).get(3).asText()).isEqualTo("6780.00");
+        var snapshot = DocumentTaxPricing.read(content.get("taxPricing"));
+        assertThat(snapshot.contractVersion()).isEqualTo(2);
+        assertThat(snapshot.lines().get(0).sourceLineId()).isEqualTo("PRODUCT:1");
+        assertThat(snapshot.amounts().netAmount()).isEqualByComparingTo("6000.00");
+        assertThat(snapshot.amounts().taxAmount()).isEqualByComparingTo("780.00");
+    }
+
+    @Test
     void supplierCanEditAndPublishDraftAfterContractBecomesActive() throws Exception {
         TradeContractRespDTO contract = new TradeContractRespDTO();
         contract.setId(23L);

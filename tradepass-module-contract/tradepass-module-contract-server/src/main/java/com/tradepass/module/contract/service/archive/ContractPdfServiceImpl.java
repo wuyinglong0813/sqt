@@ -15,8 +15,12 @@ import com.lowagie.text.pdf.PdfPCell;
 import com.lowagie.text.pdf.PdfPTable;
 import com.lowagie.text.pdf.PdfWriter;
 import com.tradepass.framework.common.exception.BusinessException;
+import com.tradepass.framework.common.money.TradeTaxPricing.Amounts;
+import com.tradepass.framework.common.money.TradeTaxPricing.Basis;
+import com.tradepass.framework.common.money.TradeTaxPricing.Treatment;
 import com.tradepass.module.contract.api.contract.dto.ContractRespDTO;
 import com.tradepass.module.contract.api.contract.dto.ContractRespDTO.PartySigningProgress;
+import com.tradepass.module.contract.service.contract.ContractAmountText;
 import com.tradepass.module.identity.api.company.dto.CompanyRespDTO;
 import com.tradepass.module.identity.api.company.CompanyReader;
 import com.tradepass.module.identity.api.company.CompanyReader.*;
@@ -99,8 +103,11 @@ public class ContractPdfServiceImpl implements ContractPdfService {
                 document.add(note);
             }
             addHeader(document, contract, content, parties, bodyFont);
-            addProducts(document, contract, content.table(), headingFont, tableFont, bodyFont);
-            addFees(document, contract, content.fees(), headingFont, tableFont, bodyFont);
+            addProducts(document, contract, content.table(), content.pricing(), headingFont, tableFont, bodyFont);
+            addFees(document, contract, content.fees(), content.pricing(), headingFont, tableFont, bodyFont);
+            if (content.pricing() != null) {
+                addPricingSummary(document, content.pricing().amounts(), tableFont);
+            }
             addClauses(document, content.clauses(), contract.terms(), headingFont, bodyFont);
             addSignatureTable(document, parties, signatureTitleFont, tableFont, writer, positions, progress);
 
@@ -169,7 +176,7 @@ public class ContractPdfServiceImpl implements ContractPdfService {
         document.add(table);
     }
 
-    private void addProducts(Document document, ContractRespDTO contract, ProductTable source,
+    private void addProducts(Document document, ContractRespDTO contract, ProductTable source, TaxSnapshot pricing,
                              Font headingFont, Font tableFont, Font bodyFont) throws DocumentException {
         Paragraph heading = new Paragraph(stripNumberPrefix(safe(source.title(), "商品明细")), headingFont);
         heading.setSpacingAfter(3);
@@ -177,6 +184,9 @@ public class ContractPdfServiceImpl implements ContractPdfService {
 
         List<String> columns = normalizedColumns(source.columns());
         List<List<String>> rows = normalizedRows(source.rows(), columns.size());
+        if (pricing != null) {
+            applyProductTaxColumns(columns, rows, pricing);
+        }
         while (rows.size() < 6) {
             rows.add(new ArrayList<>(java.util.Collections.nCopies(columns.size(), "")));
         }
@@ -200,12 +210,18 @@ public class ContractPdfServiceImpl implements ContractPdfService {
 
         int quantityIndex = findColumn(columns, "数量");
         int amountIndex = findColumn(columns, "金额");
+        if (pricing != null && amountIndex < 0) amountIndex = findColumn(columns, "价税合计");
         BigDecimal quantity = sumColumn(source.rows(), quantityIndex);
         BigDecimal amount = parseDecimal(source.totalAmount(), contract.amount());
+        if (pricing != null) {
+            amount = amountIndex >= 0 ? sumColumn(rows, amountIndex) : pricing.products().values().stream()
+                    .map(TaxLine::quotedAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        }
         int labelSpan = Math.min(3, columns.size());
         if (quantityIndex >= 0) labelSpan = Math.min(labelSpan, Math.max(1, quantityIndex));
         if (amountIndex >= 0) labelSpan = Math.min(labelSpan, Math.max(1, amountIndex));
-        String totalLabelText = amountIndex <= 0 ? "合计：¥" + formatDecimal(amount) : "合计";
+        String totalLabelText = pricing == null ? "合计" : "商品小计";
+        if (amountIndex <= 0) totalLabelText += "：¥" + formatDecimal(amount);
         if (quantityIndex == 0) totalLabelText += "\n数量：" + formatDecimal(quantity);
 
         PdfPCell totalLabel = tableCell(totalLabelText, tableFont, Element.ALIGN_CENTER, Color.WHITE, 22);
@@ -221,7 +237,11 @@ public class ContractPdfServiceImpl implements ContractPdfService {
             }
             table.addCell(tableCell(value, tableFont, Element.ALIGN_RIGHT, Color.WHITE, 22));
         }
-        String uppercase = safe(source.totalAmountCn(), toChineseCurrency(amount));
+        if (pricing != null) {
+            document.add(table);
+            return;
+        }
+        String uppercase = safe(source.totalAmountCn(), ContractAmountText.uppercase(amount));
         PdfPCell uppercaseLabel = tableCell(
                 columns.size() == 1 ? "合计大写：" + uppercase : "合计大写：",
                 bodyFont, Element.ALIGN_LEFT, Color.WHITE, 22);
@@ -233,6 +253,32 @@ public class ContractPdfServiceImpl implements ContractPdfService {
             table.addCell(uppercaseValue);
         }
         document.add(table);
+    }
+
+    private void applyProductTaxColumns(List<String> columns, List<List<String>> rows, TaxSnapshot pricing) {
+        int rateColumn = -1;
+        String priceLabel = pricing.basis() == Basis.GROSS ? "含税单价" : "不含税单价";
+        for (int index = 0; index < columns.size(); index++) {
+            String label = columns.get(index);
+            if (label.contains("单价")) {
+                columns.set(index, priceLabel + "（元）");
+            } else if (label.contains("金额") && !label.contains("税")) {
+                columns.set(index, quotedAmountLabel(pricing.basis()));
+            } else if (label.contains("税率") || label.contains("征收率")) {
+                rateColumn = index;
+            }
+        }
+        if (rateColumn < 0) {
+            rateColumn = columns.size();
+            columns.add("税率/征收率");
+            for (List<String> row : rows) row.add("");
+        } else {
+            columns.set(rateColumn, "税率/征收率");
+        }
+        for (int index = 0; index < rows.size(); index++) {
+            TaxLine line = pricing.products().get(index);
+            if (line != null) rows.get(index).set(rateColumn, line.rateLabel());
+        }
     }
 
     private void addClauses(Document document, List<Clause> clauses, String rawTerms,
@@ -259,34 +305,65 @@ public class ContractPdfServiceImpl implements ContractPdfService {
         document.add(spacer);
     }
 
-    private void addFees(Document document, ContractRespDTO contract, List<FeeItem> fees,
+    private void addFees(Document document, ContractRespDTO contract, List<FeeItem> fees, TaxSnapshot pricing,
                          Font headingFont, Font tableFont, Font bodyFont) throws DocumentException {
         if (fees == null || fees.isEmpty()) return;
         Paragraph heading = new Paragraph("其他费用（不计入库存商品）", headingFont);
         heading.setSpacingBefore(5);
         heading.setSpacingAfter(3);
         document.add(heading);
-        PdfPTable table = new PdfPTable(3);
+        List<String> columns = pricing == null ? List.of("费用类型", "金额（元）", "备注")
+                : List.of("费用类型", quotedAmountLabel(pricing.basis()), "税率/征收率", "备注");
+        PdfPTable table = new PdfPTable(columns.size());
         table.setWidthPercentage(100);
-        table.setWidths(new float[]{28, 20, 52});
-        for (String column : List.of("费用类型", "金额（元）", "备注")) {
+        table.setWidths(pricing == null ? new float[]{28, 20, 52} : new float[]{25, 25, 15, 35});
+        for (String column : columns) {
             table.addCell(tableCell(column, tableFont, Element.ALIGN_CENTER, HEADER_BACKGROUND, 22));
         }
         BigDecimal feeTotal = BigDecimal.ZERO;
-        for (FeeItem fee : fees) {
-            BigDecimal amount = parseDecimal(fee.amount(), BigDecimal.ZERO);
+        for (int index = 0; index < fees.size(); index++) {
+            FeeItem fee = fees.get(index);
+            TaxLine line = pricing == null ? null : pricing.fees().get(index);
+            BigDecimal amount = line == null ? parseDecimal(fee.amount(), BigDecimal.ZERO) : line.quotedAmount();
             feeTotal = feeTotal.add(amount);
             table.addCell(tableCell(fee.feeType(), tableFont, Element.ALIGN_CENTER, Color.WHITE, 21));
             table.addCell(tableCell(formatDecimal(amount), tableFont, Element.ALIGN_RIGHT, Color.WHITE, 21));
+            if (pricing != null) {
+                table.addCell(tableCell(line == null ? "" : line.rateLabel(), tableFont,
+                        Element.ALIGN_CENTER, Color.WHITE, 21));
+            }
             table.addCell(tableCell(fee.remark(), tableFont, Element.ALIGN_LEFT, Color.WHITE, 21));
         }
         PdfPCell label = tableCell("费用小计", tableFont, Element.ALIGN_RIGHT, Color.WHITE, 22);
         table.addCell(label);
         table.addCell(tableCell(formatDecimal(feeTotal), tableFont, Element.ALIGN_RIGHT, Color.WHITE, 22));
-        table.addCell(tableCell("合同总额：" + formatDecimal(
-                contract.amount() == null ? BigDecimal.ZERO : contract.amount()),
-                bodyFont, Element.ALIGN_LEFT, Color.WHITE, 22));
+        PdfPCell detail = tableCell(pricing == null ? "合同总额：" + formatDecimal(
+                contract.amount() == null ? BigDecimal.ZERO : contract.amount()) : "",
+                bodyFont, Element.ALIGN_LEFT, Color.WHITE, 22);
+        detail.setColspan(columns.size() - 2);
+        table.addCell(detail);
         document.add(table);
+    }
+
+    private String quotedAmountLabel(Basis basis) {
+        return basis == Basis.GROSS ? "含税金额（元）" : "不含税金额（元）";
+    }
+
+    private void addPricingSummary(Document document, Amounts amounts, Font tableFont) throws DocumentException {
+        PdfPTable summary = new PdfPTable(2);
+        summary.setWidthPercentage(100);
+        summary.setWidths(new float[]{28, 72});
+        summary.setSpacingBefore(5);
+        summary.setKeepTogether(true);
+        List<String> labels = List.of("不含税金额", "税额", "合同价税合计", "价税合计大写");
+        List<String> values = List.of("¥" + formatDecimal(amounts.netAmount()),
+                "¥" + formatDecimal(amounts.taxAmount()), "¥" + formatDecimal(amounts.grossAmount()),
+                ContractAmountText.uppercase(amounts.grossAmount()));
+        for (int index = 0; index < labels.size(); index++) {
+            summary.addCell(tableCell(labels.get(index), tableFont, Element.ALIGN_LEFT, Color.WHITE, 21));
+            summary.addCell(tableCell(values.get(index), tableFont, Element.ALIGN_RIGHT, Color.WHITE, 21));
+        }
+        document.add(summary);
     }
 
     private void addSignatureTable(Document document, PartyPair parties,
@@ -350,15 +427,17 @@ public class ContractPdfServiceImpl implements ContractPdfService {
         ProductTable table = ProductTable.empty();
         List<FeeItem> fees = new ArrayList<>();
         List<Clause> clauses = new ArrayList<>();
+        TaxSnapshot pricing = null;
         String terms = contract.terms();
         if (terms == null || terms.isBlank()) {
-            return new ContractContent(title, fields, table, fees, clauses);
+            return new ContractContent(title, fields, table, fees, clauses, null);
         }
         try {
             JsonNode root = objectMapper.readTree(terms);
             if (root == null || !root.isObject()) {
-                return new ContractContent(title, fields, table, fees, clauses);
+                return new ContractContent(title, fields, table, fees, clauses, null);
             }
+            pricing = parseTaxSnapshot(root.path("taxPricing"));
             if (contract.name() == null || contract.name().isBlank()) {
                 title = text(root.path("title"), title);
             }
@@ -391,10 +470,39 @@ public class ContractPdfServiceImpl implements ContractPdfService {
                     }
                 }
             }
+        } catch (BusinessException invalid) {
+            throw invalid;
         } catch (Exception ignored) {
             // 兼容历史纯文本合同条款。
         }
-        return new ContractContent(title, fields, table, fees, clauses);
+        return new ContractContent(title, fields, table, fees, clauses, pricing);
+    }
+
+    private TaxSnapshot parseTaxSnapshot(JsonNode pricing) {
+        if (pricing.isMissingNode() || pricing.isNull()) return null;
+        try {
+            Basis basis = Basis.valueOf(pricing.path("basis").asText());
+            Amounts amounts = new Amounts(new BigDecimal(pricing.path("netAmount").asText()),
+                    new BigDecimal(pricing.path("taxAmount").asText()), new BigDecimal(pricing.path("grossAmount").asText()));
+            Map<Integer, TaxLine> products = new LinkedHashMap<>();
+            Map<Integer, TaxLine> fees = new LinkedHashMap<>();
+            for (JsonNode line : pricing.path("lines")) {
+                Treatment treatment = Treatment.valueOf(line.path("taxTreatment").asText());
+                String rateLabel = switch (treatment) {
+                    case TAXABLE, SIMPLE -> line.path("taxRate").asText() + "%";
+                    case EXEMPT -> "免税";
+                    case ZERO_RATE -> "0%（零税率）";
+                    case OUT_OF_SCOPE -> "不征税";
+                };
+                String amountKey = basis == Basis.GROSS ? "grossAmount" : "netAmount";
+                TaxLine parsed = new TaxLine(rateLabel, new BigDecimal(line.path(amountKey).asText()));
+                ("FEE".equals(line.path("lineType").asText()) ? fees : products)
+                        .put(line.path("rowIndex").intValue(), parsed);
+            }
+            return new TaxSnapshot(basis, amounts, products, fees);
+        } catch (IllegalArgumentException invalid) {
+            throw new BusinessException("合同价税快照格式错误");
+        }
     }
 
     private ProductTable parseTable(JsonNode section) {
@@ -607,61 +715,13 @@ public class ContractPdfServiceImpl implements ContractPdfService {
         return numbers[tens] + "十" + (units == 0 ? "" : numbers[units]);
     }
 
-    private String toChineseCurrency(BigDecimal value) {
-        BigDecimal normalized = value == null
-                ? BigDecimal.ZERO : value.max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
-        long fenValue;
-        try {
-            fenValue = normalized.movePointRight(2).longValueExact();
-        } catch (ArithmeticException exception) {
-            return "金额超出大写转换范围";
-        }
-        if (fenValue == 0) {
-            return "零元整";
-        }
-        String[] digits = {"零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"};
-        String[] units = {"分", "角", "元", "拾", "佰", "仟", "万", "拾", "佰", "仟", "亿",
-                "拾", "佰", "仟", "兆"};
-        StringBuilder result = new StringBuilder();
-        boolean pendingZero = false;
-        int index = 0;
-        while (fenValue > 0 && index < units.length) {
-            int digit = (int) (fenValue % 10);
-            if (digit == 0) {
-                if (index == 2 || index == 6 || index == 10 || index == 14) {
-                    if (result.isEmpty() || !result.substring(0, 1).equals(units[index])) {
-                        result.insert(0, units[index]);
-                    }
-                }
-                pendingZero = !result.isEmpty();
-            } else {
-                if (pendingZero && !result.isEmpty() && !result.substring(0, 1).equals("零")) {
-                    result.insert(0, "零");
-                }
-                result.insert(0, digits[digit] + units[index]);
-                pendingZero = false;
-            }
-            fenValue /= 10;
-            index++;
-        }
-        String text = result.toString()
-                .replaceAll("零+", "零")
-                .replace("零万", "万")
-                .replace("零亿", "亿")
-                .replace("亿万", "亿")
-                .replace("零元", "元");
-        if (!text.contains("角") && !text.contains("分")) {
-            text += "整";
-        }
-        return text;
-    }
-
     private record ContractContent(
             String title,
             Map<String, String> fields,
             ProductTable table,
             List<FeeItem> fees,
-            List<Clause> clauses
+            List<Clause> clauses,
+            TaxSnapshot pricing
     ) {
     }
 
@@ -681,6 +741,12 @@ public class ContractPdfServiceImpl implements ContractPdfService {
     }
 
     private record FeeItem(String feeType, String amount, String remark) {
+    }
+
+    private record TaxSnapshot(Basis basis, Amounts amounts, Map<Integer, TaxLine> products, Map<Integer, TaxLine> fees) {
+    }
+
+    private record TaxLine(String rateLabel, BigDecimal quotedAmount) {
     }
 
     private record PartyPair(PartyDetails supplier, PartyDetails buyer) {

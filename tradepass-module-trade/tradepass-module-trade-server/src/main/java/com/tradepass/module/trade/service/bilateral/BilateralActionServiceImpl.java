@@ -256,6 +256,8 @@ public class BilateralActionServiceImpl implements BilateralActionService {
         } else if (BUSINESS_DOCUMENT.equals(target.bizType())
                 && !List.of("ACKNOWLEDGED", "INBOUNDED").contains(target.status())) {
             throw new BusinessException("仅已确认的单据可以申请作废");
+        } else if (BUSINESS_DOCUMENT.equals(target.bizType()) && "SALES_ORDER".equals(target.sourceType())) {
+            requireNoLinkedReturns(target);
         }
     }
 
@@ -320,6 +322,7 @@ public class BilateralActionServiceImpl implements BilateralActionService {
             return;
         }
         if (BUSINESS_DOCUMENT.equals(action.bizType())) {
+            if ("SALES_ORDER".equals(target.sourceType())) requireNoLinkedReturns(target);
             if ("INBOUNDED".equals(target.status())) {
                 inventoryService.reverseDocumentInventory(action.bizId(), action.id(), AuthContext.userId());
             }
@@ -331,6 +334,17 @@ public class BilateralActionServiceImpl implements BilateralActionService {
                     """, action.bizId());
             if (updated != 1) throw new BusinessException("单据状态已变化，请刷新后重试");
         }
+    }
+
+    private void requireNoLinkedReturns(Target sale) {
+        Long linked = jdbc.queryForObject("""
+                SELECT COUNT(1) FROM business_document
+                WHERE contract_id = ? AND document_type = 'RETURN_ORDER' AND deleted_at IS NULL
+                  AND status IN ('ISSUED', 'ACKNOWLEDGED', 'INBOUNDED')
+                  AND (CASE WHEN JSON_VALID(content)
+                            THEN JSON_UNQUOTE(JSON_EXTRACT(content, '$.taxPricing.sourceDocumentId')) END) = ?
+                """, Long.class, sale.contract().getId(), sale.bizId().toString());
+        if (linked != null && linked > 0) throw new BusinessException("原销售单存在已提交的退货单，请先处理关联退货单");
     }
 
     private Target requireTarget(String bizType, Long bizId, long companyId) {

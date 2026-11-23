@@ -44,10 +44,13 @@ public class RetailController {
     public ApiResponse<Map<String, Object>> updateDraft(@PathVariable Long id, @RequestBody DocumentRequest body) { return ApiResponse.ok(retail.updateDraft(id, body)); }
     @PostMapping("/documents/{id}/confirm")
     public ApiResponse<Map<String, Object>> confirm(@PathVariable Long id, @RequestBody(required = false) ConfirmRequest body) {
-        return ApiResponse.ok(retail.confirm(id, body == null ? null : body.warehouseId()));
+        return ApiResponse.ok(retail.confirm(id, body == null ? null : body.warehouseId(),
+                body == null ? null : body.taxDeductions()));
     }
     @PostMapping("/documents/{id}/stock")
-    public ApiResponse<Map<String, Object>> processStock(@PathVariable Long id, @RequestBody ConfirmRequest body) { return ApiResponse.ok(retail.processStock(id, body.warehouseId())); }
+    public ApiResponse<Map<String, Object>> processStock(@PathVariable Long id, @RequestBody ConfirmRequest body) {
+        return ApiResponse.ok(retail.processStock(id, body.warehouseId(), body.taxDeductions()));
+    }
     @PostMapping("/documents/{id}/delete")
     public ApiResponse<String> delete(@PathVariable Long id) { return ApiResponse.ok(retail.deleteDraft(id)); }
     @GetMapping("/documents/{id}/pdf-data")

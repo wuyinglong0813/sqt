@@ -115,6 +115,31 @@ class ContractPdfServiceTest {
     }
 
     @Test
+    void signingPdfDisplaysTheFrozenPricingBasisAndGrossTotal() throws Exception {
+        String terms = """
+                {"taxPricing":{"version":1,"basis":"NET","netAmount":"12100.00","taxAmount":"1563.00",
+                  "grossAmount":"13663.00","lines":[
+                  {"lineType":"PRODUCT","rowIndex":0,"taxTreatment":"TAXABLE","taxRate":"13",
+                   "netAmount":"12000.00","grossAmount":"13560.00"},
+                  {"lineType":"FEE","rowIndex":0,"taxTreatment":"SIMPLE","taxRate":"3",
+                   "netAmount":"100.00","grossAmount":"103.00"}
+                ]},"sections":[
+                  {"type":"table","columns":["产品名称","数量","单价","金额"],"rows":[["球阀","100","120","12000.00"]]},
+                  {"type":"fees","items":[{"feeType":"运费","amount":"100"}]}
+                ]}
+                """;
+        var service = new ContractPdfServiceImpl(new ObjectMapper(), id -> null);
+        var contract = new ContractRespDTO(
+                "12", "HT-TAX", "1", "2", "对方企业", "PURCHASE",
+                "球阀采购合同", "标准模板", new BigDecimal("13663.00"), "2026-10-19", null, terms,
+                "PENDING", 1, "1", null, null, "2026-10-19T12:00:00",
+                "本方企业", "对方企业", "2", "1", "对方企业", "PURCHASE", "OUTGOING");
+
+        assertThat(pdfText(service.generateForSigning(contract).pdf())).contains("不含税单价", "税率/征收率",
+                "球阀", "运费", "13%", "3%", "合同价税合计", "¥12100", "¥1563", "¥13663", "壹万叁仟陆佰陆拾叁元整");
+    }
+
+    @Test
     void rendersOnlyAgreedTemplateClausesInTheirOriginalOrderStartingAtOne() throws Exception {
         String terms = """
                 {"sections":[
